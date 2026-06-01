@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/loonghao/dcc-mcp-3dsmax/compare/v0.1.9...v0.1.10) (2026-06-01)
+
+
+### Bug Fixes
+
+* resolve [#50](https://github.com/loonghao/dcc-mcp-3dsmax/issues/50) — prevent ValueError when both dispatcher and execution_bridge are passed ([ae4e7fa](https://github.com/loonghao/dcc-mcp-3dsmax/commit/ae4e7fa6fee1e5641f6249bb03f83ee1c1483fdc))
+
 ## [0.1.9](https://github.com/loonghao/dcc-mcp-3dsmax/compare/v0.1.8...v0.1.9) (2026-05-29)
 
 
