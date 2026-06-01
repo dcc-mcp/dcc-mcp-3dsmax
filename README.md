@@ -1,7 +1,13 @@
 # dcc-mcp-3dsmax
 
 3ds Max plugin for the DCC Model Context Protocol (MCP) ecosystem.
-![ChatGPT generated image](assets/3dsmax-mcp-readme-hero.png)
+<picture>
+  <source media="(max-width: 768px)" srcset="assets/3dsmax-mcp-readme-hero.png" />
+  <source media="(max-width: 1200px)" srcset="assets/3dsmax-mcp-readme-hero.png" />
+  <img src="assets/3dsmax-mcp-readme-hero.png" alt="3ds Max MCP adapter screenshot" style="max-width: 100%; height: auto;" />
+</picture>
+
+> 该图片可直接访问：[`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
 
 > **Status:** This project is under active development. APIs, packaging, and 3ds Max integration details may change quickly while the adapter tracks the latest `dcc-mcp-core` releases.
 
