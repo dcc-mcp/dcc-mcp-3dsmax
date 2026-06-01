@@ -1,15 +1,25 @@
 # dcc-mcp-3dsmax
 
+<p align="center">
+  <img src="assets/3dsmax-mcp-readme-hero.png"
+       alt="3ds Max MCP adapter screenshot"
+       style="max-width: 96vw; width: min(1024px, 100%); height: auto; border-radius: 12px;"
+       loading="lazy" />
+</p>
+
 3ds Max plugin for the DCC Model Context Protocol (MCP) ecosystem.
-<picture>
-  <source media="(max-width: 768px)" srcset="assets/3dsmax-mcp-readme-hero.png" />
-  <source media="(max-width: 1200px)" srcset="assets/3dsmax-mcp-readme-hero.png" />
-  <img src="assets/3dsmax-mcp-readme-hero.png" alt="3ds Max MCP adapter screenshot" style="max-width: 100%; height: auto;" />
-</picture>
 
-> 该图片可直接访问：[`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
+- [Features](#features)
+- [Agent install](#agent-install-recommended)
+- [Installation](#installation)
+- [Quickstart](#quickstart-inside-3ds-max-maxscript-listener)
+- [Runtime Bridge](#runtime-bridge)
+- [Skill Development](#skill-development)
 
-> **Status:** This project is under active development. APIs, packaging, and 3ds Max integration details may change quickly while the adapter tracks the latest `dcc-mcp-core` releases.
+> **Status:** This project is under active development. APIs, packaging, and 3ds Max integration details may change quickly while the adapter tracks the latest `dcc-mcp-core` releases.  
+> 图片可直接访问：[`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
+
+<br/>
 
 ## Features
 
