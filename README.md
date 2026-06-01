@@ -3,7 +3,7 @@
 <p align="center">
   <img src="assets/3dsmax-mcp-readme-hero.png"
        alt="3ds Max MCP adapter screenshot"
-       style="max-width: 96vw; width: min(1024px, 100%); height: auto; border-radius: 12px;"
+       style="width: 100%; max-width: 1024px; height: auto; border-radius: 12px;"
        loading="lazy" />
 </p>
 
