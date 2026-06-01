@@ -646,6 +646,20 @@ class TestMenuIntegration:
         assert "stop_sidecar_bridge" in script
         assert "persistent:false" in script
 
+    def test_remove_menu_script_cleans_mcr_files(self):
+        """remove_menu deletes persisted .mcr files from #userMacros."""
+        from dcc_mcp_3dsmax.menu import _remove_menu_script
+
+        script = _remove_menu_script()
+        assert "getDir #userMacros" in script
+        assert 'DCC MCP-DccMcp3dsmax_StartSidecar.mcr' in script
+        assert 'DCC MCP-DccMcp3dsmax_StopSidecar.mcr' in script
+        assert 'DCC MCP-DccMcp3dsmax_OpenAdmin.mcr' in script
+        assert 'DCC MCP-DccMcp3dsmax_PrintStatus.mcr' in script
+        # Idempotent — all cleanup wrapped in try/catch
+        assert "deleteFile" in script
+        assert "callbacks.removeScripts" in script
+
 
 class TestSkillMetadata:
     """Test bundled skills follow the dcc-mcp-core 0.17 authoring contract."""

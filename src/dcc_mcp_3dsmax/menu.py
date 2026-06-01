@@ -125,6 +125,13 @@ try (macros.delete "DccMcp3dsmax_StopSidecar") catch()
 try (macros.delete "DccMcp3dsmax_OpenAdmin") catch()
 try (macros.delete "DccMcp3dsmax_PrintStatus") catch()
 
+-- Remove persisted macroScript .mcr files so macros don't survive a restart.
+local userMacrosDir = getDir #userMacros
+try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_StartSidecar.mcr")) catch()
+try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_StopSidecar.mcr")) catch()
+try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_OpenAdmin.mcr")) catch()
+try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_PrintStatus.mcr")) catch()
+
 try (menuMan.updateMenuBar()) catch()
 
 try (
