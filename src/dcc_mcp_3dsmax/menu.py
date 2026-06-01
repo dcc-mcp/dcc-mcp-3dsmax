@@ -90,6 +90,51 @@ if menuMan.findMenu "DCC MCP" == undefined do
 '''
 
 
+def remove_menu() -> bool:
+    """Remove the DCC MCP menu from 3ds Max main menu bar. Idempotent — safe to
+    call even when the menu, macros, or context do not exist."""
+    rt = _runtime()
+    if rt is None:
+        return False
+    rt.execute(_remove_menu_script())
+    return True
+
+
+def _remove_menu_script() -> str:
+    return r'''
+-- Idempotent: silently skip when menu / macros / context are already absent.
+try (
+    if menuMan.findMenu "DCC MCP" != undefined do
+    (
+        local mainMenuBar = menuMan.getMainMenuBar()
+        for i = mainMenuBar.numItems() to 1 by -1 do
+        (
+            local item = mainMenuBar.getItem i
+            if (classOf item) == SubMenuItem and (item.getTitle()) == "DCC MCP" do
+            (
+                mainMenuBar.removeItem i
+            )
+        )
+    )
+) catch()
+
+try (menuMan.unRegisterMenuContext 0x3D5A9765) catch()
+
+try (macros.delete "DccMcp3dsmax_StartSidecar") catch()
+try (macros.delete "DccMcp3dsmax_StopSidecar") catch()
+try (macros.delete "DccMcp3dsmax_OpenAdmin") catch()
+try (macros.delete "DccMcp3dsmax_PrintStatus") catch()
+
+try (menuMan.updateMenuBar()) catch()
+
+try (
+    callbacks.removeScripts id:#dcc_mcp_3dsmax_shutdown
+) catch()
+
+print "dcc-mcp-3dsmax menu removed"
+'''
+
+
 def _shutdown_callback_script() -> str:
     return r'''
 callbacks.removeScripts id:#dcc_mcp_3dsmax_shutdown

@@ -89,6 +89,7 @@ _LAZY_EXPORTS = {
     "start_embedded_sidecar_bridge": ("dcc_mcp_3dsmax.max_bootstrap", "start_embedded_sidecar_bridge"),
     "stop_sidecar_bridge": ("dcc_mcp_3dsmax.max_bootstrap", "stop_sidecar_bridge"),
     "install_menu": ("dcc_mcp_3dsmax.menu", "install_menu"),
+    "remove_menu": ("dcc_mcp_3dsmax.menu", "remove_menu"),
     "install_shutdown_callback": ("dcc_mcp_3dsmax.menu", "install_shutdown_callback"),
     "MaxMcpServer": ("dcc_mcp_3dsmax.server", "MaxMcpServer"),
     "MaxServerOptions": ("dcc_mcp_3dsmax.server", "MaxServerOptions"),
@@ -156,6 +157,7 @@ __all__ = [
     "start_embedded_sidecar_bridge",
     "stop_sidecar_bridge",
     "install_menu",
+    "remove_menu",
     "install_shutdown_callback",
     # Version
     "get_3dsmax_version_string",

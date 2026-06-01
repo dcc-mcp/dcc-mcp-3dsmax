@@ -137,7 +137,15 @@ class MaxUiPump:
             )
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("MaxUiPump: install skipped: %s", exc)
+            context = _pump_degradation_context()
+            logger.warning(
+                "MaxUiPump: install skipped (degradable — bridge/server still functional): %s | "
+                "max_version=%s pythonnet=%s clr=%s",
+                exc,
+                context.get("max_version", "unknown"),
+                context.get("pythonnet_available", False),
+                context.get("clr_available", False),
+            )
             return False
 
     def uninstall(self) -> None:
@@ -188,3 +196,35 @@ def _snapshot_to_legacy_stats(snapshot: HostPumpSnapshot) -> Dict[str, Any]:
         "interval_secs": snapshot.interval_secs,
         "shutdown": snapshot.shutdown,
     }
+
+
+def _pump_degradation_context() -> Dict[str, Any]:
+    """Probe 3ds Max environment for MaxUiPump degradation diagnostics."""
+    context: Dict[str, Any] = {
+        "max_version": "unknown",
+        "pythonnet_available": False,
+        "clr_available": False,
+    }
+    try:
+        import pymxs  # noqa: PLC0415
+        rt = pymxs.runtime
+        try:
+            context["max_version"] = str(rt.maxVersion())
+        except Exception:  # noqa: BLE001
+            pass
+    except ImportError:
+        pass
+
+    try:
+        import pythonnet  # noqa: F401, PLC0415
+        context["pythonnet_available"] = True
+    except ImportError:
+        pass
+
+    try:
+        import clr  # noqa: F401, PLC0415
+        context["clr_available"] = True
+    except ImportError:
+        pass
+
+    return context
