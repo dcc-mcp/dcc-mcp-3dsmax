@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import os
 import site
+import socket
 import subprocess
 import sys
 import sysconfig
@@ -17,6 +18,7 @@ from dcc_mcp_3dsmax.sidecar.bridge import start_bridge, stop_bridge
 from dcc_mcp_3dsmax.sidecar.qt_bridge import qt_bridge_port, start_qt_bridge, stop_qt_bridge
 
 _sidecar_process: Optional[subprocess.Popen] = None
+_sidecar_launch_contract: Optional[dict] = None
 _cleanup_registered = False
 
 
@@ -44,9 +46,13 @@ def start_sidecar_bridge(
     return {"bridge": bridge, "qt_bridge": qt_bridge, "sidecar_process": process}
 
 
-def start_sidecar_server() -> subprocess.Popen:
+def start_sidecar_server(
+    *,
+    instance_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> subprocess.Popen:
     """Start ``dcc-mcp-server.exe sidecar`` for gateway/admin registration."""
-    global _sidecar_process
+    global _sidecar_launch_contract, _sidecar_process
 
     if _sidecar_process is not None and _sidecar_process.poll() is None:
         return _sidecar_process
@@ -54,23 +60,36 @@ def start_sidecar_server() -> subprocess.Popen:
     binary = _server_binary_path()
     qt_port = qt_bridge_port()
     pid = os.getpid()
-    cmd = [
-        str(binary),
-        "sidecar",
-        "--dcc",
-        "3dsmax",
-        "--host-rpc",
-        "qtserver://127.0.0.1:{}".format(qt_port),
-        "--watch-pid",
-        str(pid),
-        "--adapter-version",
-        __version__,
-        "--display-name",
-        "3ds Max {}".format(_max_version_label()),
-        "--gateway-port",
-        str(DEFAULT_GATEWAY_PORT),
-    ]
     env = dict(os.environ)
+    try:
+        from dcc_mcp_core.install_lifecycle import build_sidecar_command  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("dcc_mcp_core.install_lifecycle.build_sidecar_command is unavailable: {}".format(exc))
+
+    gateway_remote_host, gateway_remote_port = _gateway_remote_options(env)
+    contract = build_sidecar_command(
+        dcc_type="3dsmax",
+        host_rpc="qtserver://127.0.0.1:{}".format(qt_port),
+        watch_pid=pid,
+        server_bin=str(binary),
+        instance_id=instance_id,
+        display_name=display_name or _sidecar_display_name(),
+        adapter_version=__version__,
+        gateway_port=_gateway_port(env),
+        gateway_name=_gateway_name(env),
+        gateway_remote_host=gateway_remote_host,
+        gateway_remote_port=gateway_remote_port,
+        env=env,
+    )
+    if not contract.get("success"):
+        reason = contract.get("reason") or "invalid_sidecar_launch"
+        message = contract.get("message") or "unknown launch-contract failure"
+        raise RuntimeError("failed to build sidecar launch command ({}): {}".format(reason, message))
+
+    cmd = list(contract["command"])
+    env.update(dict(contract.get("environment", {}).get("set", {})))
+    env["DCC_MCP_GATEWAY_REMOTE_HOST"] = gateway_remote_host
+    env["DCC_MCP_GATEWAY_REMOTE_PORT"] = str(gateway_remote_port)
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
         _sidecar_process = subprocess.Popen(  # noqa: S603 - binary path is resolved locally or explicitly configured.
@@ -90,25 +109,32 @@ def start_sidecar_server() -> subprocess.Popen:
         exit_code = None
     if exit_code is not None:
         _sidecar_process = None
+        _sidecar_launch_contract = None
         raise RuntimeError("dcc-mcp-server sidecar exited during startup with code {}.".format(exit_code))
+    _sidecar_launch_contract = dict(contract)
     print(
         "dcc-mcp-3dsmax sidecar server started pid={} ({})".format(
             _sidecar_process.pid,
             binary,
         )
     )
-    print("dcc-mcp-3dsmax MCP gateway available at http://127.0.0.1:{}/mcp".format(DEFAULT_GATEWAY_PORT))
+    gateway_port = int(contract.get("gateway_port") or 0)
+    if gateway_port > 0:
+        print("dcc-mcp-3dsmax MCP gateway available at http://127.0.0.1:{}/mcp".format(gateway_port))
+    else:
+        print("dcc-mcp-3dsmax MCP gateway auto-launch disabled")
     return _sidecar_process
 
 
 def stop_sidecar_bridge(timeout: float = 5.0) -> None:
     """Stop the external sidecar process and both localhost bridges."""
-    global _sidecar_process
+    global _sidecar_launch_contract, _sidecar_process
 
     _stop_embedded_server_if_loaded()
 
     process = _sidecar_process
     _sidecar_process = None
+    _sidecar_launch_contract = None
     if process is not None and process.poll() is None:
         process.terminate()
         try:
@@ -238,6 +264,44 @@ def _register_process_cleanup() -> None:
         return
     atexit.register(stop_sidecar_bridge)
     _cleanup_registered = True
+
+
+def _gateway_port(env: dict) -> int:
+    raw = str(env.get("DCC_MCP_GATEWAY_PORT", str(DEFAULT_GATEWAY_PORT))).strip()
+    try:
+        port = int(raw)
+    except ValueError:
+        return DEFAULT_GATEWAY_PORT
+    if port < 0 or port > 65535:
+        return DEFAULT_GATEWAY_PORT
+    return port
+
+
+def _gateway_remote_options(env: dict) -> tuple[str, int]:
+    host = str(env.get("DCC_MCP_GATEWAY_REMOTE_HOST", "0.0.0.0")).strip() or "0.0.0.0"
+    raw_port = str(env.get("DCC_MCP_GATEWAY_REMOTE_PORT", "59765")).strip()
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 59765
+    if port < 0 or port > 65535:
+        port = 59765
+    return host, port
+
+
+def _gateway_name(env: dict) -> str:
+    raw = env.get("DCC_MCP_GATEWAY_NAME")
+    if raw and str(raw).strip():
+        return str(raw).strip()
+    try:
+        hostname = socket.gethostname().strip()
+    except Exception:  # noqa: BLE001
+        hostname = "localhost"
+    return "dcc-mcp-gateway@{}".format(hostname or "localhost")
+
+
+def _sidecar_display_name() -> str:
+    return "3ds Max {} pid {}".format(_max_version_label(), os.getpid())
 
 
 def _install_max_integration() -> None:

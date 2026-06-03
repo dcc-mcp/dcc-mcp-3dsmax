@@ -283,6 +283,11 @@ class TestExecution:
 class TestSidecar:
     """Test structured sidecar dispatch and bridge plumbing."""
 
+    @staticmethod
+    def _flag_value(cmd, flag):
+        index = cmd.index(flag)
+        return cmd[index + 1]
+
     def test_sidecar_server_uses_default_process_streams(self, tmp_path, monkeypatch, capsys):
         """External sidecar mode leaves logging to dcc-mcp-server, like Maya."""
         from dcc_mcp_3dsmax import max_bootstrap
@@ -307,19 +312,71 @@ class TestSidecar:
 
         monkeypatch.setattr(max_bootstrap, "_server_binary_path", lambda: binary)
         monkeypatch.setattr(max_bootstrap, "qt_bridge_port", lambda: 9876)
+        monkeypatch.setattr(max_bootstrap, "_gateway_name", lambda _env: "dcc-mcp-gateway@workstation-01")
         monkeypatch.setattr(max_bootstrap.subprocess, "Popen", fake_popen)
         max_bootstrap._sidecar_process = None
 
-        process = max_bootstrap.start_sidecar_server()
+        process = max_bootstrap.start_sidecar_server(instance_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
         assert process.pid == 4321
         assert captured["stdout"] is subprocess.DEVNULL
         assert captured["stderr"] is subprocess.DEVNULL
         assert captured["stdin"] is subprocess.DEVNULL
         assert captured["close_fds"] is True
-        assert "--display-name" in captured["cmd"]
+        assert captured["cmd"] == max_bootstrap._sidecar_launch_contract["command"]
+        assert captured["cmd"][:2] == [str(binary), "sidecar"]
+        assert self._flag_value(captured["cmd"], "--dcc") == "3dsmax"
+        assert self._flag_value(captured["cmd"], "--host-rpc") == "qtserver://127.0.0.1:9876"
+        assert self._flag_value(captured["cmd"], "--watch-pid") == str(os.getpid())
+        assert self._flag_value(captured["cmd"], "--instance-id") == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        assert self._flag_value(captured["cmd"], "--display-name").startswith("3ds Max ")
+        assert self._flag_value(captured["cmd"], "--adapter-version")
+        assert self._flag_value(captured["cmd"], "--gateway-name") == "dcc-mcp-gateway@workstation-01"
+        assert self._flag_value(captured["cmd"], "--gateway-port") == "9765"
+        assert self._flag_value(captured["cmd"], "--gateway-remote-host") == "0.0.0.0"
+        assert self._flag_value(captured["cmd"], "--gateway-remote-port") == "59765"
+        assert self._flag_value(captured["cmd"], "--registry-dir")
+        assert captured["env"]["DCC_MCP_REGISTRY_DIR"] == self._flag_value(captured["cmd"], "--registry-dir")
+        assert captured["env"]["DCC_MCP_GATEWAY_PORT"] == "9765"
+        assert captured["env"]["DCC_MCP_GATEWAY_REMOTE_HOST"] == "0.0.0.0"
+        assert captured["env"]["DCC_MCP_GATEWAY_REMOTE_PORT"] == "59765"
+        assert max_bootstrap._sidecar_launch_contract["role"] == "per-dcc-sidecar"
         output = capsys.readouterr().out
         assert "dcc-mcp-3dsmax sidecar server started" in output
         assert "sidecar log:" not in output
+
+    def test_sidecar_server_honors_gateway_port_zero(self, tmp_path, monkeypatch, capsys):
+        """Gateway auto-launch can be explicitly disabled for isolated diagnostics."""
+        from dcc_mcp_3dsmax import max_bootstrap
+
+        binary = tmp_path / ("dcc-mcp-server.exe" if os.name == "nt" else "dcc-mcp-server")
+        binary.write_text("stub", encoding="utf-8")
+        captured = {}
+
+        class FakeProcess:
+            pid = 4321
+
+            def wait(self, timeout):
+                raise subprocess.TimeoutExpired("sidecar", timeout)
+
+            def poll(self):
+                return None
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured.update(kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(max_bootstrap, "_server_binary_path", lambda: binary)
+        monkeypatch.setattr(max_bootstrap, "qt_bridge_port", lambda: 9876)
+        monkeypatch.setattr(max_bootstrap.subprocess, "Popen", fake_popen)
+        monkeypatch.setenv("DCC_MCP_GATEWAY_PORT", "0")
+        max_bootstrap._sidecar_process = None
+
+        max_bootstrap.start_sidecar_server()
+
+        assert self._flag_value(captured["cmd"], "--gateway-port") == "0"
+        assert captured["env"]["DCC_MCP_GATEWAY_PORT"] == "0"
+        assert "gateway auto-launch disabled" in capsys.readouterr().out
 
     def test_main_defaults_to_agent_callable_embedded_runtime(self, monkeypatch):
         """Startup scripts should register adapter tools, not just a host RPC sidecar."""

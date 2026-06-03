@@ -75,7 +75,7 @@ python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\examples\start_sidecar_bridge.py"
 
 This starts the agent-callable embedded MCP runtime, registers bundled 3ds Max
 skills/tools, and routes main-affinity scene edits through the shared
-`dcc-mcp-core` 0.17.36 UI dispatcher and pump abstractions. The legacy
+`dcc-mcp-core` 0.17.47 UI dispatcher and pump abstractions. The legacy
 random-port `/dispatch` bridge remains available for local diagnostics. The
 3ds Max instance is registered with the stable gateway at
 `http://127.0.0.1:9765/mcp`.
@@ -147,8 +147,8 @@ of disappearing into a generic `PermissionError`.
 
 - 3ds Max 2017 or later (Python 3.x with pymxs support)
 - Python >= 3.7
-- dcc-mcp-core >= 0.17.36
-- dcc-mcp-server >= 0.17.36
+- dcc-mcp-core >= 0.17.47
+- dcc-mcp-server >= 0.17.47
 
 ## License
 

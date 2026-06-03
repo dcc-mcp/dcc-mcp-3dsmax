@@ -42,7 +42,9 @@ environment variables.
 The process-isolated sidecar path is still available for diagnostics with
 `DCC_MCP_3DSMAX_BOOT_MODE=sidecar`. In that mode `DCC_MCP_SERVER_BIN` is the
 only executable override above the current bundled payload; stale or missing
-overrides fall back to the versioned install.
+overrides fall back to the versioned install. The sidecar command and process
+environment are built through `dcc_mcp_core.install_lifecycle`, so registry,
+gateway-daemon, and remote-gateway options stay aligned with the core runtime.
 
 ## Rez / Pipeline Bootstrap
 
@@ -133,7 +135,7 @@ and whether the local bridge is currently busy.
 The HTTP listener runs on a background thread. When `pymxs` is available, the
 legacy bridge queues direct `/dispatch` requests and drains them from a hidden
 MaxScript timer, keeping those scene edits on the 3ds Max UI thread. Gateway
-`tools/call` traffic uses the shared `dcc-mcp-core` 0.17.36
+`tools/call` traffic uses the shared `dcc-mcp-core` 0.17.47
 `HostUiDispatcherBase` plus `HostPumpController` path; the adapter only maps
 3ds Max's .NET timer to the core timer contract. The `qtserver://` sidecar path
 uses the core universal Qt dispatcher and core `SidecarActionDispatcher`.
