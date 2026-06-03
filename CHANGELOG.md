@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.12](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.11...v0.1.12) (2026-06-03)
+
+
+### Features
+
+* **setup:** install 3dsmax startup hook ([44e8032](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/44e8032733b529c1d3b5de8792ff7cff95dd9658))
+
+
+### Documentation
+
+* **setup:** use absolute install skill paths ([3ab5984](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/3ab5984f39a5781de72dd84f8bb3735d8cadec87))
+
 ## [0.1.11](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.10...v0.1.11) (2026-06-03)
 
 
