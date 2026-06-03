@@ -1,0 +1,315 @@
+# dcc-mcp-3dsmax — Full API Reference
+
+> Exhaustive reference for AI agents. For the compact version see `llms.txt`.
+> For the navigation map see `AGENTS.md`.
+
+---
+
+## Project Identity
+
+- **Name:** dcc-mcp-3dsmax
+- **Version:** 0.1.12
+- **Description:** 3ds Max plugin for the DCC Model Context Protocol ecosystem
+- **License:** MIT
+- **Author:** Long Hao <hal.long@outlook.com>
+- **Repository:** https://github.com/loonghao/dcc-mcp-3dsmax
+- **PyPI:** https://pypi.org/project/dcc-mcp-3dsmax/
+- **Python:** >=3.7
+- **Core deps:** `dcc-mcp-core>=0.17.47`, `dcc-mcp-server>=0.17.47`
+
+---
+
+## Installation
+
+```bash
+pip install dcc-mcp-3dsmax
+```
+
+### MZP drag-drop (Windows)
+Download `dcc-mcp-3dsmax-<version>-win64.mzp` and drag onto 3ds Max viewport.
+
+### Setup via agent
+Ask: "Please install and verify dcc-mcp-3dsmax."
+Agent reads `install.md` + `skills/dcc-mcp-3dsmax-setup/SKILL.md`.
+
+---
+
+## Quick Start
+
+Inside 3ds Max MAXScript Listener:
+
+```python
+import dcc_mcp_3dsmax
+server = dcc_mcp_3dsmax.start_server()
+# MCP host connects to http://127.0.0.1:9765/mcp
+```
+
+### MCP Host Configuration
+
+```json
+{
+  "mcpServers": {
+    "3dsmax": {
+      "url": "http://127.0.0.1:9765/mcp"
+    }
+  }
+}
+```
+
+---
+
+## Server API
+
+### `start_server(port=0, options=None)`
+Start the MCP server inside 3ds Max. Returns `MaxMcpServer` handle.
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `port` | int | `0` (random) | TCP port for MCP HTTP server |
+| `options` | `MaxServerOptions` | None | Server configuration options |
+
+### `stop_server()`
+Stop the running MCP server.
+
+### `get_server()`
+Return the current `MaxMcpServer` instance or None.
+
+### `MaxServerOptions`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enable_metrics` | bool | False | Enable Prometheus `/metrics` |
+| `job_persistence` | bool | True | Enable SQLite job storage |
+| `workflow_engine` | bool | False | Enable workflow engine |
+
+### Server methods (on returned handle)
+
+```python
+server.discover_skills()           # scan all paths, returns count
+server.load_skill("3dsmax-scene")  # lazy-load a specific skill
+server.loaded_skill_count()        # number of loaded skills
+server.list_skills()               # list all skills
+server.find_skills(query="uv")     # search skills by query
+server.mcp_url                     # the MCP endpoint URL
+server.shutdown()                  # stop and cleanup
+```
+
+---
+
+## Public Exports (lazy-loaded)
+
+### Server lifecycle
+- `MaxMcpServer` — server composition root
+- `MaxServerOptions` — configuration dataclass
+- `start_server(port=0, options=None)` — start server
+- `stop_server()` — stop server
+- `get_server()` — get current instance
+- `prepare_server(options=None)` — prepare without starting
+- `DEFAULT_GATEWAY_PORT` — `9765`
+- `DEFAULT_PORT` — `0` (random)
+- `SERVER_NAME` — `"3dsmax-mcp"`
+- `main()` — bootstrap entry point (startup hook)
+- `start_sidecar_bridge()` — sidecar bridge start
+- `start_embedded_sidecar_bridge()` — embedded sidecar start
+- `stop_sidecar_bridge()` — sidecar bridge stop
+- `install_menu()` — install DCC MCP menu
+- `remove_menu()` — remove DCC MCP menu
+- `install_shutdown_callback()` — install shutdown hook
+
+### Version detection
+- `get_3dsmax_version_string()` → `"2024"`
+- `get_3dsmax_version_number()` → `26000`
+- `is_3dsmax_available()` → bool
+
+### Capabilities
+- `get_3dsmax_capabilities()` — capability report dict
+- `get_3dsmax_capabilities_dict()` — capability report as dict
+
+### API helpers (skill authoring)
+- `max_success(message, **kwargs)` — success response
+- `max_error(error, **kwargs)` — error response
+- `max_warning(warning, **kwargs)` — warning response
+- `max_from_exception(exc, message, **context)` — exception response
+- `with_max(func)` — decorator ensuring pymxs availability
+- `require_param(params, name)` — validate required param
+- `require_any_param(params, names)` — validate at least one param
+- `get_param(params, name, default=None)` — get param with default
+- `missing_param_error(name)` — error for missing param
+- `MissingParamError` — exception class
+- `is_max_available()` → bool
+- `get_runtime()` → pymxs.runtime
+- `get_selection()` → selected node handles
+- `clear_selection()` — clear selection
+- `select_nodes(handles)` — select nodes
+
+### Readiness (parity with core #184)
+- `ReadinessBinder` — three-state readiness probe binder
+- `install_readiness(server)` — one-shot helper
+- `wait_until_ready(server, timeout=30)` — block until ready
+
+### Capability manifest (parity with core #163/#165)
+- `MaxCapabilityManifestBuilder` — build compact capability index
+- `CapabilityRecord` — record dataclass
+- `build_manifest_payload(builder, loaded_only=False)` — build payload
+- `register_capability_mcp_tool(server)` — register MCP tool
+- `MaxContextSnapshotProvider` — scene context snapshot
+- `collect_gateway_metadata(provider)` — collect gateway metadata
+- `make_snapshot_provider(server)` — factory
+
+### Resources (parity with core #187)
+- `MaxResourceBinder` — resource publishing binder
+- `install_resources(server)` — one-shot helper
+
+### Project tools (parity with core #576)
+- `ProjectToolsIntegration` — SOLID project tools binder
+- `MaxSceneResolver` — scene path resolver
+
+### Qt UI inspector (parity with core #307)
+- `register_3dsmax_qt_ui_inspector(server)` — register Qt inspector
+
+### Semantic index (parity with core #313)
+- `MaxSemanticIndex` — semantic search index
+- `build_semantic_index(server)` — build index
+
+---
+
+## Environment Variables (Complete)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DCC_MCP_3DSMAX_METRICS` | `0` | Enable Prometheus `/metrics` endpoint |
+| `DCC_MCP_3DSMAX_JOB_STORAGE` | platform default | SQLite job database path |
+| `DCC_MCP_3DSMAX_JOB_RECOVERY` | `"drop"` | Job recovery strategy (`"drop"` or `"requeue"`) |
+| `DCC_MCP_3DSMAX_DISABLE_EXECUTE_PYTHON` | `0` | Disable `execute_python` tool |
+| `DCC_MCP_3DSMAX_DISABLE_EXECUTE_MAXSCRIPT` | `0` | Disable `execute_maxscript` tool |
+| `DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT` | `0` | Disable all arbitrary script execution |
+| `DCC_MCP_3DSMAX_ENABLE_GATEWAY_FAILOVER` | `1` | Enable gateway failover |
+| `DCC_MCP_3DSMAX_STRICT_SKILL_SCAN` | `0` | Strict scan for skipped skills |
+| `DCC_MCP_3DSMAX_ENABLE_WORKFLOWS` | `0` | Enable workflow engine tools |
+| `DCC_MCP_3DSMAX_SKILL_PATHS` | None | Extra skill search paths (semicolon-sep) |
+| `DCC_MCP_3DSMAX_BRIDGE_PORT` | random | Runtime bridge localhost port |
+| `DCC_MCP_3DSMAX_BOOTSTRAP_PATHS` | None | Extra Python roots for bootstrapping |
+| `DCC_MCP_3DSMAX_READINESS_TIMEOUT_SECS` | None | Readiness check timeout (seconds) |
+| `DCC_MCP_3DSMAX_RESOURCES` | `1` | Enable `scene://current` resource |
+| `DCC_MCP_3DSMAX_PROJECT_TOOLS` | `1` | Enable `project_*` MCP tools |
+| `DCC_MCP_3DSMAX_QT_UI_INSPECTOR` | `0` | Enable `qt_ui_inspector__*` tools |
+| `DCC_MCP_3DSMAX_SEMANTIC_INDEX` | `0` | Enable semantic recall in `search_skills` |
+| `DCC_MCP_3DSMAX_SEMANTIC_EMBEDDER` | `"hashed"` | Embedder type (`"hashed"` or `"onnx"`) |
+| `DCC_MCP_3DSMAX_PATH` | None | 3ds Max executable path |
+| `DCC_MCP_3DSMAX_VERSION` | None | 3ds Max version string |
+| `DCC_MCP_PYTHONPATHS` | None | Shared Python roots for Rez/launchers |
+| `DCC_MCP_3DSMAX_ROOT` | None | Adapter package root |
+| `DCC_MCP_CORE_ROOT` | None | dcc-mcp-core package root |
+| `DCC_MCP_SERVER_ROOT` | None | Fallback dcc-mcp-server root |
+| `DCC_MCP_SERVER_BIN` | bundled | Explicit dcc-mcp-server executable path |
+| `DCC_MCP_REGISTRY_DIR` | core default | Gateway/sidecar registry override |
+| `DCC_MCP_3DSMAX_PYTHON` / `MAX_PY` / `DCC_MCP_3DSMAX_MAXPY` | auto-detected | `3dsmaxpy.exe` path for setup scripts |
+
+---
+
+## Bundled Skills — Complete Tool Inventory
+
+### scene stage (default loaded)
+`3dsmax-scene` (16 tools):
+`get_scene_info`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms`
+
+### authoring stage (load on demand)
+
+`3dsmax-modeling` (4): `create_box`, `create_sphere`, `create_cylinder`, `create_plane`
+
+`3dsmax-geometry-io` (5): `validate_geometry_file`, `import_fbx`, `import_geometry`, `export_fbx`, `export_obj`
+
+`3dsmax-mesh-ops` (13): `get_mesh_topology`, `get_selected_mesh_topology`, `get_smoothing_groups`, `get_modifier_stack`, `triangulate_meshes`, `cleanup_meshes`, `attach_meshes`, `detach_selected_faces`, `apply_subdivision`, `create_proxy_meshes`, `set_explicit_normals`, `clear_explicit_normals`, `assign_smoothing_group`
+
+`3dsmax-uv-atlas` (11): `list_uv_channels`, `create_uv_channel`, `delete_uv_channel`, `copy_uv_channel`, `get_uv_shell_summary`, `apply_uv_projection`, `unwrap_uvs`, `pack_uvs`, `detect_uv_overlaps`, `normalize_uvs`, `prepare_texture_atlas`
+
+`3dsmax-materials` (12): `create_standard_material`, `apply_material`, `list_scene_materials`, `list_node_material_assignments`, `inspect_material`, `list_bitmap_connections`, `create_physical_material`, `create_pbr_material`, `reset_material`, `set_material_attributes`, `assign_bitmap_texture`, `report_missing_textures`
+
+`3dsmax-animation` (13): `set_keyframe`, `play_animation`, `get_time_settings`, `get_animation_controllers`, `list_keyframes`, `set_current_time`, `set_timeline_settings`, `set_transform_keyframe`, `delete_keyframes`, `set_key_interpolation`, `bake_transform_animation`, `export_animation_curves`, `import_animation_curves`
+
+`3dsmax-rigging` (9): `create_helper_node`, `create_bone_node`, `create_joint_chain`, `create_path_helper`, `list_rig_state`, `apply_deformer_modifier`, `remove_deformer_modifier`, `set_constraint_target`, `get_character_system_availability`
+
+`3dsmax-render` (9): `capture_viewport`, `create_preview`, `get_render_settings`, `get_scene_render_statistics`, `set_render_output_options`, `set_frame_range`, `set_render_resolution`, `set_render_camera`, `set_render_quality_preset`
+
+`3dsmax-transform` (2): `set_node_position`, `move_nodes`
+
+`3dsmax-viewport` (1): `capture_viewport`
+
+`3dsmax-validation` (10): `validate_naming`, `validate_transforms`, `validate_pivots`, `validate_mesh_topology`, `validate_smoothing_groups`, `validate_material_assignments`, `validate_texture_paths`, `validate_uv_channels`, `validate_uv_overlaps`, `run_asset_readiness_checks`
+
+`3dsmax-display` (10): `list_layers`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property`
+
+`3dsmax-camera-lighting` (7): `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig`
+
+`3dsmax-scripting` (8): `execute_python`, `execute_maxscript`, `run_python_check`, `list_runtime_symbols`, `inspect_runtime_symbol`, `list_macros`, `resolve_node_reference`, `reload_adapter_module`
+
+---
+
+## Common Workflow Chains
+
+| Task | Steps |
+|------|-------|
+| Verify MCP session | `3dsmax_scripting__execute_python("print('ok')")` or `3dsmax_scene__get_scene_info` |
+| Inspect scene | `3dsmax_scene__get_scene_info` → `3dsmax_scene__list_scene_nodes` → `3dsmax_scene__get_selection` |
+| Create and texture a box | `load_skill("3dsmax-modeling")` → `3dsmax_modeling__create_box` → `load_skill("3dsmax-materials")` → `3dsmax_materials__create_standard_material` → `3dsmax_materials__apply_material` |
+| Import + mesh cleanup + export | `load_skill("3dsmax-geometry-io")` → `3dsmax_geometry_io__import_fbx` → `load_skill("3dsmax-mesh-ops")` → `3dsmax_mesh_ops__cleanup_meshes` → `3dsmax_geometry_io__export_fbx` |
+| UV unwrap and texture atlas | `load_skill("3dsmax-uv-atlas")` → `3dsmax_uv_atlas__unwrap_uvs` → `3dsmax_uv_atlas__pack_uvs` → `3dsmax_uv_atlas__prepare_texture_atlas` |
+| Set up lighting and render | `load_skill("3dsmax-camera-lighting")` → `3dsmax_camera_lighting__create_camera` → `3dsmax_camera_lighting__create_three_point_light_rig` → `load_skill("3dsmax-render")` → `3dsmax_render__set_render_settings` → `3dsmax_render__capture_viewport` |
+| Animate and bake | `load_skill("3dsmax-animation")` → `3dsmax_animation__set_keyframe` → `3dsmax_animation__bake_transform_animation` |
+| Asset readiness validation | `load_skill("3dsmax-validation")` → `3dsmax_validation__run_asset_readiness_checks` |
+
+---
+
+## CI/CD
+
+**CI** (`ci.yml`): Triggered on push/PR to main. Matrix: Python 3.8-3.12 on Ubuntu. Steps: pip install → ruff lint → pytest → Codecov → build → twine check → MZP assembly.
+
+**Release** (`release.yml`): Triggered on push to main + manual. release-please automation → test → build → publish to PyPI → build MZP → attach to GitHub release.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+just setup        # full dev environment
+just lint         # ruff lint
+just test-quick   # quick tests (no 3ds Max)
+just test         # full test suite
+just test-e2e     # E2E tests (requires 3ds Max)
+```
+
+## Architecture
+
+- The adapter starts an internal HTTP server on a random port
+- Registers with shared gateway at `http://127.0.0.1:9765/mcp`
+- Scene edits route through dcc-mcp-core's HostUiDispatcherBase + MaxUiPump
+- Skills are loaded progressively: discover → load → unload
+- Each tool declares `execution` (sync/async), `affinity` (main/any), `timeout_hint_secs`
+- Entry point: `dcc_mcp.adapters: 3dsmax = "dcc_mcp_3dsmax:MaxMcpServer"`
+
+## File Index
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | AI agent navigation map |
+| `llms.txt` | Compact AI reference |
+| `llms-full.txt` | Exhaustive API reference (this file) |
+| `README.md` | Human-facing overview |
+| `install.md` | Agent-facing install guide |
+| `CHANGELOG.md` | Release history |
+| `docs/API.md` | Python API documentation |
+| `docs/BUNDLED_SKILLS.md` | Complete skill inventory |
+| `docs/SIDECAR.md` | Runtime bridge documentation |
+| `docs/SKILL_DEVELOPMENT.md` | Skill authoring guide |
+| `src/dcc_mcp_3dsmax/__init__.py` | Public exports (lazy-loaded) |
+| `src/dcc_mcp_3dsmax/server.py` | MaxMcpServer |
+| `src/dcc_mcp_3dsmax/_env.py` | Environment variable resolution |
+| `src/dcc_mcp_3dsmax/api.py` | Skill authoring helpers |
+| `src/dcc_mcp_3dsmax/skills/` | 15 bundled skill packages |
+| `skills/dcc-mcp-3dsmax-setup/` | Agent-facing setup skill |
+| `tests/` | 24 test files |
+| `justfile` | Task runner |
+
+## See Also
+
+- [dcc-mcp-core](https://github.com/loonghao/dcc-mcp-core) — shared runtime framework
+- [dcc-mcp-maya](https://github.com/loonghao/dcc-mcp-maya) — Maya adapter
+- [dcc-mcp-houdini](https://github.com/loonghao/dcc-mcp-houdini) — Houdini adapter
