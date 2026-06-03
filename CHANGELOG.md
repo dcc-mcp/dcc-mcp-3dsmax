@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.11](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.10...v0.1.11) (2026-06-03)
+
+
+### Features
+
+* add intelligent recall metadata to all 15 bundled 3ds Max skills ([1cde52a](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/1cde52abcd91a95935f5e40329dd2e51fffb56f6)), closes [#52](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/52)
+* add intelligent recall metadata to all 15 bundled 3ds Max skills ([74b71b4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/74b71b4fd932290ab6699e613d724543058ff5c5)), closes [#52](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/52)
+* **sidecar:** use core launch lifecycle contract ([e20ea8f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e20ea8f10e0e47b507ee8825549f7cc4b6a930c4))
+
+
+### Bug Fixes
+
+* add remove_menu() to clean up DCC MCP menu on uninstall ([cb75f48](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/cb75f48a5922c0870c4141282ce3d66f40d41619))
+* correct role/risk misclassifications and populate produces/targets metadata ([853d12e](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/853d12e13ec57955cbf50aa2e22ec3de9caf8423))
+* correct role/risk misclassifications and populate produces/targets metadata ([5f29e23](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5f29e23920ee4ecece358e220dbe42a168ab9b7b))
+* delete persisted .mcr files in remove_menu for permanent macro removal ([a179d5c](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/a179d5c0f6ee1aaf40d797f297331a82af416e9f))
+
+
+### Documentation
+
+* add image to README ([7390bcd](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7390bcda6a219aaba1abfd6dec3965bbe253a49a))
+* add readme screenshot image ([4bcaabc](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4bcaabce04461c2ed6bfe95b8ecef5e5bc6a3fd9))
+* make readme hero image responsive with direct asset link ([11c9370](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/11c9370fc41056f977ae07b87e558dc734f2011e))
+* refine README hero sizing and bilingual intro ([913e75a](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/913e75aeb9a09c0742fce8c31f26e0585a049de9))
+* refresh README layout with responsive hero section ([93fa0fa](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/93fa0fa1fd59c22da34281202a0b24089440d9b2))
+* rename readme screenshot asset to formal name ([aca67cd](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/aca67cd478d3357e247a3f44e65b9755edd9dd51))
+* tune hero image sizing for responsive README layout ([09c658c](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/09c658c5b60b741ebc3bb919983ce32ccda76ffc))
+
 ## [0.1.10](https://github.com/loonghao/dcc-mcp-3dsmax/compare/v0.1.9...v0.1.10) (2026-06-01)
 
 
