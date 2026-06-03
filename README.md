@@ -37,12 +37,26 @@
 The fastest way to install is to let your AI agent do it. In Cursor, Claude, or
 any MCP-capable agent host, ask:
 
-> 帮我参考 loonghao/dcc-mcp-3dsmax/install.md 去安装
+```text
+请帮我安装并验证 dcc-mcp-3dsmax。
+
+请先阅读 https://github.com/dcc-mcp/dcc-mcp-3dsmax/blob/main/install.md
+以及仓库里的 skills/dcc-mcp-3dsmax-setup/SKILL.md，然后按里面的安装
+skill 自动执行：
+
+1. 定位我的 3dsmaxpy.exe；如果找不到就问我要完整路径。
+2. 安装 dcc-mcp-3dsmax 和依赖，优先使用 PyPI；如果我是在源码仓库里运行，
+   可以使用本地 checkout。
+3. 安装 3ds Max startup hook，让我打开或重启 3ds Max 后 runtime 自动启动。
+4. 生成 MCP Streamable HTTP 配置，连接到 http://127.0.0.1:9765/mcp。
+5. 让我打开或重启 3ds Max，然后运行 smoke prompt 验证能发现并调用
+   3ds Max typed tools。
+```
 
 The agent reads [`install.md`](install.md), runs the setup script against your
-3ds Max `3dsmaxpy.exe`, generates the MCP host config, guides you through
-starting the runtime in 3ds Max, and runs a live smoke prompt to confirm the
-connection.
+3ds Max `3dsmaxpy.exe`, installs a startup hook, generates the MCP host config,
+asks you to open or restart 3ds Max, and runs a live smoke prompt to confirm
+the connection.
 
 ## Installation
 

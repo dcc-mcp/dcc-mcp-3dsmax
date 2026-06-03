@@ -31,7 +31,7 @@ into another agent's instructions.
 
 3ds Max is Windows-only, so discovery and paths below assume Windows.
 
-If the user says "帮我参考 `loonghao/dcc-mcp-3dsmax/install.md` 去安装", read the
+If the user says "帮我参考 `dcc-mcp/dcc-mcp-3dsmax/install.md` 去安装", read the
 root `install.md` first, then follow this skill.
 
 ## Goal
@@ -40,9 +40,12 @@ End with:
 
 - `dcc-mcp-3dsmax` and its pip dependencies installed into the target 3ds Max
   `3dsmaxpy` environment.
+- A 3ds Max startup hook installed into `userStartupScripts` when the directory
+  can be resolved, so opening or restarting 3ds Max starts the runtime
+  automatically.
 - An MCP host config snippet that points to the 3ds Max gateway.
-- The user guided to start the runtime inside 3ds Max (startup script or the
-  `DCC MCP` menu).
+- A generated fallback startup script under `.dcc-mcp/agent-setup/` for
+  machines where the startup directory cannot be auto-detected.
 - A live smoke prompt that proves the agent can discover and call 3ds Max tools.
 
 ## Fast Path
@@ -59,7 +62,9 @@ The script:
    `DCC_MCP_3DSMAX_MAXPY`, `PATH`, or common Autodesk install locations.
 2. Installs this checkout into 3ds Max: `3dsmaxpy -m pip install -e .`.
 3. Verifies `import dcc_mcp_3dsmax`.
-4. Writes a reusable MCP JSON snippet and a smoke prompt under
+4. Installs a small 3ds Max startup hook that calls
+   `dcc_mcp_3dsmax.main()` when the user opens or restarts 3ds Max.
+5. Writes a reusable MCP JSON snippet, fallback startup script, and smoke prompt under
    `.dcc-mcp/agent-setup/`.
 
 Use PyPI instead of the local checkout when setting up an end-user machine:
@@ -73,6 +78,15 @@ If discovery fails, ask the user for the full `3dsmaxpy.exe` path and re-run:
 ```bash
 python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --maxpy "C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe"
 ```
+
+If the machine has a non-standard 3ds Max profile path, pass the startup
+directory explicitly:
+
+```bash
+python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --startup-dir "C:\Users\<you>\AppData\Local\Autodesk\3dsMax\2025 - 64bit\ENU\scripts\startup"
+```
+
+Use `--no-startup-hook` only when the user wants to start the runtime manually.
 
 ## MCP Configuration
 
@@ -96,11 +110,15 @@ When editing an existing MCP config, preserve unrelated servers. Merge only the
 
 ## User Hand-Off: Start the Runtime in 3ds Max
 
-After pip setup and MCP JSON generation, tell the user to start the runtime
-inside 3ds Max. From the MAXScript Listener:
+After setup, tell the user to open or restart 3ds Max. The installed startup
+hook should start the runtime automatically, install the `DCC MCP` menu, and
+register the instance with the shared gateway.
+
+If startup-dir detection failed or `--no-startup-hook` was used, tell the user
+to run the generated startup script once from the MAXScript Listener:
 
 ```maxscript
-python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\examples\start_sidecar_bridge.py"
+python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\.dcc-mcp\agent-setup\dcc_mcp_3dsmax_startup.ms"
 ```
 
 Once the runtime has started once, the installed `DCC MCP` menu offers a

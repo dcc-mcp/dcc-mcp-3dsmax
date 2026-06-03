@@ -1,20 +1,21 @@
 # dcc-mcp-3dsmax Agent Install
 
 Use this page when an agent is asked to install or configure
-`loonghao/dcc-mcp-3dsmax` for Autodesk 3ds Max.
+`dcc-mcp/dcc-mcp-3dsmax` for Autodesk 3ds Max.
 
 3ds Max is Windows-only, so all paths and discovery below assume Windows.
 
 ## Agent Instruction
 
-If the user says "帮我参考 loonghao/dcc-mcp-3dsmax/install.md 去安装",
+If the user says "帮我参考 dcc-mcp/dcc-mcp-3dsmax/install.md 去安装",
 do this:
 
 1. Read `skills/dcc-mcp-3dsmax-setup/SKILL.md`.
 2. Run the setup script from the repository root.
-3. Help the user start the runtime inside 3ds Max (startup script or `DCC MCP` menu).
+3. Install or verify the generated 3ds Max startup hook.
 4. Configure the MCP host with the generated Streamable HTTP JSON.
-5. Run the smoke prompt to prove the connection works.
+5. Ask the user to open or restart 3ds Max, then run the smoke prompt to prove
+   the connection works.
 
 ## One Command
 
@@ -36,16 +37,27 @@ If `3dsmaxpy.exe` is not auto-detected:
 python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --maxpy "C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe"
 ```
 
-## 3ds Max Load Step
+The script installs `dcc_mcp_3dsmax_startup.ms` into 3ds Max's
+`userStartupScripts` directory when it can resolve that path. If your studio
+uses a custom profile location, pass it explicitly:
 
-After the script finishes, the user must start the runtime inside 3ds Max.
-Either start it from the MAXScript Listener:
-
-```maxscript
-python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\examples\start_sidecar_bridge.py"
+```bash
+python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --startup-dir "C:\Users\<you>\AppData\Local\Autodesk\3dsMax\2025 - 64bit\ENU\scripts\startup"
 ```
 
-Or, once the runtime has been started once, use the installed menu:
+## 3ds Max Load Step
+
+After the script finishes, open or restart 3ds Max. The installed startup hook
+starts the runtime automatically and installs the `DCC MCP` menu.
+
+If startup hook installation was skipped or the startup directory could not be
+resolved, run the generated startup script from the MAXScript Listener:
+
+```maxscript
+python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\.dcc-mcp\agent-setup\dcc_mcp_3dsmax_startup.ms"
+```
+
+Once the runtime has started once, the installed menu can restart it:
 
 ```text
 DCC MCP > Start Server
