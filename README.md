@@ -9,18 +9,15 @@
 
 3ds Max plugin for the DCC Model Context Protocol (MCP) ecosystem.
 
-面向 DCC Model Context Protocol (MCP) 生态的 3ds Max 插件。
-
-- [Features / 功能](#features)
-- [Agent install / 智能体安装](#agent-install-recommended)
-- [Installation / 安装](#installation)
-- [Quickstart / 快速开始](#quickstart-inside-3ds-max-maxscript-listener)
-- [Runtime Bridge / 运行时桥接](#runtime-bridge)
-- [Skill Development / 技能开发](#skill-development)
+- [Features](#features)
+- [Agent install](#agent-install-recommended)
+- [Installation](#installation)
+- [Quickstart](#quickstart-inside-3ds-max-maxscript-listener)
+- [Runtime Bridge](#runtime-bridge)
+- [Skill Development](#skill-development)
 
 > **Status:** This project is under active development. APIs, packaging, and 3ds Max integration details may change quickly while the adapter tracks the latest `dcc-mcp-core` releases.  
-> **状态：** 本项目仍在活跃开发中，API、打包方式和 3ds Max 集成细节会随着 `dcc-mcp-core` 的更新持续调整。  
-> Direct image link / 图片可直接访问：[`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
+> Direct image link: [`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
 
 <br/>
 
@@ -38,19 +35,24 @@ The fastest way to install is to let your AI agent do it. In Cursor, Claude, or
 any MCP-capable agent host, ask:
 
 ```text
-请帮我安装并验证 dcc-mcp-3dsmax。
+Please install and verify dcc-mcp-3dsmax.
 
-请先阅读 https://github.com/dcc-mcp/dcc-mcp-3dsmax/blob/main/install.md
-以及仓库里的 skills/dcc-mcp-3dsmax-setup/SKILL.md，然后按里面的安装
-skill 自动执行：
+First clone or locate the dcc-mcp-3dsmax repository and resolve its absolute
+path as REPO_ROOT. Then read these absolute-path files before making changes:
 
-1. 定位我的 3dsmaxpy.exe；如果找不到就问我要完整路径。
-2. 安装 dcc-mcp-3dsmax 和依赖，优先使用 PyPI；如果我是在源码仓库里运行，
-   可以使用本地 checkout。
-3. 安装 3ds Max startup hook，让我打开或重启 3ds Max 后 runtime 自动启动。
-4. 生成 MCP Streamable HTTP 配置，连接到 http://127.0.0.1:9765/mcp。
-5. 让我打开或重启 3ds Max，然后运行 smoke prompt 验证能发现并调用
-   3ds Max typed tools。
+- <REPO_ROOT>\install.md
+- <REPO_ROOT>\skills\dcc-mcp-3dsmax-setup\SKILL.md
+
+Follow the setup skill exactly:
+
+1. Locate my 3dsmaxpy.exe. If it cannot be found, ask me for the absolute path.
+2. Install dcc-mcp-3dsmax and dependencies. Prefer PyPI for end-user installs;
+   use the local checkout only when I am already working from REPO_ROOT.
+3. Install the 3ds Max startup hook so opening or restarting 3ds Max starts
+   the runtime automatically.
+4. Generate MCP Streamable HTTP config pointing to http://127.0.0.1:9765/mcp.
+5. Ask me to open or restart 3ds Max, then run the generated smoke prompt to
+   prove the agent can discover and call typed 3ds Max tools.
 ```
 
 The agent reads [`install.md`](install.md), runs the setup script against your

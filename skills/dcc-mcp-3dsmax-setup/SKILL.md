@@ -31,8 +31,11 @@ into another agent's instructions.
 
 3ds Max is Windows-only, so discovery and paths below assume Windows.
 
-If the user says "帮我参考 `dcc-mcp/dcc-mcp-3dsmax/install.md` 去安装", read the
-root `install.md` first, then follow this skill.
+If the user asks an agent to install `dcc-mcp/dcc-mcp-3dsmax`, first clone or
+locate the repository and resolve its absolute path as `REPO_ROOT`. Read
+`<REPO_ROOT>\install.md` and this skill at
+`<REPO_ROOT>\skills\dcc-mcp-3dsmax-setup\SKILL.md`, then follow the workflow
+below.
 
 ## Goal
 
@@ -50,7 +53,7 @@ End with:
 
 ## Fast Path
 
-From the repository root, run:
+From the absolute repository root (`REPO_ROOT`), run:
 
 ```bash
 python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py

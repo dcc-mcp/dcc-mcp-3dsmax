@@ -7,19 +7,20 @@ Use this page when an agent is asked to install or configure
 
 ## Agent Instruction
 
-If the user says "帮我参考 dcc-mcp/dcc-mcp-3dsmax/install.md 去安装",
-do this:
+If the user asks an agent to install `dcc-mcp/dcc-mcp-3dsmax`, do this:
 
-1. Read `skills/dcc-mcp-3dsmax-setup/SKILL.md`.
-2. Run the setup script from the repository root.
-3. Install or verify the generated 3ds Max startup hook.
-4. Configure the MCP host with the generated Streamable HTTP JSON.
-5. Ask the user to open or restart 3ds Max, then run the smoke prompt to prove
+1. Clone or locate the repository and resolve its absolute path as `REPO_ROOT`.
+2. Read `<REPO_ROOT>\install.md` and
+   `<REPO_ROOT>\skills\dcc-mcp-3dsmax-setup\SKILL.md`.
+3. Run the setup script from `REPO_ROOT`.
+4. Install or verify the generated 3ds Max startup hook.
+5. Configure the MCP host with the generated Streamable HTTP JSON.
+6. Ask the user to open or restart 3ds Max, then run the smoke prompt to prove
    the connection works.
 
 ## One Command
 
-From the repository root:
+From the absolute repository root (`REPO_ROOT`):
 
 ```bash
 python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py
