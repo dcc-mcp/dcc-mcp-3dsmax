@@ -130,7 +130,16 @@ class ReadinessBinder:
             return True
 
         self.bound_dispatcher = dispatcher
-        self.dcc_scheduled = bool(self.probe_scheduler(dispatcher, self.mark_dcc_ready))
+        # Core 0.17.56+: first pump completion proves both dcc liveness
+        # and main-thread executor availability.  Gateway host execution
+        # summary requires dispatcher && dcc && host_execution_bridge &&
+        # main_thread_executor; without this dual-flip the instance
+        # diagnoses as host execution not_ready.
+        def _on_first_pump() -> None:
+            self.mark_dcc_ready()
+            self.mark_main_thread_executor_ready()
+
+        self.dcc_scheduled = bool(self.probe_scheduler(dispatcher, _on_first_pump))
         return self.dcc_scheduled
 
     def mark_dispatcher_ready(self, value: bool = True) -> None:

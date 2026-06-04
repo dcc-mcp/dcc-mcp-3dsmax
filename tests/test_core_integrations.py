@@ -120,7 +120,13 @@ def test_readiness_schedules_on_ui_dispatcher():
     assert binder.bind(server) is True
     assert dispatcher.calls, "probe must be scheduled on the dispatcher"
     assert dispatcher.calls[0]["affinity"] == "main"
-    assert binder.report()["dcc"] is True
+    report = binder.report()
+    assert report["dcc"] is True
+    # Core 0.17.56+: first pump completion must flip main_thread_executor too.
+    assert report["main_thread_executor"] is True, (
+        "first pump completion must prove main-thread executor availability "
+        "(gateway host execution summary requires dcc && main_thread_executor)"
+    )
 
 
 def test_readiness_dcc_pending_until_pump_runs():
@@ -186,6 +192,72 @@ def test_readiness_inline_marks_executor_ready():
     report = binder.report()
     assert report["main_thread_executor"] is True
     assert report["dcc"] is True
+
+
+def test_max_mcp_server_readiness_report_contract_with_ui_dispatcher():
+    """MaxMcpServer + UI-style dispatcher produces a valid 6-state readiness report.
+
+    Core 0.17.56 gateway host execution summary requires all four of
+    dispatcher, dcc, host_execution_bridge, and main_thread_executor.
+    A fake async dispatcher with ``run_complete=True`` must flip all four.
+    """
+    from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+    dispatcher = _FakeAsyncDispatcher(run_complete=True)
+    server = MaxMcpServer(
+        options=MaxServerOptions(
+            port=0,
+            dispatcher=dispatcher,
+            enable_gateway_failover=False,
+            job_storage_path="",
+        )
+    )
+
+    report = server.readiness_report()
+    # All six keys must be present.
+    assert report.keys() == {"process", "dcc", "skill_catalog", "dispatcher", "host_execution_bridge", "main_thread_executor"}
+    # Core invariants: process is always True, skill_catalog starts True.
+    assert report["process"] is True
+    assert report["skill_catalog"] is True
+    # Binder wiring: dispatcher probe published, pump completed.
+    assert report["dispatcher"] is True
+    assert report["dcc"] is True
+    # Core 0.17.56+: HostExecutionBridge was registered, and the first pump
+    # completion proved main-thread executor availability.
+    assert report["host_execution_bridge"] is True, (
+        "HostExecutionBridge must be registered during __init__"
+    )
+    assert report["main_thread_executor"] is True, (
+        "first pump completion must flip main_thread_executor "
+        "(gateway requires dcc && main_thread_executor for host execution ready)"
+    )
+
+    server.stop()
+
+
+def test_max_mcp_server_readiness_main_thread_executor_pending_before_pump():
+    """When the pump has NOT completed, main_thread_executor stays False."""
+    from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+    dispatcher = _FakeAsyncDispatcher(run_complete=False)
+    server = MaxMcpServer(
+        options=MaxServerOptions(
+            port=0,
+            dispatcher=dispatcher,
+            enable_gateway_failover=False,
+            job_storage_path="",
+        )
+    )
+
+    report = server.readiness_report()
+    assert report["dispatcher"] is True
+    assert report["dcc"] is False  # pump never completed
+    assert report["host_execution_bridge"] is True  # registered during __init__
+    assert report["main_thread_executor"] is False, (
+        "main_thread_executor must be False until the first pump drains"
+    )
+
+    server.stop()
 
 
 # ===========================================================================
