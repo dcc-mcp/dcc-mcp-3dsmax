@@ -5,7 +5,7 @@ description: >-
   developer surfaces. Use for debugging automation, resolving nodes, and
   inspecting runtime symbols when typed tools are not enough.
 license: MIT
-compatibility: "dcc-mcp-core 0.17.36+, 3ds Max 2024+"
+compatibility: "dcc-mcp-core 0.17.56+, 3ds Max 2024+"
 metadata:
   dcc-mcp:
     dcc: 3dsmax

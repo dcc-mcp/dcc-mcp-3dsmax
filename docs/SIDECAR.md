@@ -135,7 +135,7 @@ and whether the local bridge is currently busy.
 The HTTP listener runs on a background thread. When `pymxs` is available, the
 legacy bridge queues direct `/dispatch` requests and drains them from a hidden
 MaxScript timer, keeping those scene edits on the 3ds Max UI thread. Gateway
-`tools/call` traffic uses the shared `dcc-mcp-core` 0.17.47
+`tools/call` traffic uses the shared `dcc-mcp-core` 0.17.56
 `HostUiDispatcherBase` plus `HostPumpController` path; the adapter only maps
 3ds Max's .NET timer to the core timer contract. The `qtserver://` sidecar path
 uses the core universal Qt dispatcher and core `SidecarActionDispatcher`.

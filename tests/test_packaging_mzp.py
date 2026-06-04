@@ -120,17 +120,17 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
 def test_extract_wheel_maps_data_scripts_next_to_packages(tmp_path):
     """Wheel .data/scripts entries must land where dcc_mcp_server can find them."""
     assembler = _load_assembler()
-    wheel = tmp_path / "dcc_mcp_server-0.17.36-py3-none-win_amd64.whl"
+    wheel = tmp_path / "dcc_mcp_server-0.17.56-py3-none-win_amd64.whl"
     dest = tmp_path / "python"
 
     with zipfile.ZipFile(wheel, "w") as zf:
-        zf.writestr("dcc_mcp_server/__init__.py", "__version__ = '0.17.36'\n")
-        zf.writestr("dcc_mcp_server-0.17.36.data/scripts/dcc-mcp-server.exe", b"binary")
-        zf.writestr("dcc_mcp_server-0.17.36.dist-info/METADATA", "Name: dcc-mcp-server\n")
+        zf.writestr("dcc_mcp_server/__init__.py", "__version__ = '0.17.56'\n")
+        zf.writestr("dcc_mcp_server-0.17.56.data/scripts/dcc-mcp-server.exe", b"binary")
+        zf.writestr("dcc_mcp_server-0.17.56.dist-info/METADATA", "Name: dcc-mcp-server\n")
 
     assembler.extract_wheel(wheel, dest)
 
     assert (dest / "dcc_mcp_server" / "__init__.py").is_file()
     assert (dest / "scripts" / "dcc-mcp-server.exe").read_bytes() == b"binary"
-    assert not (dest / "dcc_mcp_server-0.17.36.data").exists()
-    assert not (dest / "dcc_mcp_server-0.17.36.dist-info").exists()
+    assert not (dest / "dcc_mcp_server-0.17.56.data").exists()
+    assert not (dest / "dcc_mcp_server-0.17.56.dist-info").exists()

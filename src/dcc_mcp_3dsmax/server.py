@@ -134,7 +134,7 @@ class MaxServerOptions:
             dcc_window_handle=self.dcc_window_handle,
             snapshot_provider=self.snapshot_provider,
             # Execution kwargs (new in 0.17+)
-            # Core 0.17.36+ rejects both set; pass only one.
+            # Core 0.17.36+ rejects both dispatcher and execution_bridge set; pass only one.
             dispatcher=None if self.execution_bridge is not None else self.dispatcher,
             execution_bridge=self.execution_bridge,
         )
@@ -239,6 +239,7 @@ class MaxMcpServer(DccServerBase):
         if options.execution_bridge is not None:
             self._execution_bridge = options.execution_bridge
             self.register_host_execution_bridge(self._execution_bridge)
+            self._readiness.mark_host_execution_bridge_ready()
         else:
             self.attach_dispatcher(options.dispatcher)
 
@@ -338,8 +339,10 @@ class MaxMcpServer(DccServerBase):
             default_thread_affinity="main",
         )
         self.register_host_execution_bridge(self._execution_bridge)
+        self._readiness.mark_host_execution_bridge_ready()
         if core_dispatcher_attached:
             self._dcc_dispatcher = dispatcher
+            self._readiness.mark_main_thread_executor_ready()
 
     def _attach_core_dispatcher(self, dispatcher: Any) -> bool:
         """Attach core Queue/BlockingDispatcher instances to the HTTP main-thread route."""
@@ -440,6 +443,9 @@ class MaxMcpServer(DccServerBase):
         self._register_capability_manifest_tool()
         self._attach_project_tools()
         self._attach_resources()
+
+        # Core 0.17.56+: signal that the skill catalog has been populated.
+        self._readiness.mark_skill_catalog_ready()
         return self
 
     # ── Optional core integration phases ───────────────────────────────────────

@@ -28,7 +28,6 @@ from dcc_mcp_3dsmax import _resources as resmod
 from dcc_mcp_3dsmax import _semantic_index as semmod
 from dcc_mcp_3dsmax import context_snapshot as ctxmod
 
-
 # ===========================================================================
 # Fakes
 # ===========================================================================
@@ -107,6 +106,11 @@ def test_readiness_inline_when_no_dispatcher():
     assert report["process"] is True
     assert report["dispatcher"] is True
     assert report["dcc"] is True
+    # Core 0.17.56+: host_execution_bridge, main_thread_executor, skill_catalog
+    # are set by the server wiring, not by the binder alone.
+    assert "host_execution_bridge" in report
+    assert "main_thread_executor" in report
+    assert "skill_catalog" in report
 
 
 def test_readiness_schedules_on_ui_dispatcher():
@@ -127,6 +131,9 @@ def test_readiness_dcc_pending_until_pump_runs():
     report = binder.report()
     assert report["dispatcher"] is True
     assert report["dcc"] is False  # on_complete never fired
+    # Core 0.17.56+: extended probe fields are present.
+    assert "host_execution_bridge" in report
+    assert "main_thread_executor" in report
 
 
 def test_resolve_readiness_timeout_secs(monkeypatch):
@@ -138,6 +145,47 @@ def test_resolve_readiness_timeout_secs(monkeypatch):
     assert readymod.resolve_readiness_timeout_secs(None) == 45
     monkeypatch.setenv(readymod.ENV_READINESS_TIMEOUT_SECS, "garbage")
     assert readymod.resolve_readiness_timeout_secs(None) is None
+
+
+def test_readiness_core_01756_extended_states():
+    """Core 0.17.56+ ReadinessProbe exposes 6 states; binder can flip the new ones."""
+    binder = readymod.ReadinessBinder()
+    report = binder.report()
+    # Baseline: 6-state report from core 0.17.56+.
+    assert "process" in report
+    assert "dcc" in report
+    assert "dispatcher" in report
+    assert "skill_catalog" in report
+    assert "host_execution_bridge" in report
+    assert "main_thread_executor" in report
+    # skill_catalog starts true (empty catalog is valid).
+    assert report["skill_catalog"] is True
+    # host_execution_bridge and main_thread_executor start false.
+    assert report["host_execution_bridge"] is False
+    assert report["main_thread_executor"] is False
+
+
+def test_readiness_binder_flips_extended_states():
+    """ReadinessBinder.mark_* methods correctly flip core 0.17.56+ probe bits."""
+    binder = readymod.ReadinessBinder()
+    binder.mark_host_execution_bridge_ready()
+    assert binder.report()["host_execution_bridge"] is True
+    binder.mark_main_thread_executor_ready()
+    assert binder.report()["main_thread_executor"] is True
+    binder.mark_skill_catalog_ready(False)
+    assert binder.report()["skill_catalog"] is False
+    binder.mark_skill_catalog_ready(True)
+    assert binder.report()["skill_catalog"] is True
+
+
+def test_readiness_inline_marks_executor_ready():
+    """When no dispatcher is present, the binder also flips main_thread_executor."""
+    server = _FakeReadyServer(dispatcher=None)
+    binder = readymod.ReadinessBinder()
+    assert binder.bind(server) is True
+    report = binder.report()
+    assert report["main_thread_executor"] is True
+    assert report["dcc"] is True
 
 
 # ===========================================================================
@@ -383,7 +431,7 @@ def test_resources_publish_scene_explicit_payload():
 
 
 def test_startup_passes_only_one_execution_mode(monkeypatch):
-    """Core 0.17.36+ rejects dispatcher+execution_bridge set simultaneously."""
+    """Core 0.17.36+ rejects dispatcher+execution_bridge set simultaneously; adapter passes only one."""
     from dcc_mcp_core import HostExecutionBridge
 
     from dcc_mcp_3dsmax.dispatcher import MaxUiDispatcher

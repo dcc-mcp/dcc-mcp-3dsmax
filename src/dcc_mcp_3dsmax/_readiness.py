@@ -1,15 +1,18 @@
 """Runtime readiness wiring for :class:`MaxMcpServer`.
 
 Ports the Houdini readiness template so ``GET /v1/readyz`` stops lying during
-3ds Max's boot window.  The three-state probe itself
+3ds Max's boot window.  The six-state probe itself
 (:class:`dcc_mcp_core.ReadinessProbe`) lives in ``dcc-mcp-core``; this module
 owns only the 3ds Max-side wiring:
 
-* ``process``    — always true while the Python interpreter is alive.
-* ``dispatcher`` — flipped the moment the probe is published to the server.
-* ``dcc``        — flipped after the 3ds Max UI dispatcher pumps one deferred
+* ``process``                — always true while the Python interpreter is alive.
+* ``dispatcher``             — flipped the moment the probe is published to the server.
+* ``dcc``                    — flipped after the 3ds Max UI dispatcher pumps one deferred
   no-op (or immediately in inline / standalone / sidecar mode where the HTTP
   worker thread *is* the executor).
+* ``skill_catalog``          — (core 0.17.56+) defaults true; the empty catalog counts as ready.
+* ``host_execution_bridge``  — (core 0.17.56+) flipped when ``HostExecutionBridge`` is registered.
+* ``main_thread_executor``   — (core 0.17.56+) flipped when the core HTTP main-thread route is wired.
 
 Operator opt-in for an advisory timeout:
 ``DCC_MCP_3DSMAX_READINESS_TIMEOUT_SECS``.
@@ -101,11 +104,11 @@ class ReadinessBinder:
         self.published_to_server: bool = False
 
     def report(self) -> dict:
-        """Return the current three-state readiness snapshot."""
+        """Return the current multi-state readiness snapshot (core 0.17.56+)."""
         return self.probe.report()
 
     def is_ready(self) -> bool:
-        """Return ``True`` when all three bits are green."""
+        """Return ``True`` when all bits are green."""
         return self.probe.is_ready()
 
     def bind(self, server: Any) -> bool:
@@ -122,6 +125,7 @@ class ReadinessBinder:
         if dispatcher is None:
             self.bound_dispatcher = None
             self.mark_dcc_ready()
+            self.mark_main_thread_executor_ready()
             self.dcc_scheduled = True
             return True
 
@@ -138,6 +142,24 @@ class ReadinessBinder:
         self.probe.set_dcc_ready(value)
         if value:
             logger.info("[3dsmax] readiness: dcc-ready — main thread is pumping")
+
+    # ── Core 0.17.56+ readiness states ───────────────────────────────────
+
+    def mark_host_execution_bridge_ready(self, value: bool = True) -> None:
+        """Flip the ``host_execution_bridge`` bit (core 0.17.56+)."""
+        self.probe.set_host_execution_bridge_ready(value)
+
+    def mark_main_thread_executor_ready(self, value: bool = True) -> None:
+        """Flip the ``main_thread_executor`` bit (core 0.17.56+)."""
+        self.probe.set_main_thread_executor_ready(value)
+
+    def mark_skill_catalog_ready(self, value: bool = True) -> None:
+        """Flip the ``skill_catalog`` bit (core 0.17.56+).
+
+        The catalog defaults to ``True`` (empty catalog is valid); call
+        ``mark_skill_catalog_ready(False)`` during re-scans or reloads.
+        """
+        self.probe.set_skill_catalog_ready(value)
 
 
 def install_readiness(
