@@ -27,11 +27,11 @@ classifiers = [
 ]
 
 dependencies = [
-    # Align with dcc-mcp-core 0.17.56: shared HostUiDispatcherBase,
+    # 0.18.2+: Release Train anchor for shared HostUiDispatcherBase,
     # HostPumpController, universal Qt dispatcher, SidecarActionDispatcher,
     # gateway guardian, sidecar readiness, and expanded readiness probe.
-    "dcc-mcp-core>=0.17.56,<1.0.0",
-    "dcc-mcp-server>=0.17.56,<1.0.0",
+    "dcc-mcp-core>=0.18.2,<1.0.0",
+    "dcc-mcp-server>=0.18.2,<1.0.0",
 ]
 
 [project.optional-dependencies]
