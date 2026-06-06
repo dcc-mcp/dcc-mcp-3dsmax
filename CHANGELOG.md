@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.15](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.14...v0.1.15) (2026-06-06)
+
+
+### Bug Fixes
+
+* **ci:** isolate workflow_dispatch from push concurrency in release workflow ([5b42de4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5b42de4e079e9dec6ff545e035cf88ebe2542467))
+* **ci:** isolate workflow_dispatch from push concurrency in release workflow ([2e59c01](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2e59c01ec27c9103b85ff65c7b7240a0d69d337c))
+
 ## [0.1.14](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.13...v0.1.14) (2026-06-06)
 
 
