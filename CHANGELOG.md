@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.13](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.12...v0.1.13) (2026-06-06)
+
+
+### Features
+
+* align 3ds Max adapter to dcc-mcp-core==0.17.56 / dcc-mcp-server==0.17.56 ([#71](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/71)) ([07da04e](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/07da04e92d83112d89722ff866dd2ae90f556f68))
+
+
+### Documentation
+
+* add AI agent docs (AGENTS.md, llms.txt, llms-full.txt, CLAUDE.md, GEMINI.md) ([541e4a8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/541e4a82262724d934a2ab5bd4c74b7f4589f56e))
+
 ## [0.1.12](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.11...v0.1.12) (2026-06-03)
 
 
