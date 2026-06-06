@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.14](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.13...v0.1.14) (2026-06-06)
+
+
+### Bug Fixes
+
+* align 0.18.2 docs and dev install references ([dbd500d](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/dbd500d8e5e04c3e7c0a9eb51a051e06c05d159c))
+* update three-state to six-state readiness references ([70be049](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/70be04979b2ce9c3a19ccd76a8fd14ef4fc7bb60))
+* update three-state to six-state readiness references in llms-full.txt and server.py ([671ac8c](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/671ac8ccb4e59a3028524103fded74c113a5b226))
+
+
+### Documentation
+
+* refresh 0.18.2 runtime and sidecar references ([#72](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/72)) ([ea26396](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ea263961064e7597f49035dcd4ad5830642a1324))
+
 ## [0.1.13](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.12...v0.1.13) (2026-06-06)
 
 
