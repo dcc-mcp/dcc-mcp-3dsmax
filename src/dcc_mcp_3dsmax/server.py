@@ -560,9 +560,10 @@ class MaxMcpServer(DccServerBase):
     # ── Readiness (parity #184) ────────────────────────────────────────────────
 
     def readiness_report(self) -> dict:
-        """Return the current three-state readiness snapshot as a dict.
+        """Return the current six-state readiness snapshot as a dict.
 
-        Keys: ``process`` / ``dispatcher`` / ``dcc`` (all booleans).
+        Keys: ``process`` / ``dispatcher`` / ``dcc`` / ``skill_catalog`` /
+        ``host_execution_bridge`` / ``main_thread_executor`` (all booleans).
         """
         return self._readiness.report()
 

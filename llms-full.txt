@@ -142,7 +142,7 @@ server.shutdown()                  # stop and cleanup
 - `select_nodes(handles)` — select nodes
 
 ### Readiness (parity with core #184)
-- `ReadinessBinder` — three-state readiness probe binder
+- `ReadinessBinder` — six-state readiness probe binder
 - `install_readiness(server)` — one-shot helper
 - `wait_until_ready(server, timeout=30)` — block until ready
 
