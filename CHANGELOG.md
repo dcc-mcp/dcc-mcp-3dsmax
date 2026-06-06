@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.15...v0.1.16) (2026-06-06)
+
+
+### Bug Fixes
+
+* update justfile max-install-core-win to use dcc-mcp-core&gt;=0.18.7 ([cde6bbe](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/cde6bbe845ff12cda4835de122b17352f543d032))
+
 ## [0.1.15](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.14...v0.1.15) (2026-06-06)
 
 
