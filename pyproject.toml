@@ -27,13 +27,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # 0.18.7+: Release Train anchor for shared HostUiDispatcherBase,
-    # HostPumpController, universal Qt dispatcher, SidecarActionDispatcher,
-    # gateway guardian, sidecar readiness, expanded readiness probe,
-    # gateway discovery optimization, call_examples, marketplace icon field,
-    # and SSE notification budget increase.
-    "dcc-mcp-core>=0.18.7,<1.0.0",
-    "dcc-mcp-server>=0.18.7,<1.0.0",
+    # 0.18.9: Release Train anchor — marketplace shared crate,
+    # gateway election disabled for probe server, ADR-010 docs.
+    "dcc-mcp-core>=0.18.9,<1.0.0",
+    "dcc-mcp-server>=0.18.9,<1.0.0",
 ]
 
 [project.optional-dependencies]
