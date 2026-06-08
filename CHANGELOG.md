@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.16...v0.1.17) (2026-06-08)
+
+
+### Code Refactoring
+
+* **max:** convert register_builtin_actions to shared phase pipeline ([22f0eee](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/22f0eee8fd67692a1c6f05f55981589285e07902))
+
 ## [0.1.16](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.15...v0.1.16) (2026-06-06)
 
 
