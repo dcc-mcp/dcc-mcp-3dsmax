@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 # Import third-party modules
 from dcc_mcp_core import DccServerOptions, HostExecutionBridge, MinimalModeConfig, scan_and_load_strict
+from dcc_mcp_core._registration import RegistrationContext, run_registration_phases
 from dcc_mcp_core.server_base import DccServerBase
 
 # Import local modules
@@ -40,6 +41,7 @@ from dcc_mcp_3dsmax import (
     _project_tools,
     _qt_inspector,
     _readiness,
+    _registration,
     _resources,
     _semantic_index,
 )
@@ -424,29 +426,35 @@ class MaxMcpServer(DccServerBase):
         strict_scan: Optional[bool] = None,
     ) -> "MaxMcpServer":
         """Discover built-in skills + attach 3ds Max-specific core integrations."""
-        paths = list(extra_skill_paths or []) + self._extra_skill_paths
+        # Stash minimal_mode so the core phase can access it.
+        self._registration_minimal_mode = minimal_mode
+
+        context = RegistrationContext(
+            server=self,
+            extra_skill_paths=extra_skill_paths,
+            include_bundled=include_bundled,
+            minimal=minimal_mode is not None,
+            strict_scan=strict_scan,
+        )
+        report = run_registration_phases(_registration.default_registration_phases(), context)
+        self._registration_report = report
+        return self
+
+    def _register_core_builtin_actions(self, context: RegistrationContext) -> None:
+        """Discover skills via the base-class registration path (phase helper)."""
+        paths = list(context.extra_skill_paths or []) + self._extra_skill_paths
+        minimal_mode = getattr(self, "_registration_minimal_mode", None)
         super().register_builtin_actions(
             extra_skill_paths=paths,
-            include_bundled=include_bundled,
+            include_bundled=context.include_bundled,
             minimal_mode=minimal_mode,
         )
-        if _env.resolve_strict_skill_scan(strict_scan):
-            self._strict_skill_scan(paths, include_bundled=include_bundled)
 
-        # Optional core integrations — each degrades gracefully and never
-        # raises at startup (parity with the Maya adapter registration phases).
-        self._register_recipes_tools(paths, include_bundled)
-        self._register_skill_reference_docs_tools(paths, include_bundled)
-        self._register_introspect_tools()
-        self._register_feedback_tool()
-        self._register_qt_ui_inspector()
-        self._register_capability_manifest_tool()
-        self._attach_project_tools()
-        self._attach_resources()
-
-        # Core 0.17.56+: signal that the skill catalog has been populated.
-        self._readiness.mark_skill_catalog_ready()
-        return self
+    def _run_strict_skill_scan_phase(self, context: RegistrationContext) -> None:
+        """Run strict skill validation when enabled (phase helper)."""
+        if _env.resolve_strict_skill_scan(context.strict_scan):
+            paths = list(context.extra_skill_paths or []) + self._extra_skill_paths
+            self._strict_skill_scan(paths, include_bundled=context.include_bundled)
 
     # ── Optional core integration phases ───────────────────────────────────────
 
