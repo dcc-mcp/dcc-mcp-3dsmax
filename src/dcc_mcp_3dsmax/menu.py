@@ -10,6 +10,59 @@ SHUTDOWN_CALLBACK_ID = "dcc_mcp_3dsmax_shutdown"
 MENU_CONTEXT_ID = "0x3D5A9765"
 
 
+def print_status() -> None:
+    """Print dcc-mcp-3dsmax sidecar and bridge status via HTTP health checks."""
+    import json
+    import os
+    import socket
+    import urllib.error
+    import urllib.request
+
+    gateway_base = "http://127.0.0.1:9765"
+    print(f"dcc-mcp gateway: {gateway_base}/mcp")
+    print(f"dcc-mcp admin:   {gateway_base}/admin?panel=instances")
+
+    # Bridge health check
+    bridge_port = os.environ.get("DCC_MCP_3DSMAX_BRIDGE_PORT")
+    if bridge_port:
+        try:
+            url = f"http://127.0.0.1:{bridge_port}/health"
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            print(
+                f"bridge health: OK (port={data.get('port', bridge_port)}, "
+                f"busy={data.get('busy')}, queue={data.get('queue_size')})"
+            )
+        except Exception as exc:
+            print(f"bridge: not reachable on port {bridge_port} ({exc})")
+    else:
+        print("bridge: not started")
+
+    # Qt bridge health check
+    qt_port = os.environ.get("DCC_MCP_3DSMAX_QT_BRIDGE_PORT")
+    if qt_port:
+        try:
+            url = f"http://127.0.0.1:{qt_port}/health"
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            print(
+                f"qt bridge health: OK (port={data.get('port', qt_port)}, "
+                f"busy={data.get('busy')}, queue={data.get('queue_size')})"
+            )
+        except Exception:
+            # Fallback: TCP connect check
+            try:
+                sock = socket.create_connection(
+                    ("127.0.0.1", int(qt_port)), timeout=3
+                )
+                sock.close()
+                print(f"qt bridge: TCP reachable on port {qt_port} (no /health)")
+            except Exception as exc2:
+                print(f"qt bridge: not reachable on port {qt_port} ({exc2})")
+    else:
+        print("qt bridge: not started")
+
+
 def install_menu() -> bool:
     """Install the DCC MCP menu into the 3ds Max main menu bar."""
     rt = _runtime()
@@ -66,9 +119,9 @@ tooltip:"Open the DCC MCP gateway admin panel"
 macroScript DccMcp3dsmax_PrintStatus
 category:"DCC MCP"
 buttonText:"Print Status"
-tooltip:"Print dcc-mcp-3dsmax sidecar endpoints"
+tooltip:"Print dcc-mcp-3dsmax sidecar status via HTTP health checks"
 (
-    on execute do python.Execute "import os; print('dcc-mcp-3dsmax bridge:', os.environ.get('DCC_MCP_3DSMAX_BRIDGE_PORT', 'not running')); print('dcc-mcp-3dsmax qt bridge:', os.environ.get('DCC_MCP_3DSMAX_QT_BRIDGE_PORT', 'not running')); print('dcc-mcp gateway: http://127.0.0.1:9765/mcp')"
+    on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.print_status()"
 )
 
 if menuMan.findMenu "DCC MCP" == undefined do
