@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.18](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.17...v0.1.18) (2026-06-09)
+
+
+### Bug Fixes
+
+* fallback default_thread_affinity to "any" when MaxUiPump install fails ([48a02e9](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/48a02e92784fe528760e7f78ea9a7590fda2d7a1))
+* **test:** mock pump.install() to return True, add degradation test ([0b0f548](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/0b0f548721ecf175f1c1b97ee99ddc1e89a94990))
+
 ## [0.1.17](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.16...v0.1.17) (2026-06-08)
 
 
