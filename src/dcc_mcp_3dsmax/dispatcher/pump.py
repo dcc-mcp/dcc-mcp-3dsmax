@@ -1,16 +1,22 @@
 """3ds Max host-pump helpers backed by ``dcc-mcp-core``.
 
 The core ``HostPumpController`` owns pump lifecycle, scheduling, backoff, and
-statistics.  This module only maps 3ds Max's .NET timer to the core timer
-adapter contract and chooses the interactive versus standalone dispatcher.
+statistics.  This module maps 3ds Max's built-in Qt timer (primary) or .NET
+timer (legacy fallback) to the core timer adapter contract and chooses the
+interactive versus standalone dispatcher.
+
+Adapter priority:
+1. ``QtHostTimerAdapter`` — built-in Qt (PySide2/PySide6), 3ds Max 2021+, zero external deps
+2. ``MaxDotNetTimerAdapter`` — pythonnet / System.Windows.Forms.Timer (legacy)
+3. No pump — bridge/server still functional, degraded mode
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from dcc_mcp_core import HostPumpController, HostPumpSnapshot
+from dcc_mcp_core import HostPumpController, HostPumpSnapshot, QtHostTimerAdapter
 
 from dcc_mcp_3dsmax.dispatcher.standalone import MaxStandaloneDispatcher
 from dcc_mcp_3dsmax.dispatcher.ui import MaxUiDispatcher
@@ -92,21 +98,45 @@ class MaxDotNetTimerAdapter:
         timer.Start()
 
 
+def _build_adapters() -> List[Any]:
+    """Build timer adapters in priority order for 3ds Max UI pump.
+
+    Priority: QtHostTimerAdapter (built-in Qt, 3ds Max 2021+) →
+    MaxDotNetTimerAdapter (pythonnet/.NET, legacy).
+    """
+    adapters: List[Any] = []
+    # Primary: Qt-based timer — built into all 3ds Max 2021+ via PySide2/PySide6
+    try:
+        adapters.append(QtHostTimerAdapter())
+    except Exception:
+        pass
+    # Fallback: .NET WinForms timer — requires pythonnet (rarely installed)
+    adapters.append(MaxDotNetTimerAdapter())
+    return adapters
+
+
 class MaxUiPump:
-    """Compatibility wrapper around ``HostPumpController`` for 3ds Max."""
+    """Compatibility wrapper around ``HostPumpController`` for 3ds Max.
+
+    Tries timer adapters in priority order: Qt (primary) → .NET (legacy).
+    Falls back to degraded no-pump mode if no adapter can be installed.
+    """
 
     def __init__(
         self,
         dispatcher: MaxUiDispatcher,
         budget_ms: float = DEFAULT_BUDGET_MS,
         *,
-        timer_adapter: Optional[MaxDotNetTimerAdapter] = None,
+        timer_adapter: Optional[Any] = None,
     ) -> None:
         self._dispatcher = dispatcher
-        self._timer_adapter = timer_adapter or MaxDotNetTimerAdapter()
+        if timer_adapter is not None:
+            self._adapters = [timer_adapter]
+        else:
+            self._adapters = _build_adapters()
         self._controller = HostPumpController(
             dispatcher,
-            self._timer_adapter,
+            self._adapters[0],
             budget_ms=max(int(budget_ms), 1),
         )
         attach = getattr(dispatcher, "attach_pump_controller", None)
@@ -134,24 +164,39 @@ class MaxUiPump:
         return _snapshot_to_legacy_stats(self._controller.stats)
 
     def install(self) -> bool:
-        try:
-            self._controller.start()
-            logger.info(
-                "MaxUiPump installed via HostPumpController (budget=%d ms)",
-                self._controller.budget_ms,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001
-            context = _pump_degradation_context()
-            logger.warning(
-                "MaxUiPump: install skipped (degradable — bridge/server still functional): %s | "
-                "max_version=%s pythonnet=%s clr=%s",
-                exc,
-                context.get("max_version", "unknown"),
-                context.get("pythonnet_available", False),
-                context.get("clr_available", False),
-            )
-            return False
+        """Install the pump, trying adapters in priority order.
+
+        Returns True if a timer adapter was successfully installed,
+        False if all adapters failed (degraded no-pump mode).
+        """
+        for adapter in self._adapters:
+            try:
+                self._controller.timer_adapter = adapter
+                self._controller.start()
+                logger.info(
+                    "MaxUiPump installed via HostPumpController (budget=%d ms, adapter=%s)",
+                    self._controller.budget_ms,
+                    type(adapter).__name__,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "MaxUiPump: adapter %s unavailable: %s",
+                    type(adapter).__name__, exc,
+                )
+                continue
+
+        context = _pump_degradation_context()
+        logger.warning(
+            "MaxUiPump: install skipped (degradable — bridge/server still functional): "
+            "no timer adapter available | "
+            "max_version=%s qt_available=%s pythonnet=%s clr=%s",
+            context.get("max_version", "unknown"),
+            context.get("qt_available", False),
+            context.get("pythonnet_available", False),
+            context.get("clr_available", False),
+        )
+        return False
 
     def uninstall(self) -> None:
         self._controller.stop()
@@ -232,6 +277,7 @@ def _pump_degradation_context() -> Dict[str, Any]:
     """Probe 3ds Max environment for MaxUiPump degradation diagnostics."""
     context: Dict[str, Any] = {
         "max_version": "unknown",
+        "qt_available": False,
         "pythonnet_available": False,
         "clr_available": False,
     }
@@ -244,6 +290,15 @@ def _pump_degradation_context() -> Dict[str, Any]:
             pass
     except ImportError:
         pass
+
+    # Qt availability (PySide2/PySide6 — built into 3ds Max 2021+)
+    for module_name in ("PySide6.QtCore", "PySide2.QtCore", "PyQt6.QtCore", "PyQt5.QtCore"):
+        try:
+            __import__(module_name)
+            context["qt_available"] = True
+            break
+        except ImportError:
+            continue
 
     try:
         import pythonnet  # noqa: F401, PLC0415
