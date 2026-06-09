@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.20...v0.1.21) (2026-06-09)
+
+
+### Bug Fixes
+
+* replace env var check with HTTP health check, dedup payload cleanup messages ([b98a92f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b98a92f3f124546b5b6024871480c80010742624))
+
 ## [0.1.20](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.19...v0.1.20) (2026-06-09)
 
 
