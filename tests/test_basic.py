@@ -404,7 +404,7 @@ class TestSidecar:
         captured = {}
         install_calls = []
         fake_dispatcher = object()
-        fake_pump = types.SimpleNamespace(install=lambda: install_calls.append("install"))
+        fake_pump = types.SimpleNamespace(install=lambda: (install_calls.append("install") or True))
         fake_server_module = types.SimpleNamespace(
             start_server=lambda **kwargs: captured.update(kwargs) or {"server": True}
         )
@@ -422,6 +422,29 @@ class TestSidecar:
         assert captured["dispatcher"] is fake_dispatcher
         assert execution_bridge.dispatcher is fake_dispatcher
         assert execution_bridge.default_thread_affinity == "main"
+
+    def test_embedded_runtime_falls_back_to_any_affinity_when_pump_not_installed(self, monkeypatch):
+        """When MaxUiPump.install() returns False, default_thread_affinity should be "any"."""
+        import dcc_mcp_3dsmax.dispatcher as dispatcher_module
+        from dcc_mcp_3dsmax import max_bootstrap
+
+        captured = {}
+        install_calls = []
+        fake_dispatcher = object()
+        fake_pump = types.SimpleNamespace(install=lambda: (install_calls.append("install") or False))
+        fake_server_module = types.SimpleNamespace(
+            start_server=lambda **kwargs: captured.update(kwargs) or {"server": True}
+        )
+        monkeypatch.setitem(sys.modules, "dcc_mcp_3dsmax.server", fake_server_module)
+        monkeypatch.setattr(max_bootstrap, "start_bridge", lambda bridge_port=None: {"bridge": True})
+        monkeypatch.setattr(dispatcher_module, "create_dispatcher", lambda: (fake_dispatcher, fake_pump))
+
+        result = max_bootstrap.start_embedded_sidecar_bridge()
+
+        execution_bridge = captured["execution_bridge"]
+        assert result["pump"] is fake_pump
+        assert install_calls == ["install"]
+        assert execution_bridge.default_thread_affinity == "any"
 
     def test_main_keeps_external_sidecar_as_explicit_mode(self, monkeypatch):
         """Operators can still opt into the process-isolated sidecar mode."""
