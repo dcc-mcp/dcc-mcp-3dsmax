@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.20](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.19...v0.1.20) (2026-06-09)
+
+
+### Bug Fixes
+
+* use QtHostTimerAdapter as primary timer for MaxUiPump ([39637c3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/39637c339ed0b52ae24cf2d452fdea8ca9683cfc))
+
 ## [0.1.19](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.18...v0.1.19) (2026-06-09)
 
 
