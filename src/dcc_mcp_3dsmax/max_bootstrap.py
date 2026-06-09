@@ -172,12 +172,13 @@ def start_embedded_sidecar_bridge(
 
     bridge = start_bridge(bridge_port)
     dispatcher, pump = create_dispatcher()
+    pump_installed = False
     if pump is not None:
-        pump.install()
+        pump_installed = pump.install()
     execution_bridge = HostExecutionBridge(
         dispatcher=dispatcher,
         runner=_executor.run_skill_script,
-        default_thread_affinity="main",
+        default_thread_affinity="main" if pump_installed else "any",
     )
     server = start_server(
         port=int(os.environ.get("DCC_MCP_3DSMAX_PORT", "0")),
