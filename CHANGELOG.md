@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.21...v0.1.22) (2026-06-13)
+
+
+### Bug Fixes
+
+* repair 3dsmax batch dispatcher ([071096c](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/071096c41522b0212b5d5a1692cd0aea2c83f851))
+
 ## [0.1.21](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.20...v0.1.21) (2026-06-09)
 
 
