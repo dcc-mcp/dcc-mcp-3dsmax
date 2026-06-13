@@ -11,9 +11,12 @@ from __future__ import annotations
 
 # Import built-in modules
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_STANDALONE_MAX_LOCK = threading.RLock()
 
 
 class MaxStandaloneDispatcher:
@@ -55,23 +58,24 @@ class MaxStandaloneDispatcher:
         timeout_ms: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute a callable synchronously."""
-        try:
-            output = task()
-            return {
-                "request_id": request_id,
-                "affinity": affinity,
-                "success": True,
-                "output": output,
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "request_id": request_id,
-                "affinity": affinity,
-                "success": False,
-                "output": None,
-                "error": str(exc),
-            }
+        with _STANDALONE_MAX_LOCK:
+            try:
+                output = task()
+                return {
+                    "request_id": request_id,
+                    "affinity": affinity,
+                    "success": True,
+                    "output": output,
+                    "error": None,
+                }
+            except Exception as exc:
+                return {
+                    "request_id": request_id,
+                    "affinity": affinity,
+                    "success": False,
+                    "output": None,
+                    "error": str(exc),
+                }
 
     def dispatch_callable(
         self,
@@ -86,17 +90,20 @@ class MaxStandaloneDispatcher:
         **kwargs: Any,
     ) -> Any:
         """Run a callable directly using the core dispatcher protocol."""
-        _ = (context, skill_name, execution)
+        _ = (context, skill_name, execution, affinity)
+        kwargs.pop("thread_affinity", None)
+        kwargs.pop("timeout_ms", None)
         timeout_ms = timeout_hint_secs * 1000 if timeout_hint_secs is not None else None
-        result = self.submit_callable(
-            request_id=action_name or "dispatch",
-            task=lambda: func(*args, **kwargs),
-            affinity=affinity,
-            timeout_ms=timeout_ms,
-        )
-        if not result.get("success", True):
-            raise RuntimeError(result.get("error") or "dispatch_callable failed")
-        return result.get("output")
+        with _STANDALONE_MAX_LOCK:
+            result = self.submit_callable(
+                request_id=action_name or "dispatch",
+                task=lambda: func(*args, **kwargs),
+                affinity=affinity,
+                timeout_ms=timeout_ms,
+            )
+            if not result.get("success", True):
+                raise RuntimeError(result.get("error") or "dispatch_callable failed")
+            return result.get("output")
 
     def submit_async_callable(
         self,

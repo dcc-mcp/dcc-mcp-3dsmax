@@ -14,6 +14,7 @@ Adapter priority:
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dcc_mcp_core import HostPumpController, HostPumpSnapshot, QtHostTimerAdapter
@@ -250,13 +251,72 @@ def create_pumped_dispatcher(
 
 
 def _is_standalone_environment() -> bool:
+    executable = ""
+    try:
+        executable = sys.executable.lower()
+    except Exception:  # noqa: BLE001
+        executable = ""
+    if "3dsmaxbatch" in executable or "3dsmaxcmd" in executable:
+        return True
+
     try:
         import pymxs  # noqa: PLC0415
 
-        getattr(pymxs, "runtime", None)
-        return False
+        runtime = getattr(pymxs, "runtime", None)
     except ImportError:
         return True
+    if runtime is None:
+        return True
+    return not _has_interactive_3dsmax_ui(runtime)
+
+
+def _has_interactive_3dsmax_ui(runtime: Any) -> bool:
+    """Return True when pymxs appears to be attached to an interactive Max UI."""
+    for path in (
+        ("windows", "getMAXHWND"),
+        ("windows", "getMAXWindowHandle"),
+        ("getMAXHWND",),
+        ("getMAXWindowHandle",),
+        ("GetMAXWindowHandle",),
+        ("maxHWnd",),
+        ("maxHwnd",),
+    ):
+        value = _runtime_value(runtime, path)
+        if _truthy_window_handle(value):
+            return True
+
+    try:
+        import qtmax  # noqa: PLC0415
+
+        for name in ("GetQMaxMainWindow", "getQMaxMainWindow"):
+            getter = getattr(qtmax, name, None)
+            if callable(getter) and getter() is not None:
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+
+    return False
+
+
+def _runtime_value(runtime: Any, path: Tuple[str, ...]) -> Any:
+    current = runtime
+    for name in path:
+        current = getattr(current, name, None)
+        if current is None:
+            return None
+    try:
+        return current() if callable(current) else current
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _truthy_window_handle(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return bool(value)
 
 
 def _snapshot_to_legacy_stats(snapshot: HostPumpSnapshot) -> Dict[str, Any]:

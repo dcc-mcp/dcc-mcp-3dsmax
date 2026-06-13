@@ -225,6 +225,7 @@ class MaxMcpServer(DccServerBase):
         super().__init__(options=options.to_core_options())
         self._extra_skill_paths: List[str] = list(options.extra_skill_paths or [])
         self._max_dispatcher: Any = None
+        self._auto_ui_pump: Any = None
         self._execution_bridge: HostExecutionBridge
 
         # ── Runtime readiness binder (parity with Maya #184) ───────────
@@ -243,7 +244,8 @@ class MaxMcpServer(DccServerBase):
             self.register_host_execution_bridge(self._execution_bridge)
             self._readiness.mark_host_execution_bridge_ready()
         else:
-            self.attach_dispatcher(options.dispatcher)
+            dispatcher = options.dispatcher if options.dispatcher is not None else self._default_host_dispatcher()
+            self.attach_dispatcher(dispatcher)
 
         # ── Prometheus metrics ──────────────────────────────────────
         if _env.resolve_metrics_enabled(options.metrics_enabled):
@@ -367,6 +369,34 @@ class MaxMcpServer(DccServerBase):
         """Return the 3ds Max version via ``pymxs.runtime.maxVersion()``."""
         return get_3dsmax_version_string()
 
+    def _default_host_dispatcher(self) -> Optional[Any]:
+        """Create the implicit dispatcher for direct ``start_server()`` calls."""
+        try:
+            from dcc_mcp_3dsmax.dispatcher import create_dispatcher  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Could not create default dispatcher: %s", _DCC_NAME, exc)
+            return None
+
+        dispatcher, pump = create_dispatcher()
+        if pump is None:
+            return dispatcher
+
+        self._auto_ui_pump = pump
+        try:
+            installed = bool(pump.install())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[%s] Max UI pump install failed: %s", _DCC_NAME, exc)
+            installed = False
+        if installed:
+            return dispatcher
+
+        self._auto_ui_pump = None
+        logger.warning(
+            "[%s] Default UI dispatcher unavailable because the main-thread pump did not install",
+            _DCC_NAME,
+        )
+        return None
+
     # ── Port property ──────────────────────────────────────────────────
 
     @property
@@ -410,6 +440,17 @@ class MaxMcpServer(DccServerBase):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[%s] Error draining dispatcher during stop(): %s", _DCC_NAME, exc)
 
+        pump = getattr(self, "_auto_ui_pump", None)
+        if pump is not None:
+            try:
+                uninstall = getattr(pump, "uninstall", None)
+                if callable(uninstall):
+                    uninstall()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[%s] Error uninstalling Max UI pump during stop(): %s", _DCC_NAME, exc)
+            finally:
+                self._auto_ui_pump = None
+
         if self._resources is not None:
             try:
                 self._resources.unbind()
@@ -444,11 +485,41 @@ class MaxMcpServer(DccServerBase):
         """Discover skills via the base-class registration path (phase helper)."""
         paths = list(context.extra_skill_paths or []) + self._extra_skill_paths
         minimal_mode = getattr(self, "_registration_minimal_mode", None)
+        self._configure_skill_load_transform()
         super().register_builtin_actions(
             extra_skill_paths=paths,
             include_bundled=context.include_bundled,
             minimal_mode=minimal_mode,
         )
+
+    def _uses_standalone_affinity_override(self) -> bool:
+        dispatcher = getattr(self, "_max_dispatcher", None)
+        return type(dispatcher).__name__ == "MaxStandaloneDispatcher"
+
+    def _configure_skill_load_transform(self) -> None:
+        """Install standalone policy so batch calls enter the adapter executor."""
+        if not self._uses_standalone_affinity_override():
+            self.clear_skill_load_transform()
+            return
+
+        if self.set_skill_load_transform(self._standalone_skill_load_transform):
+            logger.info("[%s] Standalone skill-load transform installed", _DCC_NAME)
+            return
+
+        logger.warning("[%s] Standalone skill-load transform unavailable", _DCC_NAME)
+
+    @staticmethod
+    def _standalone_skill_load_transform(skill: Any) -> None:
+        """Allow main-affinity tools to execute inline under 3ds Max batch."""
+        changed = False
+        tools = list(getattr(skill, "tools", ()) or ())
+        for tool in tools:
+            if getattr(tool, "enforce_thread_affinity", None) is not True:
+                continue
+            setattr(tool, "enforce_thread_affinity", False)
+            changed = True
+        if changed:
+            setattr(skill, "tools", tools)
 
     def _run_strict_skill_scan_phase(self, context: RegistrationContext) -> None:
         """Run strict skill validation when enabled (phase helper)."""

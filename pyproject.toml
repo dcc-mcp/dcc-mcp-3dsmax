@@ -27,10 +27,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # 0.18.14: DccServerBase split into 4 seam controllers (PIP-688),
-    # shared registration phase pipeline extracted from Maya adapter.
-    "dcc-mcp-core>=0.18.14,<1.0.0",
-    "dcc-mcp-server>=0.18.14,<1.0.0",
+    # Release Train anchor: dcc-mcp-core/server v0.18.20 (sidecar diagnostics
+    # and shared gateway provenance fixes).
+    "dcc-mcp-core>=0.18.20,<1.0.0",
+    "dcc-mcp-server>=0.18.20,<1.0.0",
 ]
 
 [project.optional-dependencies]

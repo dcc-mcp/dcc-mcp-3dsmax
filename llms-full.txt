@@ -15,7 +15,7 @@
 - **Repository:** https://github.com/loonghao/dcc-mcp-3dsmax
 - **PyPI:** https://pypi.org/project/dcc-mcp-3dsmax/
 - **Python:** >=3.7
-- **Core deps:** `dcc-mcp-core>=0.18.14`, `dcc-mcp-server>=0.18.14`
+- **Core deps:** `dcc-mcp-core>=0.18.20`, `dcc-mcp-server>=0.18.20`
 
 ---
 

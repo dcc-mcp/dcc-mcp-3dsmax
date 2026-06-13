@@ -2,10 +2,14 @@
 
 # Import built-in modules
 import importlib.util
+import json
 import os
 import subprocess
 import sys
+import time
 import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -174,6 +178,22 @@ class TestServerOptions:
         assert server._dcc_dispatcher is dispatcher
         assert server._inprocess_executor_registered is True
 
+    def test_direct_start_server_installs_default_standalone_dispatcher(self):
+        """Bare start_server()/MaxMcpServer in batch-like Python gets a dispatcher."""
+        from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+        server = MaxMcpServer(
+            options=MaxServerOptions(
+                port=0,
+                enable_gateway_failover=False,
+                job_storage_path="",
+            )
+        )
+
+        assert type(server._max_dispatcher).__name__ == "MaxStandaloneDispatcher"
+        assert server._execution_bridge.dispatcher is server._max_dispatcher
+        assert server.readiness_report()["main_thread_executor"] is True
+
     def test_execution_bridge_uses_3dsmax_runner(self):
         """Server registers the adapter runner instead of core's main-only runner."""
         from dcc_mcp_3dsmax import _executor
@@ -231,6 +251,151 @@ class TestServerOptions:
 
         assert server._execution_bridge is bridge
         assert server._inprocess_executor_registered is True
+
+    def test_standalone_skill_load_transform_disables_affinity_enforcement(self):
+        """3dsmax -batch direct HTTP adjusts detached core skill metadata before loading."""
+        from dcc_mcp_3dsmax.server import MaxMcpServer
+
+        class Tool:
+            def __init__(self, enforce_thread_affinity):
+                self.enforce_thread_affinity = enforce_thread_affinity
+
+        class Skill:
+            def __init__(self):
+                self.tools = [Tool(True), Tool(False)]
+
+        skill = Skill()
+
+        assert MaxMcpServer._standalone_skill_load_transform(skill) is None
+        assert [tool.enforce_thread_affinity for tool in skill.tools] == [False, False]
+
+    def test_standalone_transform_persists_for_core_catalog_load(self):
+        """Core-owned MCP load_skill sees 3ds Max standalone metadata overrides."""
+        from dcc_mcp_3dsmax.dispatcher import MaxStandaloneDispatcher
+        from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+        server = MaxMcpServer(
+            options=MaxServerOptions(
+                port=0,
+                dispatcher=MaxStandaloneDispatcher(),
+                enable_gateway_failover=False,
+                job_storage_path="",
+            )
+        )
+        try:
+            server.register_builtin_actions(include_bundled=False)
+            loaded = server._server.load_skill("3dsmax-scene")
+            assert "3dsmax_scene__get_scene_info" in loaded
+            meta = server._server.registry.get_action("3dsmax_scene__get_scene_info")
+            assert meta is not None
+            assert meta["thread_affinity"] == "main"
+            assert meta.get("enforce_thread_affinity", False) is False
+        finally:
+            server.stop()
+
+    def test_standalone_rest_call_returns_payload_for_main_affinity_skill(self, tmp_path):
+        """Batch-style direct /v1/call executes main-affinity skills synchronously."""
+        from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+        skill_dir = tmp_path / "max-batch-probe"
+        scripts_dir = skill_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: max-batch-probe
+description: Batch dispatcher probe
+metadata:
+  dcc-mcp:
+    dcc: 3dsmax
+    version: "1.0.0"
+    layer: test
+    tags: "test"
+    tools: tools.yaml
+---
+
+# Batch Dispatcher Probe
+""",
+            encoding="utf-8",
+        )
+        (skill_dir / "tools.yaml").write_text(
+            """tools:
+  - name: scene_payload
+    description: Return a deterministic scene payload
+    source_file: scripts/action_scene_payload.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties: {}
+""",
+            encoding="utf-8",
+        )
+        (scripts_dir / "action_scene_payload.py").write_text(
+            """def main():
+    return {"success": True, "scene": {"name": "batch-probe"}}
+""",
+            encoding="utf-8",
+        )
+
+        server = MaxMcpServer(
+            options=MaxServerOptions(
+                port=0,
+                extra_skill_paths=[str(tmp_path)],
+                enable_gateway_failover=False,
+                job_storage_path="",
+            )
+        )
+        try:
+            server.register_builtin_actions(include_bundled=False)
+            assert "max_batch_probe__scene_payload" in server._server.load_skill("max-batch-probe")
+            server.start(install_atexit_hook=False)
+            time.sleep(0.2)
+
+            payload = json.dumps(
+                {"tool_slug": "max_batch_probe__scene_payload", "arguments": {}},
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.port}/v1/call",
+                data=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = json.loads(response.read().decode("utf-8"))
+
+            assert body["output"]["success"] is True
+            assert body["output"]["scene"]["name"] == "batch-probe"
+            assert "queued" not in json.dumps(body).lower()
+            assert "thread-affinity-violation" not in json.dumps(body).lower()
+        except urllib.error.HTTPError as exc:
+            pytest.fail(exc.read().decode("utf-8"))
+        finally:
+            server.stop()
+
+    def test_pymxs_without_ui_uses_standalone_dispatcher(self, monkeypatch):
+        """3dsmax -batch exposes pymxs but has no UI pump, so choose standalone."""
+        from dcc_mcp_3dsmax.dispatcher import pump as pump_module
+
+        pump_module.reset_dispatcher()
+        monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=types.SimpleNamespace()))
+        try:
+            dispatcher, pump = pump_module.create_dispatcher()
+            assert type(dispatcher).__name__ == "MaxStandaloneDispatcher"
+            assert pump is None
+        finally:
+            pump_module.reset_dispatcher()
+
+    def test_pymxs_with_main_window_is_interactive(self):
+        """A visible 3ds Max main window keeps the UI dispatcher path enabled."""
+        from dcc_mcp_3dsmax.dispatcher import pump as pump_module
+
+        runtime = types.SimpleNamespace(
+            windows=types.SimpleNamespace(getMAXHWND=lambda: 12345),
+        )
+
+        assert pump_module._has_interactive_3dsmax_ui(runtime) is True
 
 
 class TestExecution:
