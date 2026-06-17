@@ -10,7 +10,9 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False) -> Dict[str, Any]:
+def main(
+    node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False
+) -> Dict[str, Any]:
     """List material assignments for explicit targets, selection, or the whole scene."""
     rt = get_runtime()
     if not node_names and not handles and not use_selection:
@@ -23,5 +25,7 @@ def main(node_names: Optional[list] = None, handles: Optional[list] = None, use_
     rows = []
     for node in nodes:
         material = getattr(node, "material", None)
-        rows.append({"node": node_identity(node), "material": material_identity(material) if material is not None else None})
+        rows.append(
+            {"node": node_identity(node), "material": material_identity(material) if material is not None else None}
+        )
     return material_success("Listed node material assignments", assignments=rows, count=len(rows))

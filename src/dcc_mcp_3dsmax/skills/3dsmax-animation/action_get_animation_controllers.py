@@ -9,7 +9,9 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False) -> Dict[str, Any]:
+def main(
+    node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False
+) -> Dict[str, Any]:
     """Return transform controller metadata."""
     rt = get_runtime()
     targets = resolve_anim_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection)

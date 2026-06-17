@@ -68,8 +68,8 @@ def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
     assert "dcc_mcp_3dsmax.main()" in text
     assert "def _cleanup_obsolete_payloads(active_key):" in text
     assert "_cleanup_obsolete_payloads(key)" in text
-    assert "button installBtn \"Install\"" in text
-    assert "button uninstallBtn \"Uninstall\"" in text
+    assert 'button installBtn "Install"' in text
+    assert 'button uninstallBtn "Uninstall"' in text
     assert "dcc_mcp_3dsmax.stop_sidecar_bridge()" in text
     assert "from dcc_mcp_core.install_lifecycle import safe_remove_tree" in text
     assert "sys.modules.pop(name, None)" in text

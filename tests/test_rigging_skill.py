@@ -129,7 +129,9 @@ def _install_fake_pymxs(monkeypatch):
 def test_rigging_create_tools_make_helpers_bones_chains_and_paths(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
 
-    helper = _load_action("action_create_helper_node.py").main(name="hand_ctrl", helper_type="point", position=[1, 2, 3])
+    helper = _load_action("action_create_helper_node.py").main(
+        name="hand_ctrl", helper_type="point", position=[1, 2, 3]
+    )
     bone = _load_action("action_create_bone_node.py").main(name="upper_arm", start=[0, 0, 0], end=[0, 10, 0])
     chain = _load_action("action_create_joint_chain.py").main(
         base_name="arm",
@@ -201,7 +203,9 @@ def test_rigging_tools_report_target_and_modifier_errors(monkeypatch):
     _install_fake_pymxs(monkeypatch)
 
     missing_target = _load_action("action_list_rig_state.py").main(node_names=["missing"])
-    missing_modifier = _load_action("action_remove_deformer_modifier.py").main(node_names=["hero_mesh"], deformer_type="twist")
+    missing_modifier = _load_action("action_remove_deformer_modifier.py").main(
+        node_names=["hero_mesh"], deformer_type="twist"
+    )
 
     assert missing_target["success"] is False
     assert "could not be resolved" in missing_target["message"]

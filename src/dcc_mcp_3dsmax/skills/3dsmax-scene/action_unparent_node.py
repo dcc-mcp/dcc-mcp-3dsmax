@@ -22,5 +22,8 @@ def main(node_name: Optional[str] = None, handle: Optional[int] = None) -> Dict[
     return {
         "success": True,
         "message": "Unparented node",
-        "data": {"node": node_identity(node), "previous_parent": node_identity(old_parent) if old_parent is not None else None},
+        "data": {
+            "node": node_identity(node),
+            "previous_parent": node_identity(old_parent) if old_parent is not None else None,
+        },
     }

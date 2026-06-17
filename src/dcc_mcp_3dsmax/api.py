@@ -129,6 +129,7 @@ def with_max(func: Callable) -> Callable:
 
 class MissingParamError(ValueError):
     """Raised when a required parameter is missing."""
+
     pass
 
 
@@ -206,6 +207,7 @@ def is_max_available() -> bool:
     """
     try:
         import pymxs  # noqa: PLC0415
+
         return pymxs is not None
     except ImportError:
         return False
@@ -219,6 +221,7 @@ def get_runtime():
     """
     try:
         import pymxs  # noqa: PLC0415
+
         return pymxs.runtime
     except ImportError:
         return None

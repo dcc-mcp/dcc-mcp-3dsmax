@@ -174,7 +174,12 @@ def test_uv_projection_unwrap_pack_and_normalize_add_modifiers(monkeypatch):
     assert unwrapped["success"] is True
     assert packed["success"] is True
     assert normalized["success"] is True
-    assert [modifier.name for modifier in runtime.hero.modifiers] == ["UVWMap", "Unwrap_UVW", "Unwrap_UVW", "Unwrap_UVW"]
+    assert [modifier.name for modifier in runtime.hero.modifiers] == [
+        "UVWMap",
+        "Unwrap_UVW",
+        "Unwrap_UVW",
+        "Unwrap_UVW",
+    ]
     assert runtime.hero.modifiers[0].mapChannel == 4
     assert runtime.hero.modifiers[0].maptype == "box"
     assert ("pack", 0.05) in runtime.hero.modifiers[2].operations

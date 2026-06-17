@@ -413,9 +413,7 @@ def main() -> Any:
         return start_embedded_server()
     if mode in {"runtime", "embedded", "embedded-sidecar", "bridge"}:
         return start_embedded_sidecar_bridge()
-    raise ValueError(
-        "unsupported DCC_MCP_3DSMAX_BOOT_MODE={!r}; expected runtime, sidecar, or server".format(mode)
-    )
+    raise ValueError("unsupported DCC_MCP_3DSMAX_BOOT_MODE={!r}; expected runtime, sidecar, or server".format(mode))
 
 
 if __name__ == "__main__":

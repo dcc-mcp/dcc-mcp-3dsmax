@@ -113,7 +113,9 @@ def create_bone_node(
     creator = getattr(getattr(runtime, "BoneSys", None), "createBone", None)
     if callable(creator):
         try:
-            bone = creator(_point3(runtime, start_vec), _point3(runtime, end_vec), _point3(runtime, _vector(up_axis or [0, 0, 1])))
+            bone = creator(
+                _point3(runtime, start_vec), _point3(runtime, end_vec), _point3(runtime, _vector(up_axis or [0, 0, 1]))
+            )
         except Exception as exc:  # noqa: BLE001
             warnings.append("Could not create bone through BoneSys: {}".format(exc))
 
@@ -177,7 +179,13 @@ def create_path_helper(
     _set_optional_attr(node, "path_points", [_vector(point) for point in points], warnings, strict=False)
     _set_optional_attr(node, "closed", bool(closed), warnings, strict=False)
     _append_scene_object(runtime, node)
-    return rig_success("Created path helper", node=node_identity(node), point_count=len(points), changed_node_count=1, warnings=warnings)
+    return rig_success(
+        "Created path helper",
+        node=node_identity(node),
+        point_count=len(points),
+        changed_node_count=1,
+        warnings=warnings,
+    )
 
 
 def rig_state_summary(node: Any) -> Dict[str, Any]:
@@ -199,7 +207,9 @@ def rig_state_summary(node: Any) -> Dict[str, Any]:
     }
 
 
-def apply_deformer(runtime: Any, node: Any, *, deformer_type: str, attributes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def apply_deformer(
+    runtime: Any, node: Any, *, deformer_type: str, attributes: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Apply a supported deformer/modifier to one node."""
     constructors = DEFORMER_CONSTRUCTORS.get(deformer_type)
     if constructors is None:
@@ -217,15 +227,23 @@ def apply_deformer(runtime: Any, node: Any, *, deformer_type: str, attributes: O
     )
 
 
-def remove_deformer(node: Any, *, deformer_type: Optional[str] = None, modifier_name: Optional[str] = None) -> Dict[str, Any]:
+def remove_deformer(
+    node: Any, *, deformer_type: Optional[str] = None, modifier_name: Optional[str] = None
+) -> Dict[str, Any]:
     """Remove matching deformer/modifier entries from a node's stack."""
     if not deformer_type and not modifier_name:
-        return rig_error("deformer_type or modifier_name is required", node=node_identity(node), changed_modifier_count=0)
+        return rig_error(
+            "deformer_type or modifier_name is required", node=node_identity(node), changed_modifier_count=0
+        )
     try:
         modifiers = list(node.modifiers)
     except Exception:  # noqa: BLE001
         modifiers = []
-    matches = [modifier for modifier in modifiers if _matches_modifier(modifier, deformer_type=deformer_type, modifier_name=modifier_name)]
+    matches = [
+        modifier
+        for modifier in modifiers
+        if _matches_modifier(modifier, deformer_type=deformer_type, modifier_name=modifier_name)
+    ]
     if not matches:
         return rig_error("No matching deformer modifier found", node=node_identity(node), changed_modifier_count=0)
     for modifier in matches:
@@ -249,7 +267,9 @@ def set_constraint_target(
     """Create or update a basic transform constraint target."""
     if constraint_type not in CONSTRAINT_CONSTRUCTORS:
         return rig_error("Unsupported constraint_type", constraint_type=constraint_type)
-    constrained_result, constrained = resolve_node_object(runtime, node_name=constrained_name, handle=constrained_handle)
+    constrained_result, constrained = resolve_node_object(
+        runtime, node_name=constrained_name, handle=constrained_handle
+    )
     if constrained is None:
         return rig_error("Could not resolve constrained node", constrained=constrained_result)
     target_result, target = resolve_node_object(runtime, node_name=target_name, handle=target_handle)
@@ -260,7 +280,9 @@ def set_constraint_target(
 
     constraint, warnings = _construct_runtime_object(runtime, CONSTRAINT_CONSTRUCTORS[constraint_type])
     if constraint is None:
-        return rig_error("No supported constraint constructor was available", constraint_type=constraint_type, warnings=warnings)
+        return rig_error(
+            "No supported constraint constructor was available", constraint_type=constraint_type, warnings=warnings
+        )
 
     _set_optional_attr(constraint, "constraint_type", constraint_type, warnings, strict=False)
     _set_optional_attr(constraint, "target", target, warnings, strict=False)
@@ -387,7 +409,11 @@ def _constraint_rows(node: Any) -> List[Dict[str, Any]]:
 
 def _is_deformer(name: str, type_name: str) -> bool:
     text = "{} {}".format(name, type_name).lower()
-    return any(token.lower().replace("_", "") in text.replace("_", "") for values in DEFORMER_CONSTRUCTORS.values() for token in values)
+    return any(
+        token.lower().replace("_", "") in text.replace("_", "")
+        for values in DEFORMER_CONSTRUCTORS.values()
+        for token in values
+    )
 
 
 def _is_skin(name: str, type_name: str) -> bool:
@@ -417,7 +443,10 @@ def _matches_modifier(modifier: Any, *, deformer_type: Optional[str], modifier_n
         return False
     constructors = DEFORMER_CONSTRUCTORS.get(deformer_type, ())
     text = "{} {}".format(name, type(modifier).__name__).lower().replace("_", "")
-    return any(token.lower().replace("_", "") in text for token in constructors) or getattr(modifier, "deformer_type", None) == deformer_type
+    return (
+        any(token.lower().replace("_", "") in text for token in constructors)
+        or getattr(modifier, "deformer_type", None) == deformer_type
+    )
 
 
 def _append_constraint_target(constraint: Any, target: Any, weight: float, warnings: List[str]) -> None:

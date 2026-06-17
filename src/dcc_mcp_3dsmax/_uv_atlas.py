@@ -225,7 +225,10 @@ def _runtime_channel_rows(runtime: Any, node: Any) -> List[Dict[str, Any]]:
         count = int(getter(node))
     except Exception:  # noqa: BLE001
         return []
-    return [{"channel": index, "present": True, "uv_count": 0, "face_count": 0, "shell_count": 0} for index in range(1, count + 1)]
+    return [
+        {"channel": index, "present": True, "uv_count": 0, "face_count": 0, "shell_count": 0}
+        for index in range(1, count + 1)
+    ]
 
 
 def _bitmap_paths(material: Any) -> List[str]:

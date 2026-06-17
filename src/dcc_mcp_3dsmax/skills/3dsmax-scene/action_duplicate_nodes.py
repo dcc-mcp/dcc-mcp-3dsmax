@@ -9,7 +9,9 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(node_names: Optional[list] = None, handles: Optional[list] = None, name_suffix: str = "_copy") -> Dict[str, Any]:
+def main(
+    node_names: Optional[list] = None, handles: Optional[list] = None, name_suffix: str = "_copy"
+) -> Dict[str, Any]:
     """Duplicate nodes and return created identities."""
     rt = get_runtime()
     result = resolve_node_objects(rt, node_names=node_names, handles=handles)
@@ -20,7 +22,11 @@ def main(node_names: Optional[list] = None, handles: Optional[list] = None, name
         try:
             new_node = rt.copy(node)
         except Exception as exc:  # noqa: BLE001
-            return {"success": False, "message": "Could not duplicate node", "data": {"node": node_identity(node), "error": str(exc)}}
+            return {
+                "success": False,
+                "message": "Could not duplicate node",
+                "data": {"node": node_identity(node), "error": str(exc)},
+            }
         if name_suffix:
             try:
                 new_node.name = "{}{}".format(getattr(node, "name", "node"), name_suffix)

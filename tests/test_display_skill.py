@@ -143,8 +143,12 @@ def test_custom_property_tools_list_get_set_and_delete(monkeypatch):
 
     listed = _load_action("action_list_custom_properties.py").main(node_names=["hero_mesh"])
     got = _load_action("action_get_custom_property.py").main(property_name="asset_type", node_names=["hero_mesh"])
-    set_prop = _load_action("action_set_custom_property.py").main(property_name="lod", value=2, node_names=["hero_mesh"])
-    deleted = _load_action("action_delete_custom_property.py").main(property_name="asset_type", node_names=["hero_mesh"])
+    set_prop = _load_action("action_set_custom_property.py").main(
+        property_name="lod", value=2, node_names=["hero_mesh"]
+    )
+    deleted = _load_action("action_delete_custom_property.py").main(
+        property_name="asset_type", node_names=["hero_mesh"]
+    )
 
     assert listed["data"]["nodes"][0]["properties"]["asset_type"] == "prop"
     assert got["data"]["properties"][0]["value"] == "prop"

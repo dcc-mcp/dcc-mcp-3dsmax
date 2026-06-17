@@ -146,8 +146,12 @@ def test_light_workflow_creates_updates_and_builds_three_point_rig(monkeypatch):
         color=[128, 160, 255],
         shadows=True,
     )
-    updated = _load_action("action_set_light_properties.py").main(light_name="fill_light", enabled=False, intensity=0.25)
-    rig = _load_action("action_create_three_point_light_rig.py").main(name_prefix="Shot", target_position=[0, 0, 0], distance=50)
+    updated = _load_action("action_set_light_properties.py").main(
+        light_name="fill_light", enabled=False, intensity=0.25
+    )
+    rig = _load_action("action_create_three_point_light_rig.py").main(
+        name_prefix="Shot", target_position=[0, 0, 0], distance=50
+    )
 
     assert created["data"]["light"]["intensity"] == 0.5
     assert runtime.getNodeByName("fill_light").castShadows is True

@@ -85,7 +85,7 @@ def _parse_path_uri(uri: str, *, scheme: str) -> Optional[List[str]]:
     """Strip *scheme* prefix and split the rest on ``/``."""
     if not uri.startswith(scheme):
         return None
-    tail = uri[len(scheme):]
+    tail = uri[len(scheme) :]
     return [p for p in tail.split("/") if p]
 
 

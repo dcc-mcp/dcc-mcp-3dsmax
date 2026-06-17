@@ -26,7 +26,9 @@ def render_error(message: str, **data: Any) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": data}
 
 
-def validate_output_path(output_path: str, *, allowed_extensions: Sequence[str], overwrite: bool) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+def validate_output_path(
+    output_path: str, *, allowed_extensions: Sequence[str], overwrite: bool
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
     """Validate an output path and overwrite behavior."""
     path = Path(output_path).expanduser()
     allowed = {extension.lower() for extension in allowed_extensions}
@@ -101,7 +103,9 @@ def capture_viewport(runtime: Any, output_path: Path) -> Dict[str, Any]:
     return render_error("No viewport capture operation is available", artifact=artifact_info(output_path))
 
 
-def create_preview(runtime: Any, output_path: Path, *, start_frame: Optional[int], end_frame: Optional[int]) -> Dict[str, Any]:
+def create_preview(
+    runtime: Any, output_path: Path, *, start_frame: Optional[int], end_frame: Optional[int]
+) -> Dict[str, Any]:
     """Create a preview/playblast artifact through host-provided helpers."""
     preview = getattr(runtime, "createPreview", None) or getattr(runtime, "create_preview", None)
     if callable(preview):
@@ -110,7 +114,9 @@ def create_preview(runtime: Any, output_path: Path, *, start_frame: Optional[int
     return render_error("No preview generation operation is available", artifact=artifact_info(output_path))
 
 
-def set_render_output(runtime: Any, *, output_path: Optional[str] = None, save_file: Optional[bool] = None) -> Dict[str, Any]:
+def set_render_output(
+    runtime: Any, *, output_path: Optional[str] = None, save_file: Optional[bool] = None
+) -> Dict[str, Any]:
     """Set common render output options."""
     if output_path is not None:
         runtime.rendOutputFilename = str(Path(output_path).expanduser())
@@ -122,7 +128,9 @@ def set_render_output(runtime: Any, *, output_path: Optional[str] = None, save_f
 def set_frame_range(runtime: Any, start_frame: int, end_frame: int) -> Dict[str, Any]:
     """Set animation/render frame range."""
     if int(end_frame) < int(start_frame):
-        return render_error("end_frame must be greater than or equal to start_frame", start_frame=start_frame, end_frame=end_frame)
+        return render_error(
+            "end_frame must be greater than or equal to start_frame", start_frame=start_frame, end_frame=end_frame
+        )
     runtime.animationRangeStart = int(start_frame)
     runtime.animationRangeEnd = int(end_frame)
     runtime.frameStart = int(start_frame)
@@ -137,7 +145,9 @@ def set_resolution(runtime: Any, width: int, height: int) -> Dict[str, Any]:
     return render_success("Updated render resolution", settings=render_settings(runtime))
 
 
-def set_camera(runtime: Any, *, camera_name: Optional[str] = None, camera_handle: Optional[int] = None) -> Dict[str, Any]:
+def set_camera(
+    runtime: Any, *, camera_name: Optional[str] = None, camera_handle: Optional[int] = None
+) -> Dict[str, Any]:
     """Set the active render camera."""
     result, camera = resolve_node_object(runtime, node_name=camera_name, handle=camera_handle)
     if camera is None:

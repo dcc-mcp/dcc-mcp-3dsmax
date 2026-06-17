@@ -26,5 +26,7 @@ def main(
         return targets
     warnings = []
     for node in targets["objects"]:
-        warnings.extend(apply_unwrap(rt, node, channel=int(channel), operation="pack", padding=max(0.0, float(padding))))
+        warnings.extend(
+            apply_unwrap(rt, node, channel=int(channel), operation="pack", padding=max(0.0, float(padding)))
+        )
     return uv_success("Packed UVs", nodes=changed_channels(rt, targets["objects"]), warnings=warnings)

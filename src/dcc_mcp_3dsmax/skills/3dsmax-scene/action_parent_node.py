@@ -27,4 +27,8 @@ def main(
         child.parent = parent
     except Exception as exc:  # noqa: BLE001
         return {"success": False, "message": "Could not parent node", "data": {"error": str(exc)}}
-    return {"success": True, "message": "Parented node", "data": {"child": node_identity(child), "parent": node_identity(parent)}}
+    return {
+        "success": True,
+        "message": "Parented node",
+        "data": {"child": node_identity(child), "parent": node_identity(parent)},
+    }

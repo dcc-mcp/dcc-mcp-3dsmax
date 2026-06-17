@@ -57,7 +57,13 @@ def set_current_time(runtime: Any, frame: float) -> Dict[str, Any]:
     return anim_success("Updated current time", settings=time_settings(runtime))
 
 
-def set_timeline(runtime: Any, *, start_frame: Optional[int] = None, end_frame: Optional[int] = None, frame_rate: Optional[float] = None) -> Dict[str, Any]:
+def set_timeline(
+    runtime: Any,
+    *,
+    start_frame: Optional[int] = None,
+    end_frame: Optional[int] = None,
+    frame_rate: Optional[float] = None,
+) -> Dict[str, Any]:
     """Set timeline range and frame rate."""
     current = time_settings(runtime)
     start = current["frame_start"] if start_frame is None else int(start_frame)
@@ -94,13 +100,22 @@ def list_keyframes(node: Any, properties: Optional[Sequence[str]] = None) -> Dic
     return {"node": node_identity(node), "keyframes": rows, "count": len(rows)}
 
 
-def set_transform_key(runtime: Any, node: Any, *, frame: float, property_name: str, value: Sequence[float]) -> Dict[str, Any]:
+def set_transform_key(
+    runtime: Any, node: Any, *, frame: float, property_name: str, value: Sequence[float]
+) -> Dict[str, Any]:
     """Set one transform keyframe."""
     if property_name not in {"position", "rotation", "scale"}:
         return anim_error("Unsupported keyed property", property=property_name)
-    key = {"frame": float(frame), "property": property_name, "value": [float(item) for item in value], "interpolation": None}
+    key = {
+        "frame": float(frame),
+        "property": property_name,
+        "value": [float(item) for item in value],
+        "interpolation": None,
+    }
     keys = _keys(node)
-    keys[:] = [item for item in keys if not (item.get("frame") == key["frame"] and item.get("property") == property_name)]
+    keys[:] = [
+        item for item in keys if not (item.get("frame") == key["frame"] and item.get("property") == property_name)
+    ]
     keys.append(key)
     setter = getattr(runtime, "setKey", None)
     if callable(setter):
@@ -108,7 +123,9 @@ def set_transform_key(runtime: Any, node: Any, *, frame: float, property_name: s
     return anim_success("Set transform keyframe", node=node_identity(node), keyframe=key, changed_key_count=1)
 
 
-def delete_keyframes(node: Any, *, frames: Optional[Sequence[float]] = None, properties: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+def delete_keyframes(
+    node: Any, *, frames: Optional[Sequence[float]] = None, properties: Optional[Sequence[str]] = None
+) -> Dict[str, Any]:
     """Delete matching keyframes."""
     keys = _keys(node)
     if not keys:
@@ -119,7 +136,10 @@ def delete_keyframes(node: Any, *, frames: Optional[Sequence[float]] = None, pro
     keys[:] = [
         key
         for key in keys
-        if not (key.get("property") in wanted_props and (wanted_frames is None or float(key.get("frame", 0)) in wanted_frames))
+        if not (
+            key.get("property") in wanted_props
+            and (wanted_frames is None or float(key.get("frame", 0)) in wanted_frames)
+        )
     ]
     changed = before - len(keys)
     if not changed:
@@ -145,10 +165,14 @@ def set_interpolation(node: Any, *, interpolation: str, frames: Optional[Sequenc
     return anim_success("Updated key interpolation", node=node_identity(node), changed_key_count=changed)
 
 
-def bake_transform_animation(runtime: Any, node: Any, *, start_frame: int, end_frame: int, step: int = 1) -> Dict[str, Any]:
+def bake_transform_animation(
+    runtime: Any, node: Any, *, start_frame: int, end_frame: int, step: int = 1
+) -> Dict[str, Any]:
     """Bake simple transform values into keyframe rows."""
     if end_frame < start_frame:
-        return anim_error("end_frame must be greater than or equal to start_frame", start_frame=start_frame, end_frame=end_frame)
+        return anim_error(
+            "end_frame must be greater than or equal to start_frame", start_frame=start_frame, end_frame=end_frame
+        )
     safe_step = max(1, int(step))
     changed = 0
     for frame in range(int(start_frame), int(end_frame) + 1, safe_step):
@@ -180,7 +204,9 @@ def import_curve_data(runtime: Any, curve_data: Dict[str, Any]) -> Dict[str, Any
         node = result["objects"][0]
         for key in row.get("keyframes", []):
             value = key.get("value") or [0, 0, 0]
-            set_transform_key(runtime, node, frame=key.get("frame", 0), property_name=key.get("property", "position"), value=value)
+            set_transform_key(
+                runtime, node, frame=key.get("frame", 0), property_name=key.get("property", "position"), value=value
+            )
             if key.get("interpolation"):
                 set_interpolation(node, interpolation=key["interpolation"], frames=[key.get("frame", 0)])
             changed += 1

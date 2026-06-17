@@ -130,6 +130,7 @@ class ReadinessBinder:
             return True
 
         self.bound_dispatcher = dispatcher
+
         # Core 0.17.56+: first pump completion proves both dcc liveness
         # and main-thread executor availability.  Gateway host execution
         # summary requires dispatcher && dcc && host_execution_bridge &&

@@ -60,7 +60,9 @@ def create_layer(runtime: Any, *, name: str) -> Dict[str, Any]:
     layer, warnings = _new_layer(runtime, name)
     if layer is None:
         return display_error("No supported layer creation API was available", layer_name=name, warnings=warnings)
-    return display_success("Created display layer", layer=_layer_summary(layer), changed_layer_count=1, warnings=warnings)
+    return display_success(
+        "Created display layer", layer=_layer_summary(layer), changed_layer_count=1, warnings=warnings
+    )
 
 
 def delete_layer(runtime: Any, *, name: str, delete_nodes: bool = False) -> Dict[str, Any]:
@@ -77,7 +79,9 @@ def delete_layer(runtime: Any, *, name: str, delete_nodes: bool = False) -> Dict
         try:
             remover(name)
         except Exception as exc:  # noqa: BLE001
-            return display_error("Could not delete display layer", layer_name=name, error=str(exc), changed_layer_count=0)
+            return display_error(
+                "Could not delete display layer", layer_name=name, error=str(exc), changed_layer_count=0
+            )
     else:
         layers = getattr(runtime, "layers", None)
         if isinstance(layers, dict):
@@ -85,11 +89,15 @@ def delete_layer(runtime: Any, *, name: str, delete_nodes: bool = False) -> Dict
         elif isinstance(layers, list) and layer in layers:
             layers.remove(layer)
         else:
-            return display_error("No supported layer deletion API was available", layer_name=name, changed_layer_count=0)
+            return display_error(
+                "No supported layer deletion API was available", layer_name=name, changed_layer_count=0
+            )
     return display_success("Deleted display layer", layer_name=name, changed_layer_count=1)
 
 
-def assign_nodes_to_layer(runtime: Any, *, layer_name: str, nodes: Sequence[Any], create_if_missing: bool = True) -> Dict[str, Any]:
+def assign_nodes_to_layer(
+    runtime: Any, *, layer_name: str, nodes: Sequence[Any], create_if_missing: bool = True
+) -> Dict[str, Any]:
     """Assign nodes to a display layer."""
     layer = _find_layer(runtime, layer_name)
     if layer is None and create_if_missing:
@@ -97,7 +105,9 @@ def assign_nodes_to_layer(runtime: Any, *, layer_name: str, nodes: Sequence[Any]
     else:
         warnings = []
     if layer is None:
-        return display_error("Display layer was not found", layer_name=layer_name, changed_node_count=0, warnings=warnings)
+        return display_error(
+            "Display layer was not found", layer_name=layer_name, changed_node_count=0, warnings=warnings
+        )
     changed = []
     for node in nodes:
         _add_node_to_layer(layer, node, warnings)
@@ -180,21 +190,34 @@ def get_custom_property(node: Any, *, property_name: str) -> Dict[str, Any]:
     props = custom_properties(node)
     if property_name not in props:
         return display_error("Custom property was not found", node=node_identity(node), property_name=property_name)
-    return display_success("Read custom property", node=node_identity(node), property_name=property_name, value=props[property_name])
+    return display_success(
+        "Read custom property", node=node_identity(node), property_name=property_name, value=props[property_name]
+    )
 
 
 def set_custom_property(node: Any, *, property_name: str, value: Any) -> Dict[str, Any]:
     """Set one custom property on a node."""
     props = custom_properties(node)
     props[property_name] = value
-    return display_success("Set custom property", node=node_identity(node), property_name=property_name, value=value, changed_property_count=1)
+    return display_success(
+        "Set custom property",
+        node=node_identity(node),
+        property_name=property_name,
+        value=value,
+        changed_property_count=1,
+    )
 
 
 def delete_custom_property(node: Any, *, property_name: str) -> Dict[str, Any]:
     """Delete one custom property from a node."""
     props = custom_properties(node)
     if property_name not in props:
-        return display_error("Custom property was not found", node=node_identity(node), property_name=property_name, changed_property_count=0)
+        return display_error(
+            "Custom property was not found",
+            node=node_identity(node),
+            property_name=property_name,
+            changed_property_count=0,
+        )
     value = props.pop(property_name)
     return display_success(
         "Deleted custom property",

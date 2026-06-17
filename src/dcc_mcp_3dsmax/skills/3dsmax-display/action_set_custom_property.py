@@ -9,10 +9,18 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(property_name: str, value: Any, node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False) -> Dict[str, Any]:
+def main(
+    property_name: str,
+    value: Any,
+    node_names: Optional[list] = None,
+    handles: Optional[list] = None,
+    use_selection: bool = False,
+) -> Dict[str, Any]:
     """Set one custom property on explicit target nodes."""
     rt = get_runtime()
-    targets = resolve_display_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True)
+    targets = resolve_display_targets(
+        rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True
+    )
     if not targets.get("success"):
         return targets
     rows = [set_custom_property(node, property_name=property_name, value=value)["data"] for node in targets["objects"]]

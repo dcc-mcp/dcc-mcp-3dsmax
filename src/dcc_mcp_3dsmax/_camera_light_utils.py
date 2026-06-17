@@ -72,7 +72,9 @@ def create_camera(
     return cam_success("Created camera", camera=camera_summary(camera), changed_node_count=1, warnings=warnings)
 
 
-def set_active_camera(runtime: Any, *, camera_name: Optional[str] = None, camera_handle: Optional[int] = None) -> Dict[str, Any]:
+def set_active_camera(
+    runtime: Any, *, camera_name: Optional[str] = None, camera_handle: Optional[int] = None
+) -> Dict[str, Any]:
     """Set active/render camera after target validation."""
     result, camera = resolve_node_object(runtime, node_name=camera_name, handle=camera_handle)
     if camera is None:
@@ -139,7 +141,9 @@ def set_light_properties(
     if not is_light(light):
         return cam_error("Target node is not a light", node=node_identity(light))
     changed = _set_light_properties(light, enabled=enabled, intensity=intensity, color=color, shadows=shadows)
-    return cam_success("Updated light properties", light=light_summary(light), changed_fields=changed, changed_light_count=1)
+    return cam_success(
+        "Updated light properties", light=light_summary(light), changed_fields=changed, changed_light_count=1
+    )
 
 
 def create_three_point_light_rig(
@@ -152,9 +156,24 @@ def create_three_point_light_rig(
     """Create a simple three-point light rig with fallback errors."""
     target = _vector(target_position or [0.0, 0.0, 0.0])
     specs = [
-        ("{}_key".format(name_prefix), [target[0] - distance, target[1] - distance, target[2] + distance], 1.0, [255, 244, 230]),
-        ("{}_fill".format(name_prefix), [target[0] + distance, target[1] - distance * 0.6, target[2] + distance * 0.5], 0.35, [190, 210, 255]),
-        ("{}_rim".format(name_prefix), [target[0], target[1] + distance, target[2] + distance * 0.8], 0.65, [255, 255, 255]),
+        (
+            "{}_key".format(name_prefix),
+            [target[0] - distance, target[1] - distance, target[2] + distance],
+            1.0,
+            [255, 244, 230],
+        ),
+        (
+            "{}_fill".format(name_prefix),
+            [target[0] + distance, target[1] - distance * 0.6, target[2] + distance * 0.5],
+            0.35,
+            [190, 210, 255],
+        ),
+        (
+            "{}_rim".format(name_prefix),
+            [target[0], target[1] + distance, target[2] + distance * 0.8],
+            0.65,
+            [255, 255, 255],
+        ),
     ]
     created = []
     errors = []
@@ -174,7 +193,9 @@ def create_three_point_light_rig(
         else:
             errors.append(result)
     if errors:
-        return cam_error("Created three-point light rig with errors", lights=created, errors=errors, changed_node_count=len(created))
+        return cam_error(
+            "Created three-point light rig with errors", lights=created, errors=errors, changed_node_count=len(created)
+        )
     return cam_success("Created three-point light rig", lights=created, changed_node_count=len(created))
 
 

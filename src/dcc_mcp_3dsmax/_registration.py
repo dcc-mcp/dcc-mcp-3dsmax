@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from dcc_mcp_core._registration import RegistrationContext
-from dcc_mcp_core._registration import RegistrationPhase
+from dcc_mcp_core._registration import RegistrationContext, RegistrationPhase
 
 
 class CoreBuiltinActionsPhase(RegistrationPhase):

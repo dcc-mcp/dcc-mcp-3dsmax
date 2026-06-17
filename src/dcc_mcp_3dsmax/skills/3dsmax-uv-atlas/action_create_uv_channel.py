@@ -9,7 +9,9 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(channel: int, node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False) -> Dict[str, Any]:
+def main(
+    channel: int, node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False
+) -> Dict[str, Any]:
     """Create or enable one UV channel on explicit targets."""
     error = validate_channel(channel)
     if error is not None:

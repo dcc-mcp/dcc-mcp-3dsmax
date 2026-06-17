@@ -15,4 +15,6 @@ def main(material_name: str) -> Dict[str, Any]:
     if material is None:
         return material_error("Material not found", material_name=material_name)
     connections = bitmap_connections(material)
-    return material_success("Listed bitmap connections", material_name=material_name, connections=connections, count=len(connections))
+    return material_success(
+        "Listed bitmap connections", material_name=material_name, connections=connections, count=len(connections)
+    )

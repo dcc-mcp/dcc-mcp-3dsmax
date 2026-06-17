@@ -5,13 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-SCRIPT = (
-    Path(__file__).resolve().parents[1]
-    / "skills"
-    / "dcc-mcp-3dsmax-setup"
-    / "scripts"
-    / "setup_dcc_mcp_3dsmax.py"
-)
+SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "dcc-mcp-3dsmax-setup" / "scripts" / "setup_dcc_mcp_3dsmax.py"
 
 
 def _load_setup_module():

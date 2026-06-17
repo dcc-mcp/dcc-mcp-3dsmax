@@ -117,7 +117,9 @@ def run_validators(
     )
 
 
-def validate_naming(nodes: Sequence[Any], *, pattern: str = r"^[A-Za-z][A-Za-z0-9_]*$", allow_spaces: bool = False) -> List[Dict[str, Any]]:
+def validate_naming(
+    nodes: Sequence[Any], *, pattern: str = r"^[A-Za-z][A-Za-z0-9_]*$", allow_spaces: bool = False
+) -> List[Dict[str, Any]]:
     """Validate node names against a public pattern and duplicate check."""
     regex = re.compile(pattern)
     seen: Dict[str, int] = {}
@@ -174,7 +176,9 @@ def validate_transforms(nodes: Sequence[Any], *, tolerance: float = 0.001) -> Li
     return checks
 
 
-def validate_pivots(nodes: Sequence[Any], *, mode: str = "bounds_center", tolerance: float = 0.001) -> List[Dict[str, Any]]:
+def validate_pivots(
+    nodes: Sequence[Any], *, mode: str = "bounds_center", tolerance: float = 0.001
+) -> List[Dict[str, Any]]:
     """Validate pivot placement against origin or bounds center."""
     checks = []
     for node in nodes:
@@ -318,7 +322,9 @@ def validate_texture_paths(nodes: Sequence[Any]) -> List[Dict[str, Any]]:
     return checks
 
 
-def validate_uv_channels(nodes: Sequence[Any], *, required_channels: Optional[Sequence[int]] = None) -> List[Dict[str, Any]]:
+def validate_uv_channels(
+    nodes: Sequence[Any], *, required_channels: Optional[Sequence[int]] = None
+) -> List[Dict[str, Any]]:
     """Validate required UV channels."""
     required = [int(channel) for channel in (required_channels or [1])]
     checks = []

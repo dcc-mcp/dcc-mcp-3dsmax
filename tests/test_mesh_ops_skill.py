@@ -65,7 +65,9 @@ class _FakePolyOp:
         target.attached.append(source.name)
 
     def detachFaces(self, node, face_indices, asNode=True, name="DetachedMesh"):  # noqa: N803 - mirrors pymxs keyword.
-        detached = _FakeNode(name, max(item.handle for item in self.runtime.objects) + 1, verts=4, edges=5, faces=len(face_indices))
+        detached = _FakeNode(
+            name, max(item.handle for item in self.runtime.objects) + 1, verts=4, edges=5, faces=len(face_indices)
+        )
         self.runtime.objects.append(detached)
         return detached
 
@@ -159,7 +161,9 @@ def test_mesh_mutation_tools_update_fake_runtime(monkeypatch):
     subdivided = _load_action("action_apply_subdivision.py").main(node_names=["hero_mesh"], iterations=2)
     proxy = _load_action("action_create_proxy_meshes.py").main(node_names=["hero_mesh"], reduction_percent=25)
     attached = _load_action("action_attach_meshes.py").main(target_name="hero_mesh", source_names=["helper_mesh"])
-    detached = _load_action("action_detach_selected_faces.py").main(node_name="hero_mesh", use_current_face_selection=True)
+    detached = _load_action("action_detach_selected_faces.py").main(
+        node_name="hero_mesh", use_current_face_selection=True
+    )
 
     modifier_names = [modifier.name for modifier in runtime.hero.modifiers]
     assert triangulated["success"] is True

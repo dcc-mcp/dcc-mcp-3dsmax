@@ -18,7 +18,11 @@ def main(
 ) -> Dict[str, Any]:
     """Assign explicit target nodes to a display layer."""
     rt = get_runtime()
-    targets = resolve_display_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True)
+    targets = resolve_display_targets(
+        rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True
+    )
     if not targets.get("success"):
         return targets
-    return assign_nodes_to_layer(rt, layer_name=layer_name, nodes=targets["objects"], create_if_missing=create_if_missing)
+    return assign_nodes_to_layer(
+        rt, layer_name=layer_name, nodes=targets["objects"], create_if_missing=create_if_missing
+    )

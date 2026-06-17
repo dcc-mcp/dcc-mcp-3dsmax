@@ -52,9 +52,7 @@ def print_status() -> None:
         except Exception:
             # Fallback: TCP connect check
             try:
-                sock = socket.create_connection(
-                    ("127.0.0.1", int(qt_port)), timeout=3
-                )
+                sock = socket.create_connection(("127.0.0.1", int(qt_port)), timeout=3)
                 sock.close()
                 print(f"qt bridge: TCP reachable on port {qt_port} (no /health)")
             except Exception as exc2:
@@ -91,7 +89,7 @@ def _runtime() -> Any:
 
 
 def _menu_script() -> str:
-    return r'''
+    return r"""
 macroScript DccMcp3dsmax_StartSidecar
 category:"DCC MCP"
 buttonText:"Start Server"
@@ -140,7 +138,7 @@ if menuMan.findMenu "DCC MCP" == undefined do
     menuMan.updateMenuBar()
     print "dcc-mcp-3dsmax menu installed"
 )
-'''
+"""
 
 
 def remove_menu() -> bool:
@@ -154,7 +152,7 @@ def remove_menu() -> bool:
 
 
 def _remove_menu_script() -> str:
-    return r'''
+    return r"""
 -- Idempotent: silently skip when menu / macros / context are already absent.
 try (
     if menuMan.findMenu "DCC MCP" != undefined do
@@ -192,11 +190,11 @@ try (
 ) catch()
 
 print "dcc-mcp-3dsmax menu removed"
-'''
+"""
 
 
 def _shutdown_callback_script() -> str:
-    return r'''
+    return r"""
 callbacks.removeScripts id:#dcc_mcp_3dsmax_shutdown
 callbacks.addScript #preSystemShutdown "python.Execute \"import dcc_mcp_3dsmax; dcc_mcp_3dsmax.stop_sidecar_bridge()\"" id:#dcc_mcp_3dsmax_shutdown persistent:false
-'''
+"""

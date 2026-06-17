@@ -104,7 +104,9 @@ def changed_summary(runtime: Any, nodes: Iterable[Any]) -> List[Dict[str, Any]]:
     return [topology_summary(runtime, node) for node in nodes]
 
 
-def add_modifier(runtime: Any, node: Any, constructor_names: Sequence[str], **attrs: Any) -> Tuple[Optional[Any], List[str]]:
+def add_modifier(
+    runtime: Any, node: Any, constructor_names: Sequence[str], **attrs: Any
+) -> Tuple[Optional[Any], List[str]]:
     """Create and attach the first available modifier constructor."""
     warnings = []
     modifier = None
@@ -218,7 +220,9 @@ def apply_subdivision(runtime: Any, node: Any, iterations: int, render_iteration
     return warnings
 
 
-def create_proxy(runtime: Any, node: Any, *, reduction_percent: float, name_suffix: str) -> Tuple[Optional[Any], List[str]]:
+def create_proxy(
+    runtime: Any, node: Any, *, reduction_percent: float, name_suffix: str
+) -> Tuple[Optional[Any], List[str]]:
     """Duplicate a node and apply a ProOptimizer-style modifier."""
     copy = getattr(runtime, "copy", None)
     if not callable(copy):
@@ -305,7 +309,9 @@ def assign_smoothing_group(
     return warnings
 
 
-def resolve_one(runtime: Any, *, node_name: Optional[str] = None, handle: Optional[int] = None) -> Tuple[Dict[str, Any], Any]:
+def resolve_one(
+    runtime: Any, *, node_name: Optional[str] = None, handle: Optional[int] = None
+) -> Tuple[Dict[str, Any], Any]:
     """Resolve one target node and normalize the error envelope."""
     result, node = resolve_node_object(runtime, node_name=node_name, handle=handle)
     if node is None:

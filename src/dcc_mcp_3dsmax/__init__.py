@@ -140,6 +140,7 @@ def __getattr__(name: str) -> Any:
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
+
 __all__ = [
     "__version__",
     # Server

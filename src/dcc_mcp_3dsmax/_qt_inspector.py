@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 

@@ -21,7 +21,9 @@ def main(
 ) -> Dict[str, Any]:
     """Set display state on explicit target nodes."""
     rt = get_runtime()
-    targets = resolve_display_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True)
+    targets = resolve_display_targets(
+        rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True
+    )
     if not targets.get("success"):
         return targets
     changes = [

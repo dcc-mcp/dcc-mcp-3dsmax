@@ -137,11 +137,7 @@ def _resolve_script_path(server: Any, action_name: str) -> Optional[Path]:
         }
         if action_name not in names:
             continue
-        source = (
-            _get_value(action, "source_file")
-            or _get_value(action, "script_path")
-            or _get_value(action, "path")
-        )
+        source = _get_value(action, "source_file") or _get_value(action, "script_path") or _get_value(action, "path")
         if isinstance(source, str):
             path = Path(source)
             if path.is_file():

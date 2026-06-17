@@ -9,7 +9,9 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(node_names: Optional[list] = None, handles: Optional[list] = None, group_name: str = "Group") -> Dict[str, Any]:
+def main(
+    node_names: Optional[list] = None, handles: Optional[list] = None, group_name: str = "Group"
+) -> Dict[str, Any]:
     """Group resolved nodes under a new group node."""
     rt = get_runtime()
     result = resolve_node_objects(rt, node_names=node_names, handles=handles)

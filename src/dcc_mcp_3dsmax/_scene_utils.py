@@ -134,7 +134,9 @@ def resolve_node(runtime: Any, *, node_name: Optional[str] = None, handle: Optio
     return {"success": True, "message": "Resolved node", "node": identities[0], "matches": identities}
 
 
-def resolve_node_object(runtime: Any, *, node_name: Optional[str] = None, handle: Optional[int] = None) -> Tuple[Dict[str, Any], Any]:
+def resolve_node_object(
+    runtime: Any, *, node_name: Optional[str] = None, handle: Optional[int] = None
+) -> Tuple[Dict[str, Any], Any]:
     """Resolve one node and return both the envelope and raw node object."""
     result = resolve_node(runtime, node_name=node_name, handle=handle)
     if not result.get("success"):
@@ -168,7 +170,9 @@ def resolve_node_objects(
     for name in raw_names:
         result, node = resolve_node_object(runtime, node_name=str(name))
         if node is None:
-            errors.append({"node_name": str(name), "message": result.get("message"), "matches": result.get("matches", [])})
+            errors.append(
+                {"node_name": str(name), "message": result.get("message"), "matches": result.get("matches", [])}
+            )
         else:
             nodes.append(node)
     for handle in raw_handles:
@@ -179,8 +183,18 @@ def resolve_node_objects(
             nodes.append(node)
 
     if errors:
-        return {"success": False, "message": "One or more node references could not be resolved", "errors": errors, "objects": []}
-    return {"success": True, "message": "Resolved nodes", "nodes": [node_identity(node) for node in nodes], "objects": nodes}
+        return {
+            "success": False,
+            "message": "One or more node references could not be resolved",
+            "errors": errors,
+            "objects": [],
+        }
+    return {
+        "success": True,
+        "message": "Resolved nodes",
+        "nodes": [node_identity(node) for node in nodes],
+        "objects": nodes,
+    }
 
 
 def node_visible(node: Any) -> bool:

@@ -149,7 +149,12 @@ def test_scene_read_tools_return_atomic_node_metadata(monkeypatch):
     bounding_box = _load_action("action_get_bounding_box.py").main(handle=runtime.hero.handle)
 
     assert nodes["success"] is True
-    assert [node["node_name"] for node in nodes["data"]["nodes"]] == ["hero_box", "main_camera", "duplicate_name", "duplicate_name"]
+    assert [node["node_name"] for node in nodes["data"]["nodes"]] == [
+        "hero_box",
+        "main_camera",
+        "duplicate_name",
+        "duplicate_name",
+    ]
     assert cameras["data"]["cameras"][0]["node_name"] == "main_camera"
     assert selection["data"]["nodes"][0]["object_id"] == 42
     assert metadata["data"]["scene_name"] == "demo_scene.max"
@@ -216,7 +221,9 @@ def test_scene_skill_runs_through_adapter_executor(monkeypatch):
 
     from dcc_mcp_3dsmax._executor import run_skill_script
 
-    result = run_skill_script(str(SKILL_DIR / "action_set_visibility.py"), {"handles": [runtime.hero.handle], "visible": False})
+    result = run_skill_script(
+        str(SKILL_DIR / "action_set_visibility.py"), {"handles": [runtime.hero.handle], "visible": False}
+    )
 
     assert result["success"] is True
     assert runtime.hero.isHidden is True

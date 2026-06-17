@@ -569,7 +569,7 @@ class TestSidecar:
         captured = {}
         install_calls = []
         fake_dispatcher = object()
-        fake_pump = types.SimpleNamespace(install=lambda: (install_calls.append("install") or True))
+        fake_pump = types.SimpleNamespace(install=lambda: install_calls.append("install") or True)
         fake_server_module = types.SimpleNamespace(
             start_server=lambda **kwargs: captured.update(kwargs) or {"server": True}
         )
@@ -596,7 +596,7 @@ class TestSidecar:
         captured = {}
         install_calls = []
         fake_dispatcher = object()
-        fake_pump = types.SimpleNamespace(install=lambda: (install_calls.append("install") or False))
+        fake_pump = types.SimpleNamespace(install=lambda: install_calls.append("install") or False)
         fake_server_module = types.SimpleNamespace(
             start_server=lambda **kwargs: captured.update(kwargs) or {"server": True}
         )
@@ -796,7 +796,9 @@ class TestSidecar:
         from dcc_mcp_3dsmax.sidecar.bridge import start_bridge, stop_bridge
 
         script = tmp_path / "action_echo.py"
-        script.write_text("def main(value=None):\n    return {'success': True, 'data': {'value': value}}\n", encoding="utf-8")
+        script.write_text(
+            "def main(value=None):\n    return {'success': True, 'data': {'value': value}}\n", encoding="utf-8"
+        )
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
@@ -842,7 +844,9 @@ class TestSidecar:
         from dcc_mcp_3dsmax.sidecar.qt_bridge import start_qt_bridge, stop_qt_bridge
 
         script = tmp_path / "action_echo.py"
-        script.write_text("def main(value=None):\n    return {'success': True, 'data': {'value': value}}\n", encoding="utf-8")
+        script.write_text(
+            "def main(value=None):\n    return {'success': True, 'data': {'value': value}}\n", encoding="utf-8"
+        )
 
         server = start_qt_bridge()
         port = int(server.port)
@@ -897,10 +901,10 @@ class TestMenuIntegration:
 
         script = _remove_menu_script()
         assert "getDir #userMacros" in script
-        assert 'DCC MCP-DccMcp3dsmax_StartSidecar.mcr' in script
-        assert 'DCC MCP-DccMcp3dsmax_StopSidecar.mcr' in script
-        assert 'DCC MCP-DccMcp3dsmax_OpenAdmin.mcr' in script
-        assert 'DCC MCP-DccMcp3dsmax_PrintStatus.mcr' in script
+        assert "DCC MCP-DccMcp3dsmax_StartSidecar.mcr" in script
+        assert "DCC MCP-DccMcp3dsmax_StopSidecar.mcr" in script
+        assert "DCC MCP-DccMcp3dsmax_OpenAdmin.mcr" in script
+        assert "DCC MCP-DccMcp3dsmax_PrintStatus.mcr" in script
         # Idempotent — all cleanup wrapped in try/catch
         assert "deleteFile" in script
         assert "callbacks.removeScripts" in script

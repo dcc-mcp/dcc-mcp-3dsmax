@@ -195,7 +195,12 @@ def reset_materials(nodes: Sequence[Any], default_material: Optional[Any] = None
     rows = []
     for node in nodes:
         node.material = default_material
-        rows.append({"node": node_identity(node), "material": material_identity(default_material) if default_material is not None else None})
+        rows.append(
+            {
+                "node": node_identity(node),
+                "material": material_identity(default_material) if default_material is not None else None,
+            }
+        )
     return rows
 
 

@@ -9,10 +9,14 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(property_name: str, node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False) -> Dict[str, Any]:
+def main(
+    property_name: str, node_names: Optional[list] = None, handles: Optional[list] = None, use_selection: bool = False
+) -> Dict[str, Any]:
     """Delete one custom property from explicit target nodes."""
     rt = get_runtime()
-    targets = resolve_display_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True)
+    targets = resolve_display_targets(
+        rt, node_names=node_names, handles=handles, use_selection=use_selection, require_targets=True
+    )
     if not targets.get("success"):
         return targets
     rows = []

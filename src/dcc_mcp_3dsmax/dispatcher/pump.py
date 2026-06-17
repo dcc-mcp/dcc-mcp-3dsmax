@@ -183,7 +183,8 @@ class MaxUiPump:
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "MaxUiPump: adapter %s unavailable: %s",
-                    type(adapter).__name__, exc,
+                    type(adapter).__name__,
+                    exc,
                 )
                 continue
 
@@ -343,6 +344,7 @@ def _pump_degradation_context() -> Dict[str, Any]:
     }
     try:
         import pymxs  # noqa: PLC0415
+
         rt = pymxs.runtime
         try:
             context["max_version"] = str(rt.maxVersion())
@@ -362,12 +364,14 @@ def _pump_degradation_context() -> Dict[str, Any]:
 
     try:
         import pythonnet  # noqa: F401, PLC0415
+
         context["pythonnet_available"] = True
     except ImportError:
         pass
 
     try:
         import clr  # noqa: F401, PLC0415
+
         context["clr_available"] = True
     except ImportError:
         pass

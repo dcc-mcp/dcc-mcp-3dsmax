@@ -53,7 +53,9 @@ def file_info(path: Path) -> Dict[str, Any]:
     }
 
 
-def resolve_import_file(file_path: str, expected_format: Optional[str] = None) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+def resolve_import_file(
+    file_path: str, expected_format: Optional[str] = None
+) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
     """Validate an existing import file path."""
     path = Path(file_path).expanduser()
     format_name = _format_from_path(path, SUPPORTED_IMPORT_FORMATS, expected_format)

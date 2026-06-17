@@ -184,7 +184,7 @@ def _install_main_thread_pump() -> None:
         return
     setattr(builtins, _PUMP_NAME, process_pending_requests)
     _RT.execute(
-        r'''
+        r"""
 global dccMcp3dsmaxBridgePumpRollout
 try (destroyDialog dccMcp3dsmaxBridgePumpRollout) catch()
 rollout dccMcp3dsmaxBridgePumpRollout "dcc-mcp-3dsmax Bridge Pump" width:1 height:1
@@ -196,7 +196,7 @@ rollout dccMcp3dsmaxBridgePumpRollout "dcc-mcp-3dsmax Bridge Pump" width:1 heigh
     )
 )
 createDialog dccMcp3dsmaxBridgePumpRollout 1 1 pos:[-32000,-32000] style:#(#style_toolwindow)
-'''
+"""
     )
 
 

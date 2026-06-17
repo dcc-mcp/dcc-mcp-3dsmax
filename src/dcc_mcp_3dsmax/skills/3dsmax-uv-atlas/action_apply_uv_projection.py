@@ -35,5 +35,9 @@ def main(
         return targets
     warnings = []
     for node in targets["objects"]:
-        warnings.extend(apply_projection(rt, node, channel=int(channel), projection=projection, length=length, width=width, height=height))
+        warnings.extend(
+            apply_projection(
+                rt, node, channel=int(channel), projection=projection, length=length, width=width, height=height
+            )
+        )
     return uv_success("Applied UV projection", nodes=changed_channels(rt, targets["objects"]), warnings=warnings)

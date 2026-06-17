@@ -21,4 +21,8 @@ def main(node_names: Optional[list] = None, handles: Optional[list] = None) -> D
             helper(node)
         else:
             rt.execute("resetTransform ${}".format(getattr(node, "name", "")))
-    return {"success": True, "message": "Froze transforms", "data": {"nodes": [node_identity(node) for node in result["objects"]]}}
+    return {
+        "success": True,
+        "message": "Froze transforms",
+        "data": {"nodes": [node_identity(node) for node in result["objects"]]},
+    }

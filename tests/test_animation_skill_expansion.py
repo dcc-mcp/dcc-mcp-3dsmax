@@ -129,7 +129,9 @@ def test_keyframe_workflow_and_curve_exchange_through_executor(monkeypatch):
 def test_bake_transform_animation_and_selection_errors(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
 
-    baked = _load_action("action_bake_transform_animation.py").main(node_names=["hero_mesh"], start_frame=1, end_frame=3, step=1)
+    baked = _load_action("action_bake_transform_animation.py").main(
+        node_names=["hero_mesh"], start_frame=1, end_frame=3, step=1
+    )
     missing_keys = _load_action("action_delete_keyframes.py").main(node_names=["hero_mesh"], frames=[99])
     runtime.selection = []
     no_selection = _load_action("action_list_keyframes.py").main(use_selection=True)
