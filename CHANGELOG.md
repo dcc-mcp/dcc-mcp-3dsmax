@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.24](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.23...v0.1.24) (2026-06-17)
+
+
+### Bug Fixes
+
+* move MAXScript local declaration to top in menu.py ([5e4bde4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5e4bde46ff93c88ac61bcde3174a0705c2b27003))
+
 ## [0.1.23](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.22...v0.1.23) (2026-06-17)
 
 
