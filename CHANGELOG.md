@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.23](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.22...v0.1.23) (2026-06-17)
+
+
+### Bug Fixes
+
+* bump to Beta stability, align core dependency with Maya release train ([f60d7f1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/f60d7f1d1bf72b11ce79bb25c1383b5415e0009c))
+
 ## [0.1.22](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.21...v0.1.22) (2026-06-13)
 
 
