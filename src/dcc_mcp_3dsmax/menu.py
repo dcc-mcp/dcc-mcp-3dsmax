@@ -153,6 +153,8 @@ def remove_menu() -> bool:
 
 def _remove_menu_script() -> str:
     return r"""
+local userMacrosDir = getDir #userMacros
+
 -- Idempotent: silently skip when menu / macros / context are already absent.
 try (
     if menuMan.findMenu "DCC MCP" != undefined do
@@ -177,7 +179,6 @@ try (macros.delete "DccMcp3dsmax_OpenAdmin") catch()
 try (macros.delete "DccMcp3dsmax_PrintStatus") catch()
 
 -- Remove persisted macroScript .mcr files so macros don't survive a restart.
-local userMacrosDir = getDir #userMacros
 try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_StartSidecar.mcr")) catch()
 try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_StopSidecar.mcr")) catch()
 try (deleteFile (userMacrosDir + "\\DCC MCP-DccMcp3dsmax_OpenAdmin.mcr")) catch()
