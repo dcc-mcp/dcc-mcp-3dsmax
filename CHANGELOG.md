@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.25](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.24...v0.1.25) (2026-06-18)
+
+
+### Bug Fixes
+
+* move local userMacrosDir = getDir #userMacros to BEFORE all try blocks, matching the pattern in menu.py:_remove_menu_script(). ([1ef1500](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/1ef150023f4859adff744647de318ff9e8fffc9a))
+* move MAXScript local declaration to top in startup template ([#102](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/102)) ([1ef1500](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/1ef150023f4859adff744647de318ff9e8fffc9a))
+
 ## [0.1.24](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.23...v0.1.24) (2026-06-17)
 
 
