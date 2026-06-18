@@ -512,17 +512,24 @@ class TestBootstrapModes:
         from dcc_mcp_3dsmax import max_bootstrap
 
         monkeypatch.delenv("DCC_MCP_3DSMAX_BOOT_MODE", raising=False)
-        monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: None)
-        monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: None)
-        monkeypatch.setattr(max_bootstrap, "start_embedded_sidecar_bridge", lambda: {"mode": "embedded-runtime"})
-        assert max_bootstrap.main() == {"mode": "embedded-runtime"}
+        monkeypatch.setattr(max_bootstrap, "start_sidecar_bridge", lambda: {"mode": "sidecar"})
+        assert max_bootstrap.main() == {"mode": "sidecar"}
 
     def test_sidecar(self, monkeypatch):
         from dcc_mcp_3dsmax import max_bootstrap
 
-        monkeypatch.setenv("DCC_MCP_3DSMAX_BOOT_MODE", "sidecar")
+        monkeypatch.setenv("DCC_MCP_3DSMAX_BOOT_MODE", "runtime")
         monkeypatch.setattr(max_bootstrap, "start_sidecar_bridge", lambda: {"mode": "sidecar"})
         assert max_bootstrap.main() == {"mode": "sidecar"}
+
+    def test_embedded(self, monkeypatch):
+        from dcc_mcp_3dsmax import max_bootstrap
+
+        monkeypatch.setenv("DCC_MCP_3DSMAX_BOOT_MODE", "embedded")
+        monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "start_embedded_sidecar_bridge", lambda: {"mode": "embedded-runtime"})
+        assert max_bootstrap.main() == {"mode": "embedded-runtime"}
 
     def test_server(self, monkeypatch):
         from dcc_mcp_3dsmax import max_bootstrap

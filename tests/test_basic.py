@@ -453,8 +453,10 @@ class TestSidecar:
         index = cmd.index(flag)
         return cmd[index + 1]
 
-    def test_sidecar_server_uses_default_process_streams(self, tmp_path, monkeypatch, capsys):
-        """External sidecar mode leaves logging to dcc-mcp-server, like Maya."""
+    def test_sidecar_server_uses_core_lifecycle_launcher(self, tmp_path, monkeypatch, capsys):
+        """External sidecar mode delegates launch details to dcc-mcp-core."""
+        import dcc_mcp_core.install_lifecycle as lifecycle
+
         from dcc_mcp_3dsmax import max_bootstrap
 
         binary = tmp_path / ("dcc-mcp-server.exe" if os.name == "nt" else "dcc-mcp-server")
@@ -464,53 +466,81 @@ class TestSidecar:
         class FakeProcess:
             pid = 4321
 
-            def wait(self, timeout):
-                raise subprocess.TimeoutExpired("sidecar", timeout)
-
             def poll(self):
                 return None
 
-        def fake_popen(cmd, **kwargs):
-            captured["cmd"] = cmd
+        def fake_launch_sidecar(**kwargs):
             captured.update(kwargs)
-            return FakeProcess()
+            command = [
+                str(kwargs["server_bin"]),
+                "sidecar",
+                "--dcc",
+                kwargs["dcc_type"],
+                "--host-rpc",
+                kwargs["host_rpc"],
+                "--watch-pid",
+                str(kwargs["watch_pid"]),
+                "--registry-dir",
+                str(tmp_path / "registry"),
+                "--gateway-port",
+                str(kwargs["gateway_port"]),
+                "--instance-id",
+                kwargs["instance_id"],
+                "--display-name",
+                kwargs["display_name"],
+                "--adapter-version",
+                kwargs["adapter_version"],
+                "--discovery-mcp-url",
+                kwargs["discovery_mcp_url"],
+                "--gateway-name",
+                kwargs["gateway_name"],
+                "--gateway-remote-host",
+                kwargs["gateway_remote_host"],
+                "--gateway-remote-port",
+                str(kwargs["gateway_remote_port"]),
+            ]
+            return {
+                "success": True,
+                "role": "per-dcc-sidecar",
+                "gateway_port": kwargs["gateway_port"],
+                "command": command,
+                "environment": {"set": {"DCC_MCP_REGISTRY_DIR": str(tmp_path / "registry")}},
+                "process": FakeProcess(),
+            }
 
         monkeypatch.setattr(max_bootstrap, "_server_binary_path", lambda: binary)
         monkeypatch.setattr(max_bootstrap, "qt_bridge_port", lambda: 9876)
         monkeypatch.setattr(max_bootstrap, "_gateway_name", lambda _env: "dcc-mcp-gateway@workstation-01")
-        monkeypatch.setattr(max_bootstrap.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(lifecycle, "launch_sidecar", fake_launch_sidecar)
         max_bootstrap._sidecar_process = None
 
-        process = max_bootstrap.start_sidecar_server(instance_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        process = max_bootstrap.start_sidecar_server(
+            instance_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            discovery_mcp_url="http://127.0.0.1:8765/mcp",
+        )
         assert process.pid == 4321
-        assert captured["stdout"] is subprocess.DEVNULL
-        assert captured["stderr"] is subprocess.DEVNULL
-        assert captured["stdin"] is subprocess.DEVNULL
-        assert captured["close_fds"] is True
-        assert captured["cmd"] == max_bootstrap._sidecar_launch_contract["command"]
-        assert captured["cmd"][:2] == [str(binary), "sidecar"]
-        assert self._flag_value(captured["cmd"], "--dcc") == "3dsmax"
-        assert self._flag_value(captured["cmd"], "--host-rpc") == "qtserver://127.0.0.1:9876"
-        assert self._flag_value(captured["cmd"], "--watch-pid") == str(os.getpid())
-        assert self._flag_value(captured["cmd"], "--instance-id") == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-        assert self._flag_value(captured["cmd"], "--display-name").startswith("3ds Max ")
-        assert self._flag_value(captured["cmd"], "--adapter-version")
-        assert self._flag_value(captured["cmd"], "--gateway-name") == "dcc-mcp-gateway@workstation-01"
-        assert self._flag_value(captured["cmd"], "--gateway-port") == "9765"
-        assert self._flag_value(captured["cmd"], "--gateway-remote-host") == "0.0.0.0"
-        assert self._flag_value(captured["cmd"], "--gateway-remote-port") == "59765"
-        assert self._flag_value(captured["cmd"], "--registry-dir")
-        assert captured["env"]["DCC_MCP_REGISTRY_DIR"] == self._flag_value(captured["cmd"], "--registry-dir")
-        assert captured["env"]["DCC_MCP_GATEWAY_PORT"] == "9765"
-        assert captured["env"]["DCC_MCP_GATEWAY_REMOTE_HOST"] == "0.0.0.0"
-        assert captured["env"]["DCC_MCP_GATEWAY_REMOTE_PORT"] == "59765"
+        assert captured["dcc_type"] == "3dsmax"
+        assert captured["host_rpc"] == "qtserver://127.0.0.1:9876"
+        assert captured["watch_pid"] == os.getpid()
+        assert captured["server_bin"] == str(binary)
+        assert captured["instance_id"] == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        assert captured["display_name"].startswith("3ds Max ")
+        assert captured["adapter_version"]
+        assert captured["discovery_mcp_url"] == "http://127.0.0.1:8765/mcp"
+        assert captured["gateway_name"] == "dcc-mcp-gateway@workstation-01"
+        assert captured["gateway_port"] == 9765
+        assert captured["gateway_remote_host"] == "0.0.0.0"
+        assert captured["gateway_remote_port"] == 59765
+        assert captured["liveness_check_secs"] == 0.75
+        assert captured["return_process"] is True
         assert max_bootstrap._sidecar_launch_contract["role"] == "per-dcc-sidecar"
         output = capsys.readouterr().out
         assert "dcc-mcp-3dsmax sidecar server started" in output
-        assert "sidecar log:" not in output
 
     def test_sidecar_server_honors_gateway_port_zero(self, tmp_path, monkeypatch, capsys):
         """Gateway auto-launch can be explicitly disabled for isolated diagnostics."""
+        import dcc_mcp_core.install_lifecycle as lifecycle
+
         from dcc_mcp_3dsmax import max_bootstrap
 
         binary = tmp_path / ("dcc-mcp-server.exe" if os.name == "nt" else "dcc-mcp-server")
@@ -520,46 +550,61 @@ class TestSidecar:
         class FakeProcess:
             pid = 4321
 
-            def wait(self, timeout):
-                raise subprocess.TimeoutExpired("sidecar", timeout)
-
             def poll(self):
                 return None
 
-        def fake_popen(cmd, **kwargs):
-            captured["cmd"] = cmd
+        def fake_launch_sidecar(**kwargs):
             captured.update(kwargs)
-            return FakeProcess()
+            return {
+                "success": True,
+                "role": "per-dcc-sidecar",
+                "gateway_port": kwargs["gateway_port"],
+                "command": ["dcc-mcp-server", "sidecar"],
+                "process": FakeProcess(),
+            }
 
         monkeypatch.setattr(max_bootstrap, "_server_binary_path", lambda: binary)
         monkeypatch.setattr(max_bootstrap, "qt_bridge_port", lambda: 9876)
-        monkeypatch.setattr(max_bootstrap.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(lifecycle, "launch_sidecar", fake_launch_sidecar)
         monkeypatch.setenv("DCC_MCP_GATEWAY_PORT", "0")
         max_bootstrap._sidecar_process = None
 
         max_bootstrap.start_sidecar_server()
 
-        assert self._flag_value(captured["cmd"], "--gateway-port") == "0"
+        assert captured["gateway_port"] == 0
         assert captured["env"]["DCC_MCP_GATEWAY_PORT"] == "0"
         assert "gateway auto-launch disabled" in capsys.readouterr().out
 
-    def test_main_defaults_to_agent_callable_embedded_runtime(self, monkeypatch):
-        """Startup scripts should register adapter tools, not just a host RPC sidecar."""
+    def test_main_defaults_to_qt_sidecar_runtime(self, monkeypatch):
+        """Startup scripts use the Maya-style sidecar plus Qt bridge by default."""
         from dcc_mcp_3dsmax import max_bootstrap
 
-        calls = []
         monkeypatch.delenv("DCC_MCP_3DSMAX_BOOT_MODE", raising=False)
-        monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: calls.append("cleanup"))
-        monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: calls.append("menu"))
-        monkeypatch.setattr(max_bootstrap, "start_embedded_sidecar_bridge", lambda: {"mode": "embedded-runtime"})
+        monkeypatch.setattr(max_bootstrap, "start_sidecar_bridge", lambda: {"mode": "sidecar"})
+
+        assert max_bootstrap.main() == {"mode": "sidecar"}
+
+    def test_sidecar_bridge_publishes_discovery_url(self, monkeypatch):
+        """Default sidecar startup keeps discovery separate from Qt dispatch."""
+        from dcc_mcp_3dsmax import max_bootstrap
+
+        captured = {}
+        fake_server = types.SimpleNamespace(port=8765)
+        monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "start_embedded_server", lambda **kwargs: fake_server)
+        monkeypatch.setattr(max_bootstrap, "start_qt_bridge", lambda port=None: {"port": 9876})
         monkeypatch.setattr(
             max_bootstrap,
-            "start_sidecar_bridge",
-            lambda: (_ for _ in ()).throw(AssertionError("external sidecar should not be default")),
+            "start_sidecar_server",
+            lambda **kwargs: captured.update(kwargs) or types.SimpleNamespace(pid=4321),
         )
 
-        assert max_bootstrap.main() == {"mode": "embedded-runtime"}
-        assert calls == ["cleanup", "menu"]
+        result = max_bootstrap.start_sidecar_bridge(9876)
+
+        assert result["discovery_server"] is fake_server
+        assert result["qt_bridge"] == {"port": 9876}
+        assert captured["discovery_mcp_url"] == "http://127.0.0.1:8765/mcp"
 
     def test_embedded_runtime_uses_core_ui_dispatcher(self, monkeypatch):
         """Default embedded runtime wires core's HTTP main-thread route."""
@@ -611,19 +656,21 @@ class TestSidecar:
         assert install_calls == ["install"]
         assert execution_bridge.default_thread_affinity == "any"
 
-    def test_main_keeps_external_sidecar_as_explicit_mode(self, monkeypatch):
-        """Operators can still opt into the process-isolated sidecar mode."""
+    def test_main_keeps_embedded_runtime_as_explicit_mode(self, monkeypatch):
+        """Operators can still opt into the old embedded HTTP runtime."""
         from dcc_mcp_3dsmax import max_bootstrap
 
-        monkeypatch.setenv("DCC_MCP_3DSMAX_BOOT_MODE", "sidecar")
-        monkeypatch.setattr(max_bootstrap, "start_sidecar_bridge", lambda: {"mode": "sidecar"})
+        monkeypatch.setenv("DCC_MCP_3DSMAX_BOOT_MODE", "embedded")
+        monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: None)
+        monkeypatch.setattr(max_bootstrap, "start_embedded_sidecar_bridge", lambda: {"mode": "embedded-runtime"})
         monkeypatch.setattr(
             max_bootstrap,
-            "start_embedded_sidecar_bridge",
-            lambda: (_ for _ in ()).throw(AssertionError("embedded runtime should not be used")),
+            "start_sidecar_bridge",
+            lambda: (_ for _ in ()).throw(AssertionError("sidecar should not be used")),
         )
 
-        assert max_bootstrap.main() == {"mode": "sidecar"}
+        assert max_bootstrap.main() == {"mode": "embedded-runtime"}
 
     def test_stop_sidecar_bridge_stops_loaded_embedded_server(self, monkeypatch):
         """Uninstall/shutdown cleanup stops the default embedded runtime when loaded."""
