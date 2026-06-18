@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.26](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.25...v0.1.26) (2026-06-18)
+
+
+### Bug Fixes
+
+* use qt sidecar runtime for 3dsmax ([a4e9ee0](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/a4e9ee0f7755e6305fcdeacc00770acc2fd7eb62))
+
 ## [0.1.25](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.24...v0.1.25) (2026-06-18)
 
 
