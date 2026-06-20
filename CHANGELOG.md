@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.27](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.26...v0.1.27) (2026-06-20)
+
+
+### Features
+
+* add 3dsmax import-to-scene skill ([2baa0dc](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2baa0dcd384efa00a957b623b8f1dff658d0abbd))
+* add 3dsmax import-to-scene skill ([8507236](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8507236c1deb520d291cf86ae367d8886bca6f0b))
+* add 3dsmax import-to-scene skill ([#107](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/107)) ([2baa0dc](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2baa0dcd384efa00a957b623b8f1dff658d0abbd))
+
 ## [0.1.26](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.25...v0.1.26) (2026-06-18)
 
 
