@@ -531,6 +531,7 @@ class TestSidecar:
         assert captured["gateway_port"] == 9765
         assert captured["gateway_remote_host"] == "0.0.0.0"
         assert captured["gateway_remote_port"] == 59765
+        assert captured["detached"] is True
         assert captured["liveness_check_secs"] == 0.75
         assert captured["return_process"] is True
         assert max_bootstrap._sidecar_launch_contract["role"] == "per-dcc-sidecar"

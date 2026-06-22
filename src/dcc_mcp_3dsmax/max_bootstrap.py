@@ -87,6 +87,7 @@ def start_sidecar_server(
         gateway_remote_host=gateway_remote_host,
         gateway_remote_port=gateway_remote_port,
         env=env,
+        detached=True,
         liveness_check_secs=0.75,
         return_process=True,
     )
