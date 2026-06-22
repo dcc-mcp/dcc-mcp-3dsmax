@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.29](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.28...v0.1.29) (2026-06-22)
+
+
+### Bug Fixes
+
+* launch 3dsmax sidecar detached ([8d4ac50](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8d4ac504bae55a8a351b0b1d3667badd9423d043))
+
 ## [0.1.28](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.27...v0.1.28) (2026-06-21)
 
 
