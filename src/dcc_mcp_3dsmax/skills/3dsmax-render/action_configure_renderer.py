@@ -19,4 +19,4 @@ def main(
             return result
     if settings:
         return configure_renderer(runtime, settings=settings)
-    return render_settings(runtime)
+    return {"success": True, "status": "success", "data": render_settings(runtime)}
