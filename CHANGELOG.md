@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.30](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.29...v0.1.30) (2026-06-24)
+
+
+### Features
+
+* add 3dsmax-asset-import, 3dsmax-lookdev skills and enhance 3dsmax-render ([75a3f88](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/75a3f883a2a9ad4af765d042f512c7554037ba19))
+
 ## [0.1.29](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.28...v0.1.29) (2026-06-22)
 
 
