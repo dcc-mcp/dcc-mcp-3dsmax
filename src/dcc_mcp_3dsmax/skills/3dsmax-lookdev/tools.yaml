@@ -1,0 +1,196 @@
+tools:
+  - name: setup_hdr_lighting
+    description: >-
+      Load an HDR/EXR image as the environment/background map and set up a
+      three-point light rig. Returns the bitmap info, rig details, and any
+      warnings.
+    source_file: action_setup_hdr_lighting.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [hdri_path]
+      additionalProperties: false
+      properties:
+        hdri_path:
+          type: string
+          minLength: 1
+          description: Path to the HDR/EXR image file.
+        name_prefix:
+          type: string
+          default: Review
+          description: Prefix for the three-point light rig names.
+        intensity:
+          type: number
+          default: 1.0
+          description: Environment map intensity multiplier.
+        rotation:
+          type: number
+          default: 0.0
+          description: Environment map rotation angle in degrees.
+        target_position:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: {type: number}
+          description: Optional target for light rig aim point.
+        distance:
+          type: number
+          default: 100.0
+          description: Distance from target for light rig placement.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Set up HDR environment lighting and supporting light rig for look development."
+    tool_role: action
+    risk: medium
+    search_aliases: ["setup_hdr_lighting", "setup hdr lighting", "hdr environment", "environment lighting"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'environment']
+    produces:
+      - 'environment_lighting'
+
+  - name: preview_material
+    description: >-
+      Create a test sphere, apply a named scene material, and report the
+      viewport-visible result. Useful for quick lookdev iteration before
+      applying to the final geometry.
+    source_file: action_preview_material.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [material_name]
+      additionalProperties: false
+      properties:
+        material_name:
+          type: string
+          minLength: 1
+          description: Name of an existing scene material.
+        preview_type:
+          type: string
+          default: sphere
+          enum: [sphere, quad]
+          description: Type of test geometry to create.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Create a test geometry object with a material applied for lookdev preview."
+    tool_role: action
+    risk: low
+    search_aliases: ["preview_material", "preview material", "material preview", "lookdev preview"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'materials']
+    produces:
+      - 'material_preview'
+
+  - name: assign_renderer_material
+    description: >-
+      Detect the active renderer (Arnold, V-Ray, Scanline), create or find
+      a suitable material class, apply it to named nodes, and return a summary.
+    source_file: action_assign_renderer_material.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [material_name]
+      additionalProperties: false
+      properties:
+        material_name:
+          type: string
+          minLength: 1
+          description: Name for the new material.
+        renderer_type:
+          type: string
+          enum: [auto, arnold, vray, scanline]
+          default: auto
+          description: Target renderer. 'auto' detects the current active renderer.
+        base_color:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: {type: number, minimum: 0, maximum: 255}
+          description: Base/diffuse RGB color (0-255).
+        roughness:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Surface roughness (0 = smooth, 1 = rough).
+        metalness:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Metalness (0 = dielectric, 1 = metal).
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Target node names. Uses current selection when omitted.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Create and assign a renderer-appropriate material to scene nodes."
+    tool_role: action
+    risk: medium
+    search_aliases: ["assign_renderer_material", "assign renderer material", "arnold material", "vray material"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'materials']
+    produces:
+      - 'material'
+      - 'material_assignment'

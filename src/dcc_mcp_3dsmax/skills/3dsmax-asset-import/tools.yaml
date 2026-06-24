@@ -1,0 +1,62 @@
+tools:
+  - name: import_to_scene
+    description: >-
+      Import a 3D asset described by an AssetDescriptor into the scene.
+      Accepts a dict payload with at least {"path": "...", "format": "fbx|obj|3ds"}.
+      Renames created nodes with the descriptor name or group prefix.
+    source_file: action_import_to_scene.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [descriptor]
+      additionalProperties: false
+      properties:
+        descriptor:
+          type: object
+          description: Asset descriptor with path, format, name, and optional metadata keys.
+          additionalProperties: true
+          properties:
+            id: {type: string}
+            name: {type: string}
+            path: {type: string}
+            format: {type: string, enum: [fbx, obj, 3ds]}
+            size_bytes: {type: integer}
+            metadata: {type: object}
+        group_name:
+          type: string
+          description: Optional group name used as the rename prefix for imported nodes.
+        name_prefix:
+          type: string
+          description: Optional explicit rename prefix; takes priority over group_name and descriptor name.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Import a 3D asset (FBX/OBJ/3DS) from an AssetDescriptor into the current scene."
+    tool_role: action
+    risk: medium
+    search_aliases: ["import_to_scene", "import to scene", "import asset", "asset descriptor"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: false
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ['scene_node', 'file']
+    produces:
+      - 'asset_import'
+      - 'scene_node'

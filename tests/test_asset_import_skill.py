@@ -1,0 +1,77 @@
+"""Tests for the bundled 3ds Max asset import skill."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import types
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-asset-import"
+
+
+def _load_action(script_name: str):
+    path = SKILL_DIR / script_name
+    spec = importlib.util.spec_from_file_location(path.stem + "_test_module", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _FakeNode:
+    def __init__(self, name: str, handle: int, bounds: tuple[list[float], list[float]]) -> None:
+        self.name = name
+        self.handle = handle
+        self.min = bounds[0]
+        self.max = bounds[1]
+
+
+class _FakeRuntime:
+    def __init__(self, created: list[_FakeNode]) -> None:
+        self.objects = []
+        self._created = created
+
+    def importFile(self, file_path, _no_prompt, using=None):  # noqa: N802 - mirrors pymxs runtime naming.
+        _ = (file_path, _no_prompt, using)
+        self.objects.extend(self._created)
+        return True
+
+
+def _install_fake_pymxs(monkeypatch, runtime):
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+
+def test_import_to_scene_returns_created_nodes_and_bounds(monkeypatch, tmp_path):
+    asset = tmp_path / "hero_asset.fbx"
+    asset.write_text("asset", encoding="utf-8")
+    runtime = _FakeRuntime(
+        [
+            _FakeNode("asset_geo_A", 42, ([0.0, 0.0, 0.0], [1.0, 2.0, 3.0])),
+            _FakeNode("asset_geo_B", 43, ([-2.0, -1.0, 0.0], [4.0, 5.0, 6.0])),
+        ]
+    )
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_import_to_scene.py").main(
+        descriptor={"name": "Hero Asset", "path": str(asset), "format": "fbx"},
+        group_name="HeroRig",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["imported_node_names"] == ["HeroRig_01", "HeroRig_02"]
+    assert result["data"]["bounding_box"]["min"] == [-2.0, -1.0, 0.0]
+    assert result["data"]["bounding_box"]["max"] == [4.0, 5.0, 6.0]
+
+
+def test_import_to_scene_rejects_missing_files(monkeypatch, tmp_path):
+    runtime = _FakeRuntime([])
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_import_to_scene.py").main(
+        descriptor={"name": "Missing", "path": str(tmp_path / "missing.obj"), "format": "obj"}
+    )
+
+    assert result["success"] is False
+    assert "does not exist" in result["message"]

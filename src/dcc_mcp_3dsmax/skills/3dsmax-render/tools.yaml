@@ -78,6 +78,46 @@ tools:
       targets: []
     produces:
       - "file:video"
+  - name: render_scene
+    description: Render the current scene to an image file.
+    source_file: action_render_scene.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [output_path]
+      additionalProperties: false
+      properties:
+        output_path: {type: string, minLength: 1}
+        overwrite: {type: boolean, default: false}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        camera_name: {type: string, minLength: 1}
+        camera_handle: {type: integer}
+    output_schema: *output_schema
+    timeout_hint_secs: 180
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Render the current scene to a non-empty image file."
+    tool_role: action
+    risk: medium
+    search_aliases: ["render_scene", "render scene", "scene render"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: true
+      imports: false
+      file_output: true
+      render: true
+      targets: ["file:image", "render_settings"]
+    produces:
+      - "file:image"
+      - "render_settings"
   - name: get_render_settings
     description: Inspect common render settings.
     source_file: action_get_render_settings.py
@@ -307,3 +347,162 @@ tools:
       render: false
       targets: []
     produces: ['render_settings']
+
+  - name: render_hdr
+    description: >-
+      Render the current scene to an HDR/EXR/TIFF image file with configurable
+      bit depth and compression. Use when the user wants high dynamic range
+      output or EXR multi-channel save.
+    source_file: action_render_hdr.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [output_path]
+      additionalProperties: false
+      properties:
+        output_path: {type: string, minLength: 1}
+        overwrite: {type: boolean, default: false}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        camera_name: {type: string, minLength: 1}
+        camera_handle: {type: integer}
+        hdr_format: {type: string, enum: [exr, hdr, tif], default: exr}
+        bit_depth: {type: integer, enum: [8, 16, 32], default: 16}
+        compression: {type: string}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 300
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Render the current scene to an HDR/EXR/TIFF image file."
+    tool_role: action
+    risk: medium
+    search_aliases: ["render_hdr", "render hdr", "hdr render", "exr render"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: true
+      imports: false
+      file_output: true
+      render: true
+      targets: ["file:image", "hdr_settings"]
+    produces:
+      - "file:hdr_image"
+
+  - name: render_multi_pass
+    description: >-
+      Render the current scene with multiple render elements (AOVs) enabled.
+      Supports common passes: diffuse, specular, reflection, refraction,
+      shadow, ambient_occlusion, normal, z_depth, alpha, global_illumination,
+      lighting, self_illumination, background.
+    source_file: action_render_multi_pass.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [output_path]
+      additionalProperties: false
+      properties:
+        output_path: {type: string, minLength: 1}
+        overwrite: {type: boolean, default: false}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        camera_name: {type: string, minLength: 1}
+        camera_handle: {type: integer}
+        elements:
+          type: array
+          items: {type: string}
+          description: Render element names to enable. Uses all common passes when omitted.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 300
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Render the current scene with multi-channel AOV passes."
+    tool_role: action
+    risk: medium
+    search_aliases: ["render_multi_pass", "render multi pass", "aov render", "render elements", "multi-channel"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: true
+      imports: false
+      file_output: true
+      render: true
+      targets: ["file:image", "aov_settings"]
+    produces:
+      - "file:multi_pass_image"
+
+  - name: configure_renderer
+    description: >-
+      Switch the active renderer (scanline, arnold, vray, art) and/or apply
+      renderer-specific parameter overrides such as sampling, ray depth, and
+      other numeric settings.
+    source_file: action_configure_renderer.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        renderer_type:
+          type: string
+          enum: [scanline, arnold, vray, art]
+          description: Switch to this renderer. Omit to keep the current one.
+        settings:
+          type: object
+          additionalProperties: true
+          description: Renderer parameter overrides as key-value pairs.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Switch the active renderer and/or apply parameter overrides."
+    tool_role: action
+    risk: medium
+    search_aliases: ["configure_renderer", "configure renderer", "set renderer", "renderer settings"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["render_settings"]
+    produces:
+      - "renderer_config"

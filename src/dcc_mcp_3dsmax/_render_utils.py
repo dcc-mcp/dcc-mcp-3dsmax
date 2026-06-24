@@ -114,6 +114,50 @@ def create_preview(
     return render_error("No preview generation operation is available", artifact=artifact_info(output_path))
 
 
+def render_scene(
+    runtime: Any,
+    output_path: Path,
+    *,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    camera_name: Optional[str] = None,
+    camera_handle: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Render the current scene to an image file through host-provided helpers."""
+    if width is not None and height is not None:
+        set_resolution(runtime, width, height)
+    if camera_name is not None or camera_handle is not None:
+        camera_result = set_camera(runtime, camera_name=camera_name, camera_handle=camera_handle)
+        if not camera_result.get("success"):
+            return camera_result
+
+    set_render_output(runtime, output_path=str(output_path), save_file=True)
+    renderer = getattr(runtime, "render", None) or getattr(runtime, "renderScene", None) or getattr(
+        runtime, "render_scene", None
+    )
+    if not callable(renderer):
+        return render_error("No render operation is available", artifact=artifact_info(output_path))
+
+    try:
+        try:
+            result = renderer(str(output_path))
+        except TypeError:
+            result = renderer()
+    except Exception as exc:  # noqa: BLE001
+        return render_error(
+            "Render failed",
+            artifact=artifact_info(output_path),
+            exception_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+    if result is False:
+        return render_error("Render did not complete", artifact=artifact_info(output_path))
+    if not output_path.exists():
+        return render_error("Render did not produce an output file", artifact=artifact_info(output_path))
+    return render_success("Rendered scene", artifact=artifact_info(output_path), settings=render_settings(runtime))
+
+
 def set_render_output(
     runtime: Any, *, output_path: Optional[str] = None, save_file: Optional[bool] = None
 ) -> Dict[str, Any]:
