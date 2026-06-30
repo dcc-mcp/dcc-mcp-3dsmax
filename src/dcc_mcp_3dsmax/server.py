@@ -41,7 +41,6 @@ from dcc_mcp_core import (
     register_capability_mcp_tool,
     scan_and_load_strict,
 )
-from dcc_mcp_core._registration import RegistrationContext, run_registration_phases
 from dcc_mcp_core.server_base import DccServerBase
 
 # Import local modules
@@ -472,30 +471,20 @@ class MaxMcpServer(DccServerBase):
         strict_scan: Optional[bool] = None,
     ) -> "MaxMcpServer":
         """Discover built-in skills + attach 3ds Max-specific core integrations."""
-        # Stash minimal_mode so the core phase can access it.
-        self._registration_minimal_mode = minimal_mode
-
-        context = RegistrationContext(
-            server=self,
+        report = self.run_registration(
             extra_skill_paths=extra_skill_paths,
             include_bundled=include_bundled,
             minimal=minimal_mode is not None,
+            minimal_mode=minimal_mode,
             strict_scan=strict_scan,
         )
-        report = run_registration_phases(_registration.default_registration_phases(), context)
         self._registration_report = report
         return self
 
-    def _register_core_builtin_actions(self, context: RegistrationContext) -> None:
+    def _register_core_builtin_actions(self, context: Any) -> None:
         """Discover skills via the base-class registration path (phase helper)."""
-        paths = list(context.extra_skill_paths or []) + self._extra_skill_paths
-        minimal_mode = getattr(self, "_registration_minimal_mode", None)
         self._configure_skill_load_transform()
-        super().register_builtin_actions(
-            extra_skill_paths=paths,
-            include_bundled=context.include_bundled,
-            minimal_mode=minimal_mode,
-        )
+        super()._register_core_builtin_actions(context)
 
     def _uses_standalone_affinity_override(self) -> bool:
         dispatcher = getattr(self, "_max_dispatcher", None)
