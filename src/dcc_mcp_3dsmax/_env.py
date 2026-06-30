@@ -194,10 +194,17 @@ def resolve_resources_enabled(flag: Optional[bool] = None) -> bool:
 
 
 def resolve_project_tools_enabled(flag: Optional[bool] = None) -> bool:
-    """Resolve whether the four ``project_*`` MCP tools should be registered."""
-    from dcc_mcp_3dsmax._project_tools import resolve_enabled as _resolve  # noqa: PLC0415
+    """Resolve whether the four ``project_*`` MCP tools should be registered.
 
-    return _resolve(flag)
+    Priority: explicit ``flag`` argument > ``DCC_MCP_3DSMAX_PROJECT_TOOLS``
+    env var (``"0"`` disables) > ``True``.
+    """
+    if flag is not None:
+        return bool(flag)
+    raw = os.environ.get(ENV_PROJECT_TOOLS)
+    if raw is None:
+        return True
+    return raw.strip() != "0"
 
 
 def resolve_qt_ui_inspector_enabled() -> bool:

@@ -22,11 +22,14 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+from dcc_mcp_core import BaseSceneResolver
+
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "MaxContextSnapshotProvider",
+    "MaxSceneResolver",
     "collect_gateway_metadata",
     "make_snapshot_provider",
 ]
@@ -291,4 +294,39 @@ def _derive_display_name(scene: Optional[str], version: Optional[str]) -> Option
         return "3ds Max — {}".format(basename)
     if version:
         return "3ds Max {}".format(version)
-    return None
+
+
+# ---------------------------------------------------------------------------
+# Scene resolver
+# ---------------------------------------------------------------------------
+
+
+class MaxSceneResolver(BaseSceneResolver):
+    """Resolve the *current* 3ds Max scene path, if one is open.
+
+    The default implementation reads ``pymxs.runtime.maxFilePath`` and
+    ``maxFileName`` inside a guarded import block so this module remains usable
+    outside 3ds Max (unit tests, sidecar / batch mode where no scene is loaded).
+    """
+
+    def current_scene(self) -> str | None:
+        """Return the absolute scene path, or ``None`` when unavailable."""
+        try:
+            import pymxs  # noqa: PLC0415
+
+            rt = pymxs.runtime
+        except Exception:  # noqa: BLE001 — 3ds Max unavailable
+            return None
+        try:
+            file_name = rt.maxFileName
+        except Exception as exc:  # noqa: BLE001 — runtime in odd state
+            logger.debug("MaxSceneResolver: rt.maxFileName failed: %s", exc)
+            return None
+        if not file_name:
+            return None
+        try:
+            file_path = rt.maxFilePath or ""
+        except Exception:  # noqa: BLE001
+            file_path = ""
+        scene = "{}{}".format(str(file_path), str(file_name)).strip()
+        return scene or None

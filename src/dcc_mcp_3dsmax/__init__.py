@@ -105,19 +105,20 @@ _LAZY_EXPORTS = {
     "install_readiness": ("dcc_mcp_3dsmax._readiness", "install_readiness"),
     "wait_until_ready": ("dcc_mcp_3dsmax._readiness", "wait_until_ready"),
     # Capability manifest + context snapshot (parity #163 / #165)
-    "MaxCapabilityManifestBuilder": ("dcc_mcp_3dsmax._capability_manifest", "MaxCapabilityManifestBuilder"),
-    "CapabilityRecord": ("dcc_mcp_3dsmax._capability_manifest", "CapabilityRecord"),
-    "build_manifest_payload": ("dcc_mcp_3dsmax._capability_manifest", "build_manifest_payload"),
-    "register_capability_mcp_tool": ("dcc_mcp_3dsmax._capability_manifest", "register_capability_mcp_tool"),
+    "MaxCapabilityManifestBuilder": ("dcc_mcp_core", "CapabilityManifestBuilder"),
+    "CapabilityRecord": ("dcc_mcp_core", "CapabilityRecord"),
+    "build_manifest_payload": ("dcc_mcp_core", "build_manifest_payload"),
+    "register_capability_mcp_tool": ("dcc_mcp_core", "register_capability_mcp_tool"),
     "MaxContextSnapshotProvider": ("dcc_mcp_3dsmax.context_snapshot", "MaxContextSnapshotProvider"),
     "collect_gateway_metadata": ("dcc_mcp_3dsmax.context_snapshot", "collect_gateway_metadata"),
     "make_snapshot_provider": ("dcc_mcp_3dsmax.context_snapshot", "make_snapshot_provider"),
+    "MaxSceneResolver": ("dcc_mcp_3dsmax.context_snapshot", "MaxSceneResolver"),
     # Resources (parity #187)
     "MaxResourceBinder": ("dcc_mcp_3dsmax._resources", "MaxResourceBinder"),
     "install_resources": ("dcc_mcp_3dsmax._resources", "install_resources"),
     # Project tools (parity #576)
-    "ProjectToolsIntegration": ("dcc_mcp_3dsmax._project_tools", "ProjectToolsIntegration"),
-    "MaxSceneResolver": ("dcc_mcp_3dsmax._project_tools", "MaxSceneResolver"),
+    "ProjectToolsIntegration": ("dcc_mcp_core", "ProjectToolsIntegration"),
+    "attach_project_tools": ("dcc_mcp_core", "attach_project_tools"),
     # Qt UI inspector (parity #307)
     "register_3dsmax_qt_ui_inspector": ("dcc_mcp_3dsmax._qt_inspector", "register_3dsmax_qt_ui_inspector"),
     # Semantic index (parity #313)
@@ -220,6 +221,7 @@ __all__ = [
     "install_resources",
     # Project tools (parity #576)
     "ProjectToolsIntegration",
+    "attach_project_tools",
     "MaxSceneResolver",
     # Qt UI inspector (parity #307)
     "register_3dsmax_qt_ui_inspector",

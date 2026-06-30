@@ -30,7 +30,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Import third-party modules
-from dcc_mcp_core import DccServerOptions, HostExecutionBridge, MinimalModeConfig, scan_and_load_strict
+from dcc_mcp_core import (
+    CapabilityManifestBuilder,
+    DccServerOptions,
+    HostExecutionBridge,
+    MinimalModeConfig,
+    ProjectToolsIntegration,
+    attach_project_tools,
+    build_manifest_payload,
+    register_capability_mcp_tool,
+    scan_and_load_strict,
+)
 from dcc_mcp_core._registration import RegistrationContext, run_registration_phases
 from dcc_mcp_core.server_base import DccServerBase
 
@@ -38,7 +48,6 @@ from dcc_mcp_core.server_base import DccServerBase
 from dcc_mcp_3dsmax import (
     _env,
     _executor,
-    _project_tools,
     _qt_inspector,
     _readiness,
     _registration,
@@ -46,15 +55,11 @@ from dcc_mcp_3dsmax import (
     _semantic_index,
 )
 from dcc_mcp_3dsmax.__version__ import __version__
-from dcc_mcp_3dsmax._capability_manifest import (
-    MaxCapabilityManifestBuilder,
-    build_manifest_payload,
-    register_capability_mcp_tool,
-)
 from dcc_mcp_3dsmax._constants import DEFAULT_GATEWAY_PORT
 from dcc_mcp_3dsmax._version_probe import get_3dsmax_version_string
 from dcc_mcp_3dsmax.context_snapshot import (
     MaxContextSnapshotProvider,
+    MaxSceneResolver,
     collect_gateway_metadata,
 )
 
@@ -296,7 +301,7 @@ class MaxMcpServer(DccServerBase):
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] set_context_snapshot_provider failed: %s", _DCC_NAME, exc)
 
-        self._capability_builder: MaxCapabilityManifestBuilder = MaxCapabilityManifestBuilder(
+        self._capability_builder: CapabilityManifestBuilder = CapabilityManifestBuilder(
             dcc_name=_DCC_NAME,
             skill_lister=self.list_skills,
             action_lister=self.list_actions,
@@ -305,7 +310,7 @@ class MaxMcpServer(DccServerBase):
         )
 
         # ── Project tools + resources (populated in register_builtin_actions) ──
-        self._project_tools: Optional[_project_tools.ProjectToolsIntegration] = None
+        self._project_tools: Optional[ProjectToolsIntegration] = None
         self._resources: Optional[_resources.MaxResourceBinder] = None
 
         # ── Bind readiness now the executor/dispatcher state is settled ──
@@ -614,14 +619,24 @@ class MaxMcpServer(DccServerBase):
     def _register_capability_manifest_tool(self) -> None:
         """Register the ``dcc_capability_manifest`` MCP tool."""
         try:
-            register_capability_mcp_tool(self, builder=self._capability_builder)
+            register_capability_mcp_tool(
+                self,
+                builder=self._capability_builder,
+                dcc_name=_DCC_NAME,
+                metadata_provider=lambda: collect_gateway_metadata(self._snapshot_provider_impl),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] capability manifest MCP tool registration failed: %s", _DCC_NAME, exc)
 
     def _attach_project_tools(self) -> None:
         """Register the four ``project_*`` MCP tools."""
         try:
-            self._project_tools = _project_tools.attach_to_server(self)
+            self._project_tools = attach_project_tools(
+                self,
+                dcc_name=_DCC_NAME,
+                scene_resolver=MaxSceneResolver(),
+                enabled=_env.resolve_project_tools_enabled(),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] project tools registration failed: %s", _DCC_NAME, exc)
 

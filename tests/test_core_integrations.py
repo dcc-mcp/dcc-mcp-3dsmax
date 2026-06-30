@@ -20,8 +20,17 @@ import pytest
 # Add src to path for testing.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from dcc_mcp_3dsmax import _capability_manifest as capmod
-from dcc_mcp_3dsmax import _project_tools as projmod
+import dcc_mcp_3dsmax as capmod
+import dcc_mcp_3dsmax as projmod
+from dcc_mcp_3dsmax import (
+    CapabilityRecord,
+    MaxCapabilityManifestBuilder,
+    MaxSceneResolver,
+    ProjectToolsIntegration,
+    attach_project_tools,
+    build_manifest_payload,
+    register_capability_mcp_tool,
+)
 from dcc_mcp_3dsmax import _qt_inspector as qtmod
 from dcc_mcp_3dsmax import _readiness as readymod
 from dcc_mcp_3dsmax import _resources as resmod
@@ -269,7 +278,8 @@ def test_max_mcp_server_readiness_main_thread_executor_pending_before_pump():
 
 
 def _builder(skills, actions, loaded):
-    return capmod.MaxCapabilityManifestBuilder(
+    return MaxCapabilityManifestBuilder(
+        "3dsmax",
         skill_lister=lambda: skills,
         action_lister=lambda: actions,
         is_loaded=lambda name: name in loaded,
@@ -280,7 +290,7 @@ def test_capability_manifest_empty():
     builder = _builder([], [], set())
     records = builder.build()
     assert records == []
-    payload = capmod.build_manifest_payload(records)
+    payload = build_manifest_payload(records, dcc_name="3dsmax")
     assert payload["dcc_type"] == "3dsmax"
     assert payload["totals"]["actions"] == 0
 
@@ -306,7 +316,7 @@ def test_capability_manifest_projects_loaded_action():
     assert rec.has_schema is True
     assert "mesh" in rec.tags
 
-    payload = capmod.build_manifest_payload(records, dcc_version="2024", scene="C:/p/shot.max")
+    payload = build_manifest_payload(records, dcc_name="3dsmax", dcc_version="2024", scene="C:/p/shot.max")
     assert payload["totals"]["loaded_actions"] == 1
     assert payload["metadata"]["dcc_version"] == "2024"
 
@@ -342,7 +352,7 @@ def test_capability_manifest_unloaded_skill_tools():
 def test_register_capability_mcp_tool():
     server = _FakeOuterServer()
     builder = _builder([], [], set())
-    assert capmod.register_capability_mcp_tool(server, builder=builder) is True
+    assert register_capability_mcp_tool(server, builder=builder, dcc_name="3dsmax") is True
     assert "dcc_capability_manifest" in server._server.handlers
     result = server._server.handlers["dcc_capability_manifest"]({"loaded_only": False})
     assert result["success"] is True
@@ -418,11 +428,12 @@ class _FakeSceneResolver:
 
 
 def test_project_tools_resolve_enabled(monkeypatch):
-    monkeypatch.delenv(projmod.ENV_PROJECT_TOOLS, raising=False)
-    assert projmod.resolve_enabled() is True
-    assert projmod.resolve_enabled(False) is False
-    monkeypatch.setenv(projmod.ENV_PROJECT_TOOLS, "0")
-    assert projmod.resolve_enabled() is False
+    from dcc_mcp_3dsmax import _env
+    monkeypatch.delenv(_env.ENV_PROJECT_TOOLS, raising=False)
+    assert _env.resolve_project_tools_enabled() is True
+    assert _env.resolve_project_tools_enabled(False) is False
+    monkeypatch.setenv(_env.ENV_PROJECT_TOOLS, "0")
+    assert _env.resolve_project_tools_enabled() is False
 
 
 def test_project_tools_bind_without_scene(monkeypatch):
@@ -433,20 +444,22 @@ def test_project_tools_bind_without_scene(monkeypatch):
         registered.append(dcc_name)
         assert project is None
 
-    monkeypatch.setattr(projmod, "register_project_tools", fake_register)
-    integration = projmod.ProjectToolsIntegration(scene_resolver=_FakeSceneResolver(None))
+    import dcc_mcp_core.project
+    monkeypatch.setattr(dcc_mcp_core.project, "register_project_tools", fake_register)
+    integration = ProjectToolsIntegration(dcc_name="3dsmax", scene_resolver=_FakeSceneResolver(None))
     assert integration.bind(server) is True
     assert registered == ["3dsmax"]
 
 
 def test_project_tools_attach_disabled(monkeypatch):
-    monkeypatch.setenv(projmod.ENV_PROJECT_TOOLS, "0")
-    assert projmod.attach_to_server(_FakeOuterServer()) is None
+    from dcc_mcp_3dsmax import _env
+    monkeypatch.setenv(_env.ENV_PROJECT_TOOLS, "0")
+    assert attach_project_tools(_FakeOuterServer(), dcc_name="3dsmax", enabled=False) is None
 
 
 def test_max_scene_resolver_headless():
     # No pymxs available in CI → None, never raises.
-    assert projmod.MaxSceneResolver().current_scene() is None
+    assert MaxSceneResolver().current_scene() is None
 
 
 # ===========================================================================
