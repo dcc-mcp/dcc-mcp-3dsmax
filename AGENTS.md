@@ -104,6 +104,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 | `DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT` | `0` | Disable all arbitrary script execution |
 | `DCC_MCP_3DSMAX_ENABLE_GATEWAY_FAILOVER` | `1` | Enable gateway failover |
 | `DCC_MCP_3DSMAX_QT_UI_INSPECTOR` | `0` | Enable Qt UI inspector tools |
+| `DCC_MCP_3DSMAX_APP_UI` | `0` | Disable Qt-backed `app_ui__*` interaction tools |
 | `DCC_MCP_3DSMAX_SEMANTIC_INDEX` | `0` | Enable semantic skill recall |
 | `DCC_MCP_3DSMAX_PROJECT_TOOLS` | `1` | Enable project state tools |
 | `DCC_MCP_3DSMAX_RESOURCES` | `1` | Enable `scene://current` resource |

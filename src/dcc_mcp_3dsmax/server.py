@@ -36,6 +36,7 @@ from dcc_mcp_core.server_base import DccServerBase
 
 # Import local modules
 from dcc_mcp_3dsmax import (
+    _app_ui,
     _env,
     _executor,
     _project_tools,
@@ -610,6 +611,17 @@ class MaxMcpServer(DccServerBase):
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] qt-ui-inspector registration failed: %s", _DCC_NAME, exc)
+
+    def _register_app_ui(self) -> None:
+        """Register the Qt-backed ``app_ui__*`` tools (main-thread routed)."""
+        try:
+            _app_ui.register_3dsmax_app_ui(
+                self._server,
+                dcc_name=_DCC_NAME,
+                dispatcher=self._max_dispatcher,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[%s] app-ui registration failed: %s", _DCC_NAME, exc)
 
     def _register_capability_manifest_tool(self) -> None:
         """Register the ``dcc_capability_manifest`` MCP tool."""
