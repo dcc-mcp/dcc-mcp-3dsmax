@@ -387,7 +387,7 @@ def test_context_snapshot_with_runtime():
     assert snap["selection"] == ["Box001"]
     assert snap["frame"] == 10
     assert snap["node_count"] == 3
-    assert snap["units"] == "Centimeters"
+    assert snap["units"] == "centimeters"
 
 
 def test_collect_gateway_metadata():
