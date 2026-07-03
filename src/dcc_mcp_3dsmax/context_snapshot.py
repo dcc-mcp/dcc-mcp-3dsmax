@@ -241,7 +241,12 @@ def _safe_node_count(rt: Any) -> Optional[int]:
 
 
 def _safe_units(rt: Any) -> Optional[str]:
-    """Return the system unit type, or ``None`` when unavailable."""
+    """Return the system unit type, or ``None`` when unavailable.
+
+    MAXScript ``units.SystemType`` may be a callable (newer builds) or a
+    plain name literal such as ``#inches``.  We handle both and strip the
+    ``#`` prefix so callers always see a clean lowercase string.
+    """
     units = _safe_attr(rt, "units")
     if units is None:
         return None
@@ -249,10 +254,15 @@ def _safe_units(rt: Any) -> Optional[str]:
     if system_type is None:
         return None
     try:
-        return str(system_type())
+        if callable(system_type):
+            raw = str(system_type())
+        else:
+            raw = str(system_type)
     except Exception as exc:  # noqa: BLE001
         logger.debug("MaxContextSnapshot: units.SystemType() failed: %s", exc)
         return None
+    normalized = raw.lstrip("#").strip().lower()
+    return normalized or None
 
 
 def _safe_version() -> Optional[str]:
