@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.31](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.30...v0.1.31) (2026-07-03)
+
+
+### Features
+
+* add Qt-backed app_ui interactive closed loop for 3ds Max ([c1ff34b](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/c1ff34bfccdcc2ba8e02a15137a3bd3ea0484ba4))
+
+
+### Bug Fixes
+
+* handle MAXScript unit type name literals (#inches) in get_scene_info ([053efc1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/053efc1a016dd5b7cf389ba953f86fb7d60791b4))
+* update test assertion for normalized lowercase unit names ([601ea5f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/601ea5fb02ca20355d8dfa4eb753b26a9a616f9e))
+
 ## [0.1.30](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.29...v0.1.30) (2026-06-24)
 
 
