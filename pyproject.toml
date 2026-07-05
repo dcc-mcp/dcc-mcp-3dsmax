@@ -27,10 +27,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # Release Train anchor: dcc-mcp-core/server v0.18.34 (Qt sidecar
-    # launch_sidecar + discovery_mcp_url contract).
-    "dcc-mcp-core>=0.18.34,<1.0.0",
-    "dcc-mcp-server>=0.18.34,<1.0.0",
+    # Release Train anchor: dcc-mcp-core/server v0.19.8 (py37-lite fallbacks
+    # + create_skill_server compatibility).
+    "dcc-mcp-core>=0.19.8,<1.0.0",
+    "dcc-mcp-server>=0.19.8,<1.0.0",
 ]
 
 [project.optional-dependencies]
