@@ -19,6 +19,16 @@ def _load_assembler():
     return module
 
 
+def _load_payload_checker():
+    module_path = Path(__file__).resolve().parents[1] / "packaging" / "check_release_payload.py"
+    spec = importlib.util.spec_from_file_location("check_release_payload", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _generated_install_script(tmp_path: Path, version: str = "1.2.3") -> str:
     assembler = _load_assembler()
     assembler.write_install_script(tmp_path, version)
@@ -106,6 +116,9 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "DCC_MCP_SERVER_ROOT" in text
     assert "current = current_file.read_text" in text
     assert "root / 'versions' / current" in text
+    assert "def _is_python37_root(path):" in text
+    assert "base.parent / 'python'" in text
+    assert "def _compatible_python_path(path):" in text
     assert "sys.path.insert(0, str(pkg))" in text
     assert "dcc_mcp_3dsmax.install_menu()" in text
     assert "dcc_mcp_3dsmax.install_shutdown_callback()" in text
@@ -115,6 +128,18 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "def _cleanup_obsolete_payloads(active_root):" in text
     assert "_cleanup_obsolete_payloads(install_payload)" in text
     assert "from dcc_mcp_core.install_lifecycle import safe_remove_tree" in text
+
+
+def test_release_payload_checker_uses_modern_python_root_on_py38_plus(tmp_path, monkeypatch):
+    """Release smoke must not import cp37 native payloads on modern 3ds Max Python."""
+    checker = _load_payload_checker()
+    payload = tmp_path / "payload"
+    (payload / "python").mkdir(parents=True)
+    (payload / "python37").mkdir()
+
+    monkeypatch.setattr(checker.sys, "version_info", (3, 10, 14))
+
+    assert checker.python_root(payload) == payload / "python"
 
 
 def test_extract_wheel_maps_data_scripts_next_to_packages(tmp_path):

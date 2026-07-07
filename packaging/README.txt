@@ -54,7 +54,9 @@ For example, a Rez package can point these roots at package-cache paths such as:
   <package-cache>/dcc_mcp_server
 
 When a root contains a python/, python37/, src/, or package-parent layout, the
-startup script adds the appropriate existing directories to sys.path.
+startup script adds the appropriate existing directories to sys.path. Python
+3.8+ hosts skip explicit python37 roots so they do not load the Python 3.7-only
+native core extension.
 
 Smoke Test
 ----------

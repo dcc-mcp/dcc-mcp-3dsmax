@@ -92,7 +92,7 @@ jobs:
   build-mzp:
     needs: [release-please]
     if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -103,15 +103,17 @@ jobs:
 
       - name: Assemble drag-and-drop MZP
         run: |
-          VERSION="${{ needs.release-please.outputs.version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="${{ inputs.tag_name }}"
-            VERSION="${VERSION#v}"
-          fi
-          python packaging/assemble_mzp.py \
-            --version "$VERSION" \
-            --output dist/mzp \
-            --project-root .
+          $VERSION = "${{ needs.release-please.outputs.version }}"
+          if (-not $VERSION) {
+            $VERSION = "${{ inputs.tag_name }}"
+            $VERSION = $VERSION -replace '^v', ''
+          }
+          python packaging/assemble_mzp.py --version $VERSION --output dist/mzp --project-root .
+
+      - name: Smoke-check MZP payload imports
+        run: |
+          $mzp = Get-ChildItem dist/mzp/*.mzp | Select-Object -First 1
+          python packaging/check_release_payload.py $mzp.FullName
 
       - name: Upload MZP artifact
         uses: actions/upload-artifact@v4
