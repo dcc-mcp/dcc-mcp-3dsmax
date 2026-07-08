@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.32](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.31...v0.1.32) (2026-07-08)
+
+
+### Bug Fixes
+
+* avoid py37 core payload on modern 3ds Max Python ([7ca44fb](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7ca44fb2f082996d4385b075dba8977a16e5831e))
+
 ## [0.1.31](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.30...v0.1.31) (2026-07-03)
 
 
