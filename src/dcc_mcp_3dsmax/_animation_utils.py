@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Dict, List, Optional, Sequence
 
 from dcc_mcp_3dsmax._scene_utils import node_identity, point3_to_list, resolve_node_objects
@@ -117,10 +118,36 @@ def set_transform_key(
         item for item in keys if not (item.get("frame") == key["frame"] and item.get("property") == property_name)
     ]
     keys.append(key)
-    setter = getattr(runtime, "setKey", None)
-    if callable(setter):
-        setter(node, frame, property_name, key["value"])
+    if not _key_with_pymxs_animation(runtime, node, frame, property_name, key["value"]):
+        setter = getattr(runtime, "setKey", None)
+        if callable(setter):
+            setter(node, frame, property_name, key["value"])
     return anim_success("Set transform keyframe", node=node_identity(node), keyframe=key, changed_key_count=1)
+
+
+def _key_with_pymxs_animation(
+    runtime: Any, node: Any, frame: float, property_name: str, value: Sequence[float]
+) -> bool:
+    """Create a native Max key without relying on the unrelated ``setKey`` struct."""
+    try:
+        import pymxs  # noqa: PLC0415
+    except ImportError:
+        return False
+    animate = getattr(pymxs, "animate", None)
+    attime = getattr(pymxs, "attime", None)
+    if not callable(animate) or not callable(attime):
+        return False
+
+    converted: Any = list(value)
+    constructor_name = "EulerAngles" if property_name == "rotation" else "Point3"
+    constructor = getattr(runtime, constructor_name, None)
+    if callable(constructor):
+        converted = constructor(*value[:3])
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(animate(True))
+        stack.enter_context(attime(frame))
+        setattr(node, property_name, converted)
+    return True
 
 
 def delete_keyframes(
@@ -175,11 +202,23 @@ def bake_transform_animation(
         )
     safe_step = max(1, int(step))
     changed = 0
-    for frame in range(int(start_frame), int(end_frame) + 1, safe_step):
-        for prop in ("position", "rotation", "scale"):
-            value = _transform_vector(node, prop)
-            set_transform_key(runtime, node, frame=frame, property_name=prop, value=value)
-            changed += 1
+    original_time = getattr(runtime, "sliderTime", getattr(runtime, "currentTime", None))
+    try:
+        for frame in range(int(start_frame), int(end_frame) + 1, safe_step):
+            if hasattr(runtime, "sliderTime"):
+                runtime.sliderTime = frame
+            elif hasattr(runtime, "currentTime"):
+                runtime.currentTime = frame
+            for prop in ("position", "rotation", "scale"):
+                value = _transform_vector(node, prop)
+                set_transform_key(runtime, node, frame=frame, property_name=prop, value=value)
+                changed += 1
+    finally:
+        if original_time is not None:
+            if hasattr(runtime, "sliderTime"):
+                runtime.sliderTime = original_time
+            elif hasattr(runtime, "currentTime"):
+                runtime.currentTime = original_time
     return anim_success("Baked transform animation", node=node_identity(node), changed_key_count=changed)
 
 

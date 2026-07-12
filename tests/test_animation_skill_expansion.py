@@ -143,3 +143,33 @@ def test_bake_transform_animation_and_selection_errors(monkeypatch):
     assert missing_keys["data"]["changed_key_count"] == 0
     assert no_selection["success"] is False
     assert "selection is empty" in no_selection["message"]
+
+
+def test_transform_keys_use_pymxs_animation_context_instead_of_runtime_setkey(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    events = []
+
+    class _Context:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            events.append(("enter", self.label))
+
+        def __exit__(self, *_args):
+            events.append(("exit", self.label))
+
+    pymxs = sys.modules["pymxs"]
+    pymxs.animate = lambda enabled: _Context(("animate", enabled))
+    pymxs.attime = lambda frame: _Context(("attime", frame))
+    runtime.setKey = types.SimpleNamespace(commitBuffer=lambda: None)
+    runtime.Point3 = lambda *values: list(values)
+    runtime.EulerAngles = lambda *values: list(values)
+
+    result = _load_action("action_bake_transform_animation.py").main(
+        node_names=["hero_mesh"], start_frame=1, end_frame=1, step=1
+    )
+
+    assert result["success"] is True, result
+    assert ("enter", ("animate", True)) in events
+    assert ("enter", ("attime", 1)) in events
