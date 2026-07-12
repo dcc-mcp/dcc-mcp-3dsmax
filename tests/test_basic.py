@@ -230,6 +230,9 @@ class TestServerOptions:
         assert isinstance(dispatcher, HostUiDispatcherBase)
         assert server._dcc_dispatcher is dispatcher
         assert server._execution_bridge.dispatcher is dispatcher
+        assert server._execution_bridge.host_dispatcher is dispatcher.host_dispatcher
+        assert callable(dispatcher.host_dispatcher.post)
+        assert callable(dispatcher.host_dispatcher.tick)
         assert server._execution_bridge.runner is _executor.run_skill_script
         assert server._inprocess_executor_registered is True
 
@@ -444,6 +447,14 @@ class TestExecution:
         )
         assert result == 42
 
+    def test_ui_dispatcher_executes_inline_when_already_on_owner_thread(self):
+        """HTTP main-thread hops must not enqueue a second blocking UI dispatch."""
+        from dcc_mcp_3dsmax.dispatcher import MaxUiDispatcher
+
+        dispatcher = MaxUiDispatcher()
+        assert dispatcher.dispatch_callable(lambda value: value + 1, 41, affinity="main") == 42
+        assert dispatcher.queue_size() == 0
+
 
 class TestSidecar:
     """Test structured sidecar dispatch and bridge plumbing."""
@@ -586,15 +597,25 @@ class TestSidecar:
         assert max_bootstrap.main() == {"mode": "sidecar"}
 
     def test_sidecar_bridge_publishes_discovery_url(self, monkeypatch):
-        """Default sidecar startup keeps discovery separate from Qt dispatch."""
+        """Default sidecar startup wires direct discovery calls to the UI dispatcher."""
+        import dcc_mcp_3dsmax.dispatcher as dispatcher_module
         from dcc_mcp_3dsmax import max_bootstrap
 
         captured = {}
+        server_kwargs = {}
+        fake_dispatcher = object()
+        install_calls = []
+        fake_pump = types.SimpleNamespace(install=lambda: install_calls.append("install") or True)
         fake_server = types.SimpleNamespace(port=8765)
         monkeypatch.setattr(max_bootstrap, "_register_process_cleanup", lambda: None)
         monkeypatch.setattr(max_bootstrap, "_install_max_integration", lambda: None)
-        monkeypatch.setattr(max_bootstrap, "start_embedded_server", lambda **kwargs: fake_server)
+        monkeypatch.setattr(
+            max_bootstrap,
+            "start_embedded_server",
+            lambda **kwargs: server_kwargs.update(kwargs) or fake_server,
+        )
         monkeypatch.setattr(max_bootstrap, "start_qt_bridge", lambda port=None: {"port": 9876})
+        monkeypatch.setattr(dispatcher_module, "create_dispatcher", lambda: (fake_dispatcher, fake_pump))
         monkeypatch.setattr(
             max_bootstrap,
             "start_sidecar_server",
@@ -604,7 +625,12 @@ class TestSidecar:
         result = max_bootstrap.start_sidecar_bridge(9876)
 
         assert result["discovery_server"] is fake_server
+        assert result["dispatcher"] is fake_dispatcher
+        assert result["pump"] is fake_pump
         assert result["qt_bridge"] == {"port": 9876}
+        assert install_calls == ["install"]
+        assert server_kwargs["dispatcher"] is fake_dispatcher
+        assert "execution_bridge" not in server_kwargs
         assert captured["discovery_mcp_url"] == "http://127.0.0.1:8765/mcp"
 
     def test_embedded_runtime_uses_core_ui_dispatcher(self, monkeypatch):
@@ -625,14 +651,12 @@ class TestSidecar:
 
         result = max_bootstrap.start_embedded_sidecar_bridge()
 
-        execution_bridge = captured["execution_bridge"]
         assert result["server"] == {"server": True}
         assert result["dispatcher"] is fake_dispatcher
         assert result["pump"] is fake_pump
         assert install_calls == ["install"]
         assert captured["dispatcher"] is fake_dispatcher
-        assert execution_bridge.dispatcher is fake_dispatcher
-        assert execution_bridge.default_thread_affinity == "main"
+        assert "execution_bridge" not in captured
 
     def test_embedded_runtime_falls_back_to_any_affinity_when_pump_not_installed(self, monkeypatch):
         """When MaxUiPump.install() returns False, default_thread_affinity should be "any"."""
@@ -652,10 +676,10 @@ class TestSidecar:
 
         result = max_bootstrap.start_embedded_sidecar_bridge()
 
-        execution_bridge = captured["execution_bridge"]
         assert result["pump"] is fake_pump
         assert install_calls == ["install"]
-        assert execution_bridge.default_thread_affinity == "any"
+        assert captured["dispatcher"] is None
+        assert "execution_bridge" not in captured
 
     def test_main_keeps_embedded_runtime_as_explicit_mode(self, monkeypatch):
         """Operators can still opt into the old embedded HTTP runtime."""

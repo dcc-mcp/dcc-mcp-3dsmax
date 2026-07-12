@@ -7,10 +7,12 @@ host pump controller.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from typing import Any, Callable, Optional
 
 from dcc_mcp_core import HostUiDispatcherBase
+from dcc_mcp_core.host import QueueDispatcher
 
 
 class MaxUiDispatcher(HostUiDispatcherBase):
@@ -21,7 +23,14 @@ class MaxUiDispatcher(HostUiDispatcherBase):
             fail_fast_on_main_queue_busy=fail_fast_on_main_queue_busy,
             label="3dsmax-ui",
         )
+        self._host_dispatcher = QueueDispatcher()
+        self._owner_thread_ident = threading.get_ident()
         self._pump_controller: Optional[Any] = None
+
+    @property
+    def host_dispatcher(self) -> QueueDispatcher:
+        """Expose the core queue used by direct MCP and REST main-thread calls."""
+        return self._host_dispatcher
 
     def attach_pump_controller(self, controller: Any) -> None:
         """Attach the core pump controller used to schedule host ticks."""
@@ -38,6 +47,16 @@ class MaxUiDispatcher(HostUiDispatcherBase):
         schedule_soon = getattr(controller, "schedule_soon", None)
         if callable(schedule_soon):
             schedule_soon()
+
+    def drain_queue(self, budget_ms: float) -> Any:
+        """Drain direct HTTP work and adapter callables from the same host tick."""
+        self._host_dispatcher.tick(max(int(budget_ms), 1))
+        return super().drain_queue(budget_ms)
+
+    def shutdown(self, reason: str = "Interrupted") -> int:
+        """Stop both the direct HTTP queue and adapter callable queue."""
+        self._host_dispatcher.shutdown()
+        return super().shutdown(reason)
 
     def format_timeout_error(self, request_id: str, affinity: str, timeout_sec: float) -> str:
         """Keep the existing 3ds Max timeout wording."""
@@ -58,12 +77,16 @@ class MaxUiDispatcher(HostUiDispatcherBase):
     ) -> Any:
         """Run *func* through the core UI dispatcher protocol."""
         _ = (context, skill_name, execution)
+        affinity_norm = (affinity or "main").lower()
+        if affinity_norm == "main" and threading.get_ident() == self._owner_thread_ident:
+            return func(*args, **kwargs)
+
         request_id = action_name or "dispatch_{}".format(uuid.uuid4().hex)
         timeout_ms = timeout_hint_secs * 1000 if timeout_hint_secs is not None else None
         result = self.submit_callable(
             request_id=request_id,
             task=lambda: func(*args, **kwargs),
-            affinity=affinity,
+            affinity=affinity_norm,
             timeout_ms=timeout_ms,
         )
 

@@ -77,6 +77,14 @@ _ENV_GENERIC_SKILL_PATHS = "DCC_MCP_SKILL_PATHS"
 _DCC_NAME = "3dsmax"
 
 
+def _host_dispatcher_from(dispatcher: Any) -> Any:
+    """Resolve the core queue dispatcher exposed by an adapter wrapper."""
+    host_dispatcher = getattr(dispatcher, "host_dispatcher", None)
+    if callable(getattr(host_dispatcher, "post", None)) and callable(getattr(host_dispatcher, "tick", None)):
+        return host_dispatcher
+    return None
+
+
 # ── options ─────────────────────────────────────────────────────────────────
 
 
@@ -337,32 +345,18 @@ class MaxMcpServer(DccServerBase):
             readiness.bind(self)
 
     def _register_execution_bridge(self, dispatcher: Any) -> None:
-        core_dispatcher_attached = self._attach_core_dispatcher(dispatcher)
+        host_dispatcher = _host_dispatcher_from(dispatcher)
         self._execution_bridge = HostExecutionBridge(
-            dispatcher=None if core_dispatcher_attached else dispatcher,
+            dispatcher=dispatcher,
+            host_dispatcher=host_dispatcher,
             runner=_executor.run_skill_script,
             default_thread_affinity="main",
         )
         self.register_host_execution_bridge(self._execution_bridge)
         self._readiness.mark_host_execution_bridge_ready()
-        if core_dispatcher_attached:
+        if host_dispatcher is not None:
             self._dcc_dispatcher = dispatcher
             self._readiness.mark_main_thread_executor_ready()
-
-    def _attach_core_dispatcher(self, dispatcher: Any) -> bool:
-        """Attach core Queue/BlockingDispatcher instances to the HTTP main-thread route."""
-        if dispatcher is None:
-            return False
-        attach = getattr(self._server, "attach_dispatcher", None)
-        if not callable(attach):
-            return False
-        try:
-            attach(dispatcher)
-        except (RuntimeError, TypeError) as exc:
-            logger.debug("[%s] Core dispatcher attach skipped: %s", _DCC_NAME, exc)
-            return False
-        logger.info("[%s] Core main-thread dispatcher attached (%s)", _DCC_NAME, type(dispatcher).__name__)
-        return True
 
     # ── 3ds Max version detection ──────────────────────────────────────
 

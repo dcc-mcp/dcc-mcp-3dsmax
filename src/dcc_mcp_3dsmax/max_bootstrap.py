@@ -38,17 +38,29 @@ def start_sidecar_bridge(
     include_bundled: bool = True,
 ) -> Any:
     """Start the discovery server, Qt host bridge, and external sidecar."""
+    from dcc_mcp_3dsmax.dispatcher import create_dispatcher  # noqa: PLC0415
+
     _register_process_cleanup()
     _install_max_integration()
+    dispatcher, pump = create_dispatcher()
+    pump_installed = bool(pump is not None and pump.install())
+    effective_dispatcher = dispatcher if pump is None or pump_installed else None
     discovery_server = start_embedded_server(
         gateway_port=0,
         register_builtins=register_builtins,
         include_bundled=include_bundled,
+        dispatcher=effective_dispatcher,
     )
     qt_bridge = start_qt_bridge(bridge_port)
     discovery_mcp_url = "http://127.0.0.1:{}/mcp".format(discovery_server.port)
     process = start_sidecar_server(discovery_mcp_url=discovery_mcp_url)
-    return {"discovery_server": discovery_server, "qt_bridge": qt_bridge, "sidecar_process": process}
+    return {
+        "discovery_server": discovery_server,
+        "dispatcher": dispatcher,
+        "pump": pump,
+        "qt_bridge": qt_bridge,
+        "sidecar_process": process,
+    }
 
 
 def start_sidecar_server(
@@ -168,9 +180,6 @@ def start_embedded_sidecar_bridge(
     include_bundled: bool = True,
 ) -> Any:
     """Start the agent-callable embedded MCP runtime with main-thread execution."""
-    from dcc_mcp_core import HostExecutionBridge  # noqa: PLC0415
-
-    from dcc_mcp_3dsmax import _executor  # noqa: PLC0415
     from dcc_mcp_3dsmax.dispatcher import create_dispatcher  # noqa: PLC0415
     from dcc_mcp_3dsmax.server import start_server  # noqa: PLC0415
 
@@ -179,18 +188,13 @@ def start_embedded_sidecar_bridge(
     pump_installed = False
     if pump is not None:
         pump_installed = pump.install()
-    execution_bridge = HostExecutionBridge(
-        dispatcher=dispatcher,
-        runner=_executor.run_skill_script,
-        default_thread_affinity="main" if pump_installed else "any",
-    )
+    effective_dispatcher = dispatcher if pump is None or pump_installed else None
     server = start_server(
         port=int(os.environ.get("DCC_MCP_3DSMAX_PORT", "0")),
         register_builtins=register_builtins,
         include_bundled=include_bundled,
         gateway_port=DEFAULT_GATEWAY_PORT,
-        dispatcher=dispatcher,
-        execution_bridge=execution_bridge,
+        dispatcher=effective_dispatcher,
     )
     print("dcc-mcp-3dsmax MCP gateway available at http://127.0.0.1:{}/mcp".format(DEFAULT_GATEWAY_PORT))
     return {"bridge": bridge, "dispatcher": dispatcher, "pump": pump, "server": server}
