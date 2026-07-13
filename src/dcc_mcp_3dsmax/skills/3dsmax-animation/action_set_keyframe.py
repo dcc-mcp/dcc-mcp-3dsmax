@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 # Import local modules
+from dcc_mcp_3dsmax._animation_utils import set_transform_key
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -34,27 +35,11 @@ def main(
     if node is None:
         return {"success": False, "message": f"Node not found: {node_name}", "data": {}}
 
-    # Set keyframe based on property
-    if property == "position":
-        if value and len(value) >= 3:
-            rt.animate(True)
-            node.position = rt.point3(value[0], value[1], value[2])
-            rt.setKey(node.position.controller, time)
-            rt.animate(False)
-    elif property == "rotation":
-        if value and len(value) >= 3:
-            rt.animate(True)
-            node.rotation = rt.quat(value[0], value[1], value[2], value[3] if len(value) > 3 else 0)
-            rt.setKey(node.rotation.controller, time)
-            rt.animate(False)
-    elif property == "scale":
-        if value and len(value) >= 3:
-            rt.animate(True)
-            node.scale = rt.point3(value[0], value[1], value[2])
-            rt.setKey(node.scale.controller, time)
-            rt.animate(False)
-    else:
-        return {"success": False, "message": f"Unsupported property: {property}", "data": {}}
+    if not value or len(value) < 3:
+        return {"success": False, "message": "value must contain at least three numbers", "data": {}}
+    result = set_transform_key(rt, node, frame=time, property_name=property, value=value)
+    if not result.get("success"):
+        return result
 
     return {
         "success": True,

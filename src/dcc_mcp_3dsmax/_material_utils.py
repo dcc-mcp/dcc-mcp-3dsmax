@@ -153,16 +153,16 @@ def create_material(runtime: Any, *, name: str, kind: str, color: Optional[Seque
         material = type("Material", (), {})()
     material.name = name
     if color is not None:
-        set_material_attribute(material, "base_color", color)
+        set_material_attribute(material, "base_color", color, runtime=runtime)
     _register_material(runtime, material)
     return material
 
 
-def set_material_attribute(material: Any, attribute: str, value: Any) -> List[str]:
+def set_material_attribute(material: Any, attribute: str, value: Any, *, runtime: Any = None) -> List[str]:
     """Set one common material attribute."""
     warnings = []
     if attribute in COLOR_ATTRS:
-        converted = _coerce_color(value)
+        converted = _coerce_color(value, runtime=runtime)
         for attr in COLOR_ATTRS[attribute]:
             try:
                 setattr(material, attr, converted)
@@ -247,15 +247,29 @@ def missing_textures(materials: Sequence[Any]) -> List[Dict[str, Any]]:
 def _register_material(runtime: Any, material: Any) -> None:
     for attr in ("sceneMaterials", "materials"):
         values = getattr(runtime, attr, None)
-        if isinstance(values, list) and material not in values:
+        if values is None:
+            continue
+        try:
+            if material in values:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        if isinstance(values, list):
             values.append(material)
+            return
+        append = getattr(runtime, "append", None)
+        if callable(append):
+            append(values, material)
             return
 
 
-def _coerce_color(value: Any) -> List[float]:
+def _coerce_color(value: Any, *, runtime: Any = None) -> Any:
     if isinstance(value, (list, tuple)) and len(value) >= 3:
-        return [float(value[0]), float(value[1]), float(value[2])]
-    return [float(value), float(value), float(value)]
+        channels = [float(value[0]), float(value[1]), float(value[2])]
+    else:
+        channels = [float(value), float(value), float(value)]
+    color = getattr(runtime, "color", None) if runtime is not None else None
+    return color(*channels) if callable(color) else channels
 
 
 def _color_value(material: Any, attribute: str) -> Optional[List[float]]:
@@ -263,6 +277,8 @@ def _color_value(material: Any, attribute: str) -> Optional[List[float]]:
         value = getattr(material, attr, None)
         if value is None:
             continue
+        if all(hasattr(value, channel) for channel in ("r", "g", "b")):
+            return [float(value.r), float(value.g), float(value.b)]
         try:
             return _coerce_color(value)
         except Exception:  # noqa: BLE001

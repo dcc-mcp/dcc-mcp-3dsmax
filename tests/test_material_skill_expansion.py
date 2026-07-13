@@ -52,11 +52,30 @@ class _FakeNode:
         self.parent = None
 
 
+class _MaterialLibrary:
+    """Model pymxs MaterialLibrary, which is iterable but not a Python list."""
+
+    def __init__(self, values) -> None:
+        self.values = list(values)
+
+    def __contains__(self, value) -> bool:
+        return value in self.values
+
+    def __getitem__(self, index):
+        return self.values[index]
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+
 class _FakeRuntime:
     def __init__(self) -> None:
         self.standard = _StandardMaterial()
         self.physical = _PhysicalMaterial()
-        self.sceneMaterials = [self.standard, self.physical]
+        self.sceneMaterials = _MaterialLibrary([self.standard, self.physical])
         self.objects = [_FakeNode("hero_mesh", 42, self.standard)]
         self.selection = list(self.objects)
 
@@ -74,6 +93,12 @@ class _FakeRuntime:
 
     def Bitmaptexture(self, filename=""):  # noqa: N802 - mirrors pymxs runtime naming.
         return _BitmapTexture(filename)
+
+    def append(self, collection, value):
+        collection.values.append(value)
+
+    def color(self, red, green, blue):
+        return [float(red), float(green), float(blue)]
 
 
 def _install_fake_pymxs(monkeypatch):
@@ -120,6 +145,7 @@ def test_material_creation_attribute_and_bitmap_tools(monkeypatch, tmp_path):
     assert physical["success"] is True
     assert physical["data"]["material"]["name"] == "HeroPhysical"
     assert pbr["success"] is True
+    assert pbr["data"]["material"]["base_color"] == [100.0, 120.0, 140.0]
     assert len(runtime.sceneMaterials) == 4
     assert updated["success"] is True
     assert runtime.sceneMaterials[-2].opacity == 0.75

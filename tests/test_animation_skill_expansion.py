@@ -166,10 +166,14 @@ def test_transform_keys_use_pymxs_animation_context_instead_of_runtime_setkey(mo
     runtime.Point3 = lambda *values: list(values)
     runtime.EulerAngles = lambda *values: list(values)
 
+    direct = _load_action("action_set_keyframe.py").main(
+        node_name="hero_mesh", time=1, property="position", value=[4, 5, 6]
+    )
     result = _load_action("action_bake_transform_animation.py").main(
         node_names=["hero_mesh"], start_frame=1, end_frame=1, step=1
     )
 
+    assert direct["success"] is True, direct
     assert result["success"] is True, result
     assert ("enter", ("animate", True)) in events
     assert ("enter", ("attime", 1)) in events
