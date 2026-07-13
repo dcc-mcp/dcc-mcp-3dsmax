@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.34](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.33...v0.1.34) (2026-07-13)
+
+
+### Bug Fixes
+
+* preserve materials and key transforms ([#125](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/125)) ([0fe70a7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/0fe70a714ed009e385bd3524f64ebeb9aaa43c7c))
+
 ## [0.1.33](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.32...v0.1.33) (2026-07-12)
 
 
