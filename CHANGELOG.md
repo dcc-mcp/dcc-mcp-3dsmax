@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.35](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.34...v0.1.35) (2026-07-13)
+
+
+### Bug Fixes
+
+* preserve created Max resources across tools ([77b44eb](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/77b44eb722c2bd5f5106e822892781810c5b8220))
+
 ## [0.1.34](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.33...v0.1.34) (2026-07-13)
 
 
