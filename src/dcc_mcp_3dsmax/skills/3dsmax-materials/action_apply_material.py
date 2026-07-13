@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 # Import local modules
+from dcc_mcp_3dsmax._material_utils import find_material
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -21,14 +22,7 @@ def main(material_name: str = None, node_names: list = None) -> dict:
 
     rt = get_runtime()
 
-    # Get the material
-    mat = rt.getNodeByName(material_name)
-    if mat is None:
-        # Try to find in scene materials
-        for m in rt.scenematerials:
-            if str(m.name) == material_name:
-                mat = m
-                break
+    mat = find_material(rt, material_name)
 
     if mat is None:
         return {"success": False, "message": f"Material not found: {material_name}", "data": {}}

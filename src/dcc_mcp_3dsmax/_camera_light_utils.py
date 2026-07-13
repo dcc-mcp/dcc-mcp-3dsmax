@@ -32,13 +32,13 @@ def cam_error(message: str, **data: Any) -> Dict[str, Any]:
 
 def list_cameras(runtime: Any) -> Dict[str, Any]:
     """List camera nodes with common properties."""
-    cameras = [camera_summary(node) for node in iter_scene_nodes(runtime) if is_camera(node)]
+    cameras = [camera_summary(node) for node in iter_scene_nodes(runtime) if is_camera(node, runtime=runtime)]
     return cam_success("Listed cameras", cameras=cameras, count=len(cameras))
 
 
 def list_lights(runtime: Any) -> Dict[str, Any]:
     """List light nodes with common properties."""
-    lights = [light_summary(node) for node in iter_scene_nodes(runtime) if is_light(node)]
+    lights = [light_summary(node) for node in iter_scene_nodes(runtime) if is_light(node, runtime=runtime)]
     return cam_success("Listed lights", lights=lights, count=len(lights))
 
 
@@ -79,7 +79,7 @@ def set_active_camera(
     result, camera = resolve_node_object(runtime, node_name=camera_name, handle=camera_handle)
     if camera is None:
         return cam_error("Could not resolve camera target", camera=result)
-    if not is_camera(camera):
+    if not is_camera(camera, runtime=runtime):
         return cam_error("Target node is not a camera", node=node_identity(camera))
     viewport = getattr(runtime, "viewport", None)
     setter = getattr(viewport, "setCamera", None) if viewport is not None else None
@@ -138,7 +138,7 @@ def set_light_properties(
     result, light = resolve_node_object(runtime, node_name=light_name, handle=light_handle)
     if light is None:
         return cam_error("Could not resolve light target", light=result)
-    if not is_light(light):
+    if not is_light(light, runtime=runtime):
         return cam_error("Target node is not a light", node=node_identity(light))
     changed = _set_light_properties(light, enabled=enabled, intensity=intensity, color=color, shadows=shadows)
     return cam_success(
@@ -227,20 +227,52 @@ def light_summary(node: Any) -> Dict[str, Any]:
     }
 
 
-def is_camera(node: Any) -> bool:
+def is_camera(node: Any, *, runtime: Any = None) -> bool:
     """Best-effort camera detection."""
     if bool(getattr(node, "is_camera", False)):
         return True
-    text = _node_kind(node, default="").lower()
+    if _runtime_is_kind(runtime, node, "Camera"):
+        return True
+    text = " ".join([_node_kind(node, default=""), *_runtime_class_names(runtime, node)]).lower()
     return "camera" in text
 
 
-def is_light(node: Any) -> bool:
+def is_light(node: Any, *, runtime: Any = None) -> bool:
     """Best-effort light detection."""
     if bool(getattr(node, "is_light", False)):
         return True
-    text = _node_kind(node, default="").lower()
+    if _runtime_is_kind(runtime, node, "Light"):
+        return True
+    text = " ".join([_node_kind(node, default=""), *_runtime_class_names(runtime, node)]).lower()
     return "light" in text or "spot" in text or "skylight" in text
+
+
+def _runtime_is_kind(runtime: Any, node: Any, kind: str) -> bool:
+    if runtime is None:
+        return False
+    predicate = getattr(runtime, "isKindOf", None)
+    target = getattr(runtime, kind, None)
+    if not callable(predicate) or target is None:
+        return False
+    try:
+        return bool(predicate(node, target))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _runtime_class_names(runtime: Any, node: Any) -> List[str]:
+    if runtime is None:
+        return []
+    names = []
+    for method_name in ("classOf", "superClassOf"):
+        method = getattr(runtime, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            names.append(str(method(node)))
+        except Exception:  # noqa: BLE001
+            continue
+    return names
 
 
 def _construct_runtime_object(runtime: Any, factories: Sequence[str]) -> Tuple[Optional[Any], List[str]]:

@@ -27,6 +27,7 @@ MAP_SLOTS = {
     "metalness": ("metalnessMap", "metallicMap"),
     "opacity": ("opacityMap",),
 }
+_MATERIAL_REGISTRY: Dict[int, Dict[str, Any]] = {}
 
 
 def material_success(message: str, **data: Any) -> Dict[str, Any]:
@@ -102,7 +103,7 @@ def find_material(runtime: Any, name: str) -> Optional[Any]:
     for material in iter_scene_materials(runtime):
         if str(getattr(material, "name", "")) == str(name):
             return material
-    return None
+    return _MATERIAL_REGISTRY.get(id(runtime), {}).get(str(name))
 
 
 def resolve_material(runtime: Any, material_name: str) -> Dict[str, Any]:
@@ -245,6 +246,7 @@ def missing_textures(materials: Sequence[Any]) -> List[Dict[str, Any]]:
 
 
 def _register_material(runtime: Any, material: Any) -> None:
+    _MATERIAL_REGISTRY.setdefault(id(runtime), {})[str(getattr(material, "name", ""))] = material
     for attr in ("sceneMaterials", "materials"):
         values = getattr(runtime, attr, None)
         if values is None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 # Import local modules
+from dcc_mcp_3dsmax._material_utils import create_material, set_material_attribute
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -21,16 +22,15 @@ def main(
     dict
         The action response.
     """
-    diffuse = diffuse or [255, 255, 255]
-    specular = specular or [255, 255, 255]
+    diffuse = [255, 255, 255] if diffuse is None else diffuse
+    specular = [255, 255, 255] if specular is None else specular
 
     rt = get_runtime()
 
-    # Create Standard material
-    mat = rt.StandardMaterial(name=name)
-    mat.diffuse = rt.color(diffuse[0], diffuse[1], diffuse[2])
-    mat.specular = rt.color(specular[0], specular[1], specular[2])
-    mat.glossiness = glossiness
+    mat = create_material(rt, name=name, kind="standard")
+    set_material_attribute(mat, "diffuse", diffuse, runtime=rt)
+    set_material_attribute(mat, "specular", specular, runtime=rt)
+    set_material_attribute(mat, "glossiness", glossiness, runtime=rt)
 
     return {
         "success": True,

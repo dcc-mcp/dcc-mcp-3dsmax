@@ -35,8 +35,8 @@ class _PhysicalMaterial:
 
 
 class _StandardMaterial:
-    def __init__(self) -> None:
-        self.name = "Standard"
+    def __init__(self, name: str = "Standard") -> None:
+        self.name = name
         self.diffuse = [200.0, 200.0, 200.0]
         self.specular = [255.0, 255.0, 255.0]
         self.glossiness = 20.0
@@ -88,8 +88,8 @@ class _FakeRuntime:
     def PhysicalMaterial(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return _PhysicalMaterial()
 
-    def StandardMaterial(self):  # noqa: N802 - mirrors pymxs runtime naming.
-        return _StandardMaterial()
+    def StandardMaterial(self, name="Standard"):  # noqa: N802 - mirrors pymxs runtime naming.
+        return _StandardMaterial(name=name)
 
     def Bitmaptexture(self, filename=""):  # noqa: N802 - mirrors pymxs runtime naming.
         return _BitmapTexture(filename)
@@ -152,6 +152,19 @@ def test_material_creation_attribute_and_bitmap_tools(monkeypatch, tmp_path):
     assert runtime.sceneMaterials[-2].roughness == 0.4
     assert assigned["success"] is True
     assert runtime.sceneMaterials[-2].diffuseMap.filename == str(texture)
+
+
+def test_standard_material_can_be_applied_after_creation(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    created = _load_action("action_create_standard_material.py").main(
+        "SignalMetal", diffuse=[12, 24, 38], specular=[170, 210, 255], glossiness=65
+    )
+    applied = _load_action("action_apply_material.py").main(material_name="SignalMetal", node_names=["hero_mesh"])
+
+    assert created["success"] is True
+    assert applied["success"] is True
+    assert runtime.objects[0].material.name == "SignalMetal"
 
 
 def test_material_reset_and_missing_texture_reports(monkeypatch):

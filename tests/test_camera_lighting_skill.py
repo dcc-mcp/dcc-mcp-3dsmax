@@ -135,6 +135,18 @@ def test_camera_workflow_creates_and_sets_active_camera(monkeypatch):
     assert runtime.viewport.camera.name == "review_camera"
 
 
+def test_active_camera_uses_runtime_class_for_pymxs_wrapper(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.camera.className = "MXSWrapperBase"
+    runtime.camera.is_camera = False
+    runtime.classOf = lambda node: "TargetCamera" if node is runtime.camera else node.className
+
+    active = _load_action("action_set_active_camera.py").main(camera_name="main_camera")
+
+    assert active["success"] is True
+    assert runtime.renderCamera is runtime.camera
+
+
 def test_light_workflow_creates_updates_and_builds_three_point_rig(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
 
