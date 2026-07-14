@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.36](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.35...v0.1.36) (2026-07-14)
+
+
+### Features
+
+* add Arnold USD procedural tool ([#131](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/131)) ([88a6572](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/88a65728d6b28324b2460faa98f183467b93230d))
+
+
+### Bug Fixes
+
+* align 3ds Max render runtime contracts ([#129](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/129)) ([5aacbaa](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5aacbaa7e7fe5d070fa4fb279e92e7c7f3155faa))
+
 ## [0.1.35](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.34...v0.1.35) (2026-07-13)
 
 
