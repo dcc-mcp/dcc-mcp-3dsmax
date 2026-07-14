@@ -62,14 +62,31 @@ def create_camera(
     _set_optional_attr(camera, "camera_type", camera_type)
     _set_optional_attr(camera, "is_camera", True)
     if position is not None:
-        _set_optional_attr(camera, "position", _point3(runtime, position))
+        _set_node_position(camera, _point3(runtime, position))
+    target = None
     if target_position is not None:
         _set_optional_attr(camera, "target_position", _vector(target_position))
+        if camera_type == "target":
+            target, target_warnings = _construct_runtime_object(runtime, ("Targetobject", "TargetObject"))
+            warnings.extend(target_warnings)
+            if target is not None:
+                _set_name(target, "{}.Target".format(name))
+                _set_node_position(target, _point3(runtime, target_position))
+                _set_optional_attr(camera, "target", target)
+            else:
+                warnings.append("No supported target-object constructor was available")
     if focal_length is not None:
         _set_optional_attr(camera, "focalLength", float(focal_length))
         _set_optional_attr(camera, "focal_length", float(focal_length))
     _append_scene_object(runtime, camera)
-    return cam_success("Created camera", camera=camera_summary(camera), changed_node_count=1, warnings=warnings)
+    if target is not None:
+        _append_scene_object(runtime, target)
+    return cam_success(
+        "Created camera",
+        camera=camera_summary(camera),
+        changed_node_count=1 + int(target is not None),
+        warnings=warnings,
+    )
 
 
 def set_active_camera(
@@ -325,6 +342,11 @@ def _append_scene_object(runtime: Any, node: Any) -> None:
 
 def _set_name(node: Any, name: str) -> None:
     _set_optional_attr(node, "name", str(name))
+
+
+def _set_node_position(node: Any, value: Any) -> None:
+    _set_optional_attr(node, "position", value)
+    _set_optional_attr(node, "pos", value)
 
 
 def _set_optional_attr(node: Any, attr: str, value: Any) -> None:

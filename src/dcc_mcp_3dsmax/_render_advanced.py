@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._render_utils import (
     artifact_info,
+    current_renderer,
     render_error,
     render_settings,
     render_success,
@@ -14,7 +15,6 @@ from dcc_mcp_3dsmax._render_utils import (
     set_render_output,
     set_resolution,
 )
-
 
 # ---------------------------------------------------------------------------
 # HDR render helpers
@@ -259,7 +259,7 @@ def set_renderer(runtime: Any, renderer_type: str) -> Dict[str, Any]:
         return render_error("Renderer class not found", renderer_type=renderer_type)
     try:
         renderer_instance = renderer_class()
-        runtime.currentRenderer = renderer_instance
+        _set_current_renderer(runtime, renderer_instance)
     except Exception as exc:  # noqa: BLE001
         return render_error(
             "Could not activate renderer",
@@ -289,7 +289,7 @@ def _find_renderer_class(runtime: Any, renderer_type: str) -> Any:
 def _renderer_class_names(renderer_type: str) -> tuple:
     mapping = {
         "scanline": ("DefaultScanlineRenderer", "ScanlineRenderer"),
-        "arnold": ("ArnoldRenderer",),
+        "arnold": ("Arnold", "ArnoldRenderer"),
         "vray": ("VRayRenderer",),
         "art": ("ARTRenderer",),
     }
@@ -300,7 +300,7 @@ def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str
     """Apply generic renderer parameter overrides."""
     applied = 0
     warnings = []
-    renderer = getattr(runtime, "currentRenderer", None)
+    renderer = current_renderer(runtime)
     if renderer is None:
         return render_error("No active renderer to configure")
     for key, value in settings.items():
@@ -316,6 +316,18 @@ def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str
         settings_requested=len(settings),
         warnings=warnings,
     )
+
+
+def _set_current_renderer(runtime: Any, renderer: Any) -> None:
+    """Activate a renderer using the native pymxs contract when available."""
+    renderers = getattr(runtime, "renderers", None)
+    if renderers is not None:
+        try:
+            renderers.current = renderer
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    runtime.currentRenderer = renderer
 
 
 def _find_renderer(runtime: Any) -> Any:

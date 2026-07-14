@@ -253,15 +253,33 @@ def point3_to_list(value: Any) -> Optional[List[float]]:
     return None
 
 
-def is_camera_node(node: Any) -> bool:
+def is_camera_node(node: Any, *, runtime: Any = None) -> bool:
     """Best-effort camera detection."""
     if bool(getattr(node, "is_camera", False)):
         return True
+    runtime_names = []
+    if runtime is not None:
+        predicate = getattr(runtime, "isKindOf", None)
+        camera_class = getattr(runtime, "Camera", None)
+        if callable(predicate) and camera_class is not None:
+            try:
+                if bool(predicate(node, camera_class)):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        for method_name in ("classOf", "superClassOf"):
+            method = getattr(runtime, method_name, None)
+            if callable(method):
+                try:
+                    runtime_names.append(str(method(node)))
+                except Exception:  # noqa: BLE001
+                    pass
     text = " ".join(
         [
             type(node).__name__,
             type(getattr(node, "baseObject", None)).__name__,
             str(getattr(node, "className", "")),
+            *runtime_names,
         ]
     ).lower()
     return "camera" in text

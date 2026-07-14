@@ -50,6 +50,10 @@ class _FakeRuntime:
         self.rendSaveFile = False
         self.currentRenderer = object()
         self.renderQualityPreset = "preview"
+        self.last_render_kwargs = None
+
+    def classOf(self, node):  # noqa: N802 - mirrors pymxs runtime naming.
+        return "Targetcamera" if node is self.camera else type(node).__name__
 
     def getNodeByName(self, name):  # noqa: N802 - mirrors pymxs runtime naming.
         for node in self.objects:
@@ -63,6 +67,11 @@ class _FakeRuntime:
     def createPreview(self, output_path, start_frame=None, end_frame=None):  # noqa: N802 - mirrors pymxs runtime naming.
         text = "preview:{}-{}".format(start_frame, end_frame)
         Path(output_path).write_text(text, encoding="utf-8")
+
+    def render(self, *, outputfile, camera=None, vfb=True):
+        self.last_render_kwargs = {"outputfile": outputfile, "camera": camera, "vfb": vfb}
+        Path(outputfile).write_text("render", encoding="utf-8")
+        return object()
 
 
 def _install_fake_pymxs(monkeypatch):
@@ -130,3 +139,34 @@ def test_render_setting_mutations_update_runtime(monkeypatch, tmp_path):
     assert not_camera["success"] is False
     assert preset["success"] is True
     assert runtime.renderQualityPreset == "final"
+
+
+def test_render_camera_uses_runtime_class_for_pymxs_wrapper(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.camera.is_camera = False
+
+    selected = _load_action("action_set_render_camera.py").main(camera_name="main_camera")
+
+    assert selected["success"] is True
+    assert runtime.activeCamera is runtime.camera
+    assert runtime.viewport.camera is runtime.camera
+
+
+def test_render_scene_uses_pymxs_outputfile_and_camera_keywords(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    output_path = tmp_path / "beauty.png"
+
+    rendered = _load_action("action_render_scene.py").main(
+        output_path=str(output_path),
+        overwrite=True,
+        width=960,
+        height=540,
+        camera_name="main_camera",
+    )
+
+    assert rendered["success"] is True
+    assert runtime.last_render_kwargs == {
+        "outputfile": str(output_path),
+        "camera": runtime.camera,
+        "vfb": False,
+    }

@@ -79,6 +79,9 @@ class _FakeRuntime:
     def Targetcamera(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return self._make_node("camera", "TargetCamera")
 
+    def Targetobject(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        return self._make_node("target", "TargetObject")
+
     def FreeCamera(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return self._make_node("camera", "FreeCamera")
 
@@ -133,6 +136,23 @@ def test_camera_workflow_creates_and_sets_active_camera(monkeypatch):
     assert active["data"]["changed_camera_count"] == 1
     assert runtime.renderCamera.name == "review_camera"
     assert runtime.viewport.camera.name == "review_camera"
+
+
+def test_target_camera_creates_and_connects_native_target(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    created = _load_action("action_create_camera.py").main(
+        name="shot_camera",
+        camera_type="target",
+        position=[5, -8, 4],
+        target_position=[0, 0, 1],
+    )
+
+    camera = runtime.getNodeByName("shot_camera")
+    assert created["success"] is True
+    assert created["data"]["changed_node_count"] == 2
+    assert camera.target is runtime.getNodeByName("shot_camera.Target")
+    assert camera.target.position == [0.0, 0.0, 1.0]
 
 
 def test_active_camera_uses_runtime_class_for_pymxs_wrapper(monkeypatch):

@@ -57,6 +57,7 @@ def artifact_info(path: Path) -> Dict[str, Any]:
 
 def render_settings(runtime: Any) -> Dict[str, Any]:
     """Return common render settings."""
+    renderer = current_renderer(runtime)
     return {
         "width": int(getattr(runtime, "renderWidth", 0) or 0),
         "height": int(getattr(runtime, "renderHeight", 0) or 0),
@@ -65,14 +66,27 @@ def render_settings(runtime: Any) -> Dict[str, Any]:
         "output_path": str(getattr(runtime, "rendOutputFilename", "") or ""),
         "camera": _camera_name(getattr(runtime, "activeCamera", None)),
         "quality_preset": str(getattr(runtime, "renderQualityPreset", "") or ""),
-        "renderer": type(getattr(runtime, "currentRenderer", None)).__name__,
+        "renderer": type(renderer).__name__,
     }
+
+
+def current_renderer(runtime: Any) -> Any:
+    """Return the active renderer across native and test runtime contracts."""
+    renderers = getattr(runtime, "renderers", None)
+    if renderers is not None:
+        try:
+            renderer = renderers.current
+        except Exception:  # noqa: BLE001
+            renderer = None
+        if renderer is not None:
+            return renderer
+    return getattr(runtime, "currentRenderer", None)
 
 
 def scene_render_stats(runtime: Any) -> Dict[str, Any]:
     """Return scene-level render statistics."""
     nodes = iter_scene_nodes(runtime)
-    cameras = [node for node in nodes if is_camera_node(node)]
+    cameras = [node for node in nodes if is_camera_node(node, runtime=runtime)]
     materials = []
     for node in nodes:
         material = getattr(node, "material", None)
@@ -138,11 +152,18 @@ def render_scene(
     if not callable(renderer):
         return render_error("No render operation is available", artifact=artifact_info(output_path))
 
+    render_kwargs = {"outputfile": str(output_path), "vfb": False}
+    active_camera = getattr(runtime, "activeCamera", None)
+    if active_camera is not None:
+        render_kwargs["camera"] = active_camera
     try:
         try:
-            result = renderer(str(output_path))
+            result = renderer(**render_kwargs)
         except TypeError:
-            result = renderer()
+            try:
+                result = renderer(str(output_path))
+            except TypeError:
+                result = renderer()
     except Exception as exc:  # noqa: BLE001
         return render_error(
             "Render failed",
@@ -196,11 +217,17 @@ def set_camera(
     result, camera = resolve_node_object(runtime, node_name=camera_name, handle=camera_handle)
     if camera is None:
         return render_error(result.get("message", "Camera could not be resolved"), resolution=result)
-    if not is_camera_node(camera):
+    if not is_camera_node(camera, runtime=runtime):
         return render_error("Resolved node is not a camera", node=node_identity(camera))
     runtime.activeCamera = camera
     viewport = getattr(runtime, "viewport", None)
     if viewport is not None:
+        setter = getattr(viewport, "setCamera", None)
+        if callable(setter):
+            try:
+                setter(camera)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             viewport.camera = camera
         except Exception:  # noqa: BLE001
