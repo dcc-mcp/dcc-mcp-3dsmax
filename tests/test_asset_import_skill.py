@@ -39,6 +39,28 @@ class _FakeRuntime:
         return True
 
 
+class _FakeArnoldUsdNode:
+    def __init__(self) -> None:
+        self.name = "Arnold_USD_Object001"
+        self.handle = 77
+        self.filename = ""
+        self.objectpath = ""
+        self.frame = 0.0
+        self.UpAxis = -1
+
+
+class _FakeArnoldRuntime(_FakeRuntime):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.created_usd_nodes = []
+
+    def Arnold_USD_Object(self):  # noqa: N802 - mirrors the MAXtoA class name.
+        node = _FakeArnoldUsdNode()
+        self.objects.append(node)
+        self.created_usd_nodes.append(node)
+        return node
+
+
 def _install_fake_pymxs(monkeypatch, runtime):
     monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
 
@@ -75,3 +97,68 @@ def test_import_to_scene_rejects_missing_files(monkeypatch, tmp_path):
 
     assert result["success"] is False
     assert "does not exist" in result["message"]
+
+
+def test_create_arnold_usd_procedural_sets_stage_contract(monkeypatch, tmp_path):
+    stage = tmp_path / "signal_forge.usda"
+    stage.write_text("#usda 1.0", encoding="utf-8")
+    runtime = _FakeArnoldRuntime()
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_create_arnold_usd_procedural.py").main(
+        file_path=str(stage),
+        name="SignalForgeUSD",
+        object_path="/World/SignalForge",
+        frame=72.0,
+        up_axis="y",
+    )
+
+    node = runtime.created_usd_nodes[0]
+    assert result["success"] is True
+    assert result["data"]["file_path"] == str(stage.resolve())
+    assert result["data"]["node"]["node_name"] == "SignalForgeUSD"
+    assert result["data"]["object_path"] == "/World/SignalForge"
+    assert result["data"]["frame"] == 72.0
+    assert result["data"]["up_axis"] == "y"
+    assert node.filename == str(stage.resolve())
+    assert node.objectpath == "/World/SignalForge"
+    assert node.frame == 72.0
+    assert node.UpAxis == 1
+
+
+def test_create_arnold_usd_procedural_rejects_missing_file(monkeypatch, tmp_path):
+    runtime = _FakeArnoldRuntime()
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_create_arnold_usd_procedural.py").main(
+        file_path=str(tmp_path / "missing.usd")
+    )
+
+    assert result["success"] is False
+    assert "does not exist" in result["message"]
+    assert runtime.created_usd_nodes == []
+
+
+def test_create_arnold_usd_procedural_rejects_unsupported_extension(monkeypatch, tmp_path):
+    stage = tmp_path / "signal_forge.fbx"
+    stage.write_text("asset", encoding="utf-8")
+    runtime = _FakeArnoldRuntime()
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_create_arnold_usd_procedural.py").main(file_path=str(stage))
+
+    assert result["success"] is False
+    assert "Unsupported USD file extension" in result["message"]
+    assert runtime.created_usd_nodes == []
+
+
+def test_create_arnold_usd_procedural_requires_maxtoa(monkeypatch, tmp_path):
+    stage = tmp_path / "signal_forge.usdc"
+    stage.write_bytes(b"PXR-USDC")
+    runtime = _FakeRuntime([])
+    _install_fake_pymxs(monkeypatch, runtime)
+
+    result = _load_action("action_create_arnold_usd_procedural.py").main(file_path=str(stage))
+
+    assert result["success"] is False
+    assert "MAXtoA" in result["message"]

@@ -9,6 +9,8 @@ from dcc_mcp_3dsmax._geometry_io import import_geometry_file, resolve_import_fil
 from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes, node_bounding_box, node_identity
 
 SUPPORTED_ASSET_IMPORT_FORMATS = {"fbx", "obj", "3ds"}
+SUPPORTED_USD_FORMATS = {".usd", ".usda", ".usdc", ".usdz"}
+ARNOLD_USD_UP_AXIS = {"z": 0, "y": 1}
 
 
 def import_success(message: str, **data: Any) -> Dict[str, Any]:
@@ -67,6 +69,57 @@ def import_asset_to_scene(
         bounding_box=bounds,
         created_count=len(created_nodes),
         warnings=list(result["data"].get("warnings", [])),
+    )
+
+
+def create_arnold_usd_procedural(
+    runtime: Any,
+    file_path: str,
+    *,
+    name: str = "USD_Procedural",
+    object_path: str = "",
+    frame: float = 1.0,
+    up_axis: str = "y",
+) -> Dict[str, Any]:
+    """Create a MAXtoA USD procedural node for a portable USD stage."""
+    path = Path(file_path).expanduser().resolve()
+    if not path.is_file():
+        return import_error("USD file does not exist", file_path=str(path))
+    if path.suffix.lower() not in SUPPORTED_USD_FORMATS:
+        return import_error(
+            "Unsupported USD file extension",
+            file_path=str(path),
+            supported_extensions=sorted(SUPPORTED_USD_FORMATS),
+        )
+
+    normalized_axis = str(up_axis).strip().lower()
+    if normalized_axis not in ARNOLD_USD_UP_AXIS:
+        return import_error("Unsupported USD up axis", up_axis=up_axis, supported_up_axes=["y", "z"])
+
+    constructor = getattr(runtime, "Arnold_USD_Object", None)
+    if not callable(constructor):
+        return import_error(
+            "MAXtoA Arnold_USD_Object is unavailable; install or load MAXtoA before importing USD"
+        )
+
+    try:
+        node = constructor()
+        node.name = _safe_name(name)
+        node.filename = str(path)
+        node.objectpath = str(object_path)
+        node.frame = float(frame)
+        node.UpAxis = ARNOLD_USD_UP_AXIS[normalized_axis]
+    except Exception as exc:  # noqa: BLE001 - pymxs/MAXtoA raises host-specific exceptions.
+        return import_error("Failed to create MAXtoA USD procedural", error=str(exc), file_path=str(path))
+
+    return import_success(
+        "Created MAXtoA USD procedural",
+        node=node_identity(node),
+        file_path=str(path),
+        object_path=str(object_path),
+        frame=float(frame),
+        up_axis=normalized_axis,
+        created_count=1,
     )
 
 
