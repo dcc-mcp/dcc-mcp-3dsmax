@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.37](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.36...v0.1.37) (2026-07-16)
+
+
+### Bug Fixes
+
+* use OS-assigned MCP instance ports ([#132](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/132)) ([7ed65aa](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7ed65aaeedb42a555637a6a9b703f811e51f42a1))
+
 ## [0.1.36](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.35...v0.1.36) (2026-07-14)
 
 
