@@ -194,6 +194,29 @@ def test_readiness_inline_marks_executor_ready():
     assert report["dcc"] is True
 
 
+def test_wait_until_ready_uses_bound_dynamic_port(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    requested_urls = []
+
+    def fake_urlopen(url, **_kwargs):
+        requested_urls.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    server = type("Server", (), {"mcp_url": "http://127.0.0.1:54321/mcp"})()
+
+    assert readymod.wait_until_ready(server, timeout=1) is True
+    assert requested_urls == ["http://127.0.0.1:54321/v1/readyz"]
+
+
 def test_max_mcp_server_readiness_report_contract_with_ui_dispatcher():
     """MaxMcpServer + UI-style dispatcher produces a valid 6-state readiness report.
 
