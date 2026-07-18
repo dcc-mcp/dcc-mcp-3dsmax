@@ -18,36 +18,33 @@ import logging
 import os
 import re
 import time
-from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import Iterable
-from typing import List
-from typing import Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from dcc_mcp_core import json_loads
-from dcc_mcp_core._tool_registration import ToolSpec
-from dcc_mcp_core._tool_registration import register_tools
-from dcc_mcp_core.adapter_contracts import AppUiAuditRecord
-from dcc_mcp_core.adapter_contracts import AppUiPolicy
-from dcc_mcp_core.adapter_contracts import UiActionKind
-from dcc_mcp_core.adapter_contracts import UiActionResult
-from dcc_mcp_core.adapter_contracts import UiBounds
-from dcc_mcp_core.adapter_contracts import UiControlNode
-from dcc_mcp_core.adapter_contracts import UiErrorCode
-from dcc_mcp_core.adapter_contracts import UiSnapshot
-from dcc_mcp_core.adapter_contracts import UiWaitCondition
-from dcc_mcp_core.adapter_contracts import UiWaitConditionKind
-from dcc_mcp_core.adapter_contracts import UiWaitResult
-from dcc_mcp_core.skill import skill_error
-from dcc_mcp_core.skill import skill_success
-from dcc_mcp_core.skills.qt_ui_inspector import _BindingUnavailable
-from dcc_mcp_core.skills.qt_ui_inspector import _binding_unavailable
-from dcc_mcp_core.skills.qt_ui_inspector import _find_by_id
-from dcc_mcp_core.skills.qt_ui_inspector import _load_qt
-from dcc_mcp_core.skills.qt_ui_inspector import _no_application
-from dcc_mcp_core.skills.qt_ui_inspector import _widget_id
-from dcc_mcp_core.skills.qt_ui_inspector import _widget_summary
+from dcc_mcp_core._tool_registration import ToolSpec, register_tools
+from dcc_mcp_core.adapter_contracts import (
+    AppUiAuditRecord,
+    AppUiPolicy,
+    UiActionKind,
+    UiActionResult,
+    UiBounds,
+    UiControlNode,
+    UiErrorCode,
+    UiSnapshot,
+    UiWaitCondition,
+    UiWaitConditionKind,
+    UiWaitResult,
+)
+from dcc_mcp_core.skill import skill_error, skill_success
+from dcc_mcp_core.skills.qt_ui_inspector import (
+    _binding_unavailable,
+    _BindingUnavailable,
+    _find_by_id,
+    _load_qt,
+    _no_application,
+    _widget_id,
+    _widget_summary,
+)
 
 from dcc_mcp_3dsmax._qt_inspector import _MainThreadHandlerProxy
 
@@ -301,7 +298,9 @@ def _walk_widget_tree(
     return node
 
 
-def _build_snapshot(session_id: str, *, max_depth: int = _DEFAULT_MAX_DEPTH, max_nodes: int = _DEFAULT_MAX_NODES) -> Dict[str, Any]:
+def _build_snapshot(
+    session_id: str, *, max_depth: int = _DEFAULT_MAX_DEPTH, max_nodes: int = _DEFAULT_MAX_NODES
+) -> Dict[str, Any]:
     try:
         binding = _load_qt()
     except _BindingUnavailable as exc:
@@ -449,7 +448,9 @@ def _policy_denied(
         before_focus_id=state.get("focus_id"),
         after_focus_id=state.get("focus_id"),
     ).to_dict()
-    audit = _audit_record(action, False, control, state, policy, error_code=UiErrorCode.POLICY_DISABLED, message=message)
+    audit = _audit_record(
+        action, False, control, state, policy, error_code=UiErrorCode.POLICY_DISABLED, message=message
+    )
     return skill_error(message, UiErrorCode.POLICY_DISABLED, result=result, audit=audit)
 
 
@@ -651,9 +652,13 @@ def app_ui_act(**kwargs: Any) -> Dict[str, Any]:
             current_snapshot_id=current_snapshot_id,
         )
     if not _window_allowed(state, policy):
-        return _policy_denied(action, control_id, control, state, policy, "scoped app_ui window is not allowed by policy")
+        return _policy_denied(
+            action, control_id, control, state, policy, "scoped app_ui window is not allowed by policy"
+        )
     if not policy.allows_action(action):
-        return _policy_denied(action, control_id, control, state, policy, f"app_ui action {action!r} disabled by policy")
+        return _policy_denied(
+            action, control_id, control, state, policy, f"app_ui action {action!r} disabled by policy"
+        )
 
     try:
         binding = _load_qt()
@@ -691,7 +696,9 @@ def app_ui_act(**kwargs: Any) -> Dict[str, Any]:
         after_focus_id=after_focus,
         metadata={"snapshot_id": _snapshot_token(state)},
     ).to_dict()
-    audit = _audit_record(action, True, control, state, policy, None, "app_ui action completed", before_focus_id=before_focus)
+    audit = _audit_record(
+        action, True, control, state, policy, None, "app_ui action completed", before_focus_id=before_focus
+    )
     return skill_success(
         f"Completed Qt app_ui action {action!r} on {control_id}.",
         prompt="Use app_ui__wait_for to poll for the expected UI state, then app_ui__snapshot to verify.",
@@ -763,7 +770,9 @@ def app_ui_wait_for(**kwargs: Any) -> Dict[str, Any]:
                 error_code=UiErrorCode.POLICY_DISABLED,
                 message=message,
             ).to_dict()
-            audit = _audit_record("wait_for", False, None, state, policy, error_code=UiErrorCode.POLICY_DISABLED, message=message)
+            audit = _audit_record(
+                "wait_for", False, None, state, policy, error_code=UiErrorCode.POLICY_DISABLED, message=message
+            )
             return skill_error(message, UiErrorCode.POLICY_DISABLED, session_id=session_id, result=result, audit=audit)
         built = _build_snapshot(session_id)
         if "error" in built:

@@ -1,7 +1,9 @@
 """Render scene with multi-pass/AOV output."""
 
 from __future__ import annotations
+
 from typing import Any, Dict, Optional, Sequence
+
 from dcc_mcp_3dsmax._render_advanced import render_multi_pass
 from dcc_mcp_3dsmax._render_utils import IMAGE_EXTENSIONS, validate_output_path
 from dcc_mcp_3dsmax.api import get_runtime, with_max
@@ -21,7 +23,11 @@ def main(
     if error is not None:
         return error
     return render_multi_pass(
-        get_runtime(), path, width=width, height=height,
-        camera_name=camera_name, camera_handle=camera_handle,
+        get_runtime(),
+        path,
+        width=width,
+        height=height,
+        camera_name=camera_name,
+        camera_handle=camera_handle,
         elements=elements,
     )

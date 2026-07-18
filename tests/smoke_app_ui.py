@@ -37,12 +37,14 @@ TIMEOUT_S = 30
 
 def _rpc(method: str, params: dict | None = None) -> dict:
     """Call one MCP tool on the Streamable HTTP server."""
-    body = json.dumps({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params or {},
-        "id": int(time.time() * 1000) % 10**6,
-    }).encode()
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params or {},
+            "id": int(time.time() * 1000) % 10**6,
+        }
+    ).encode()
     req = urllib.request.Request(
         MCP_URL,
         data=body,
@@ -73,10 +75,13 @@ def main() -> None:
     # 1. app_ui__snapshot                                                #
     # ------------------------------------------------------------------ #
     step("1. app_ui__snapshot — capture the 3ds Max main window")
-    resp = _rpc("tools/call", {
-        "name": "app_ui__snapshot",
-        "arguments": {"session_id": SESSION},
-    })
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__snapshot",
+            "arguments": {"session_id": SESSION},
+        },
+    )
     assert_ok(resp, "snapshot")
     snapshot = resp.get("result", {}).get("content", [{}])[0].get("snapshot", {})
     root = snapshot.get("root", {})
@@ -88,26 +93,32 @@ def main() -> None:
     # 2. app_ui__find — locate controls                                  #
     # ------------------------------------------------------------------ #
     step("2. app_ui__find — locate DCC MCP controls")
-    resp = _rpc("tools/call", {
-        "name": "app_ui__find",
-        "arguments": {
-            "session_id": SESSION,
-            "limit": 10,
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__find",
+            "arguments": {
+                "session_id": SESSION,
+                "limit": 10,
+            },
         },
-    })
+    )
     assert_ok(resp, "find")
     content = resp.get("result", {}).get("content", [{}])[0]
     print(f"    Matches: {content.get('count', '?')}")
 
     # Try to find a clickable button
-    resp = _rpc("tools/call", {
-        "name": "app_ui__find",
-        "arguments": {
-            "session_id": SESSION,
-            "role": "button",
-            "limit": 5,
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__find",
+            "arguments": {
+                "session_id": SESSION,
+                "role": "button",
+                "limit": 5,
+            },
         },
-    })
+    )
     assert_ok(resp, "find buttons")
     content = resp.get("result", {}).get("content", [{}])[0]
     matches = content.get("matches", [])
@@ -129,14 +140,17 @@ def main() -> None:
     step("3. app_ui__act — click / focus / toggle")
     if target_id:
         # focus is the safest action — no side effects
-        resp = _rpc("tools/call", {
-            "name": "app_ui__act",
-            "arguments": {
-                "session_id": SESSION,
-                "control_id": target_id,
-                "action": "focus",
+        resp = _rpc(
+            "tools/call",
+            {
+                "name": "app_ui__act",
+                "arguments": {
+                    "session_id": SESSION,
+                    "control_id": target_id,
+                    "action": "focus",
+                },
             },
-        })
+        )
         assert_ok(resp, f"focus {target_id}")
         print(f"    Focus on {target_id} succeeded")
     else:
@@ -147,18 +161,21 @@ def main() -> None:
     # 4. app_ui__wait_for — wait for a condition                         #
     # ------------------------------------------------------------------ #
     step("4. app_ui__wait_for — window should still be visible")
-    resp = _rpc("tools/call", {
-        "name": "app_ui__wait_for",
-        "arguments": {
-            "session_id": SESSION,
-            "condition": {
-                "kind": "control_exists",
-                "role": "window",
-                "timeout_ms": 3000,
-                "interval_ms": 200,
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__wait_for",
+            "arguments": {
+                "session_id": SESSION,
+                "condition": {
+                    "kind": "control_exists",
+                    "role": "window",
+                    "timeout_ms": 3000,
+                    "interval_ms": 200,
+                },
             },
         },
-    })
+    )
     assert_ok(resp, "wait_for window")
     print("    Main window still present (condition satisfied)")
 
@@ -166,10 +183,13 @@ def main() -> None:
     # 5. app_ui__snapshot — post-action verification                     #
     # ------------------------------------------------------------------ #
     step("5. app_ui__snapshot — verify post-action state")
-    resp = _rpc("tools/call", {
-        "name": "app_ui__snapshot",
-        "arguments": {"session_id": SESSION},
-    })
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__snapshot",
+            "arguments": {"session_id": SESSION},
+        },
+    )
     assert_ok(resp, "snapshot post-action")
     snapshot2 = resp.get("result", {}).get("content", [{}])[0].get("snapshot", {})
     print(f"    Snapshot revision valid: {snapshot2.get('focus_id', '?')}")
@@ -178,15 +198,18 @@ def main() -> None:
     # 6. Negative tests                                                  #
     # ------------------------------------------------------------------ #
     step("6. Negative: stale_control detection")
-    resp = _rpc("tools/call", {
-        "name": "app_ui__act",
-        "arguments": {
-            "session_id": SESSION,
-            "control_id": "nonexistent",
-            "action": "click",
-            "snapshot_id": "stale-test:0",
+    resp = _rpc(
+        "tools/call",
+        {
+            "name": "app_ui__act",
+            "arguments": {
+                "session_id": SESSION,
+                "control_id": "nonexistent",
+                "action": "click",
+                "snapshot_id": "stale-test:0",
+            },
         },
-    })
+    )
     err = resp.get("result", {}).get("content", [{}])[0]
     if err.get("isError") or err.get("error") == "stale_control":
         print("  ✅ Stale control correctly detected")

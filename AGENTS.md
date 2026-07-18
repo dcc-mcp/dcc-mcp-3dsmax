@@ -3,6 +3,21 @@
 > Progressive disclosure: this file is a **map**, not an encyclopedia.
 > Follow the links for depth. Stay here for breadth.
 
+## Agent Control Path
+
+AI agent runtimes default to the shared gateway through the
+`dcc-cli-gateway` skill and `dcc-mcp-cli` REST commands:
+
+```bash
+dcc-mcp-cli search --query "<task>" --dcc-type 3dsmax
+dcc-mcp-cli describe <tool-slug>
+dcc-mcp-cli call <tool-slug> --json '{"key":"value"}'
+```
+
+Use `dcc-mcp-cli list` for live instances and `dcc-mcp-cli dcc-types` for
+release-catalog support. IDE users may continue to configure the gateway MCP
+endpoint; adapter-local Python start APIs are for host bootstrap and tests.
+
 ---
 
 ## 30-Second Summary
@@ -60,7 +75,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 - **src/dcc_mcp_3dsmax/context_snapshot.py** — Real-time scene state.
 - **src/dcc_mcp_3dsmax/capabilities.py** — DCC capability reporting.
 - **tests/** — 24 unit tests.
-- **Upstream `dcc-mcp-core` reference:** https://github.com/loonghao/dcc-mcp-core/blob/main/llms.txt
+- **Upstream `dcc-mcp-core` reference:** https://github.com/dcc-mcp/dcc-mcp-core/blob/main/llms.txt
 
 ### Layer 4 — You Are an AI Agent
 - **llms.txt** — Core API surface, env vars, bundled tools (compact).

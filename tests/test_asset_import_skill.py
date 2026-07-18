@@ -130,9 +130,7 @@ def test_create_arnold_usd_procedural_rejects_missing_file(monkeypatch, tmp_path
     runtime = _FakeArnoldRuntime()
     _install_fake_pymxs(monkeypatch, runtime)
 
-    result = _load_action("action_create_arnold_usd_procedural.py").main(
-        file_path=str(tmp_path / "missing.usd")
-    )
+    result = _load_action("action_create_arnold_usd_procedural.py").main(file_path=str(tmp_path / "missing.usd"))
 
     assert result["success"] is False
     assert "does not exist" in result["message"]

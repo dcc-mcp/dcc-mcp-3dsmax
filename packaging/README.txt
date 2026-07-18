@@ -82,4 +82,4 @@ Manual cleanup paths, if needed:
   <user startup scripts>/dcc_mcp_3dsmax_startup.ms
 
 For more information:
-https://github.com/loonghao/dcc-mcp-3dsmax
+https://github.com/dcc-mcp/dcc-mcp-3dsmax

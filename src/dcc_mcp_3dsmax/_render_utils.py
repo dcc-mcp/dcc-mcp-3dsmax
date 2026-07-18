@@ -146,8 +146,10 @@ def render_scene(
             return camera_result
 
     set_render_output(runtime, output_path=str(output_path), save_file=True)
-    renderer = getattr(runtime, "render", None) or getattr(runtime, "renderScene", None) or getattr(
-        runtime, "render_scene", None
+    renderer = (
+        getattr(runtime, "render", None)
+        or getattr(runtime, "renderScene", None)
+        or getattr(runtime, "render_scene", None)
     )
     if not callable(renderer):
         return render_error("No render operation is available", artifact=artifact_info(output_path))

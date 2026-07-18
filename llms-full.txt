@@ -12,7 +12,7 @@
 - **Description:** 3ds Max plugin for the DCC Model Context Protocol ecosystem
 - **License:** MIT
 - **Author:** Long Hao <hal.long@outlook.com>
-- **Repository:** https://github.com/loonghao/dcc-mcp-3dsmax
+- **Repository:** https://github.com/dcc-mcp/dcc-mcp-3dsmax
 - **PyPI:** https://pypi.org/project/dcc-mcp-3dsmax/
 - **Python:** >=3.7
 - **Core deps:** `dcc-mcp-core>=0.18.20`, `dcc-mcp-server>=0.18.20`
@@ -312,6 +312,6 @@ just test-e2e     # E2E tests (requires 3ds Max)
 
 ## See Also
 
-- [dcc-mcp-core](https://github.com/loonghao/dcc-mcp-core) — shared runtime framework
-- [dcc-mcp-maya](https://github.com/loonghao/dcc-mcp-maya) — Maya adapter
-- [dcc-mcp-houdini](https://github.com/loonghao/dcc-mcp-houdini) — Houdini adapter
+- [dcc-mcp-core](https://github.com/dcc-mcp/dcc-mcp-core) — shared runtime framework
+- [dcc-mcp-maya](https://github.com/dcc-mcp/dcc-mcp-maya) — Maya adapter
+- [dcc-mcp-houdini](https://github.com/dcc-mcp/dcc-mcp-houdini) — Houdini adapter

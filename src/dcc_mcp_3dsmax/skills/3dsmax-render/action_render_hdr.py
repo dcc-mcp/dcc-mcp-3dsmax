@@ -1,8 +1,10 @@
 """Render scene to HDR/EXR file."""
 
 from __future__ import annotations
+
 from typing import Any, Dict, Optional
-from dcc_mcp_3dsmax._render_advanced import render_hdr_scene, HDR_IMAGE_EXTENSIONS
+
+from dcc_mcp_3dsmax._render_advanced import HDR_IMAGE_EXTENSIONS, render_hdr_scene
 from dcc_mcp_3dsmax._render_utils import validate_output_path
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
@@ -23,7 +25,13 @@ def main(
     if error is not None:
         return error
     return render_hdr_scene(
-        get_runtime(), path, width=width, height=height,
-        camera_name=camera_name, camera_handle=camera_handle,
-        hdr_format=hdr_format, bit_depth=bit_depth, compression=compression,
+        get_runtime(),
+        path,
+        width=width,
+        height=height,
+        camera_name=camera_name,
+        camera_handle=camera_handle,
+        hdr_format=hdr_format,
+        bit_depth=bit_depth,
+        compression=compression,
     )

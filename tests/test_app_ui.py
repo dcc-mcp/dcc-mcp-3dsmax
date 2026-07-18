@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dcc_mcp_core.adapter_contracts import AppUiPolicy
-from dcc_mcp_core.adapter_contracts import UiActionKind
+from dcc_mcp_core.adapter_contracts import AppUiPolicy, UiActionKind
 
 from dcc_mcp_3dsmax import _app_ui as app_ui_mod
 

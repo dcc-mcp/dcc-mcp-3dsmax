@@ -1,7 +1,9 @@
 """Configure active renderer settings."""
 
 from __future__ import annotations
+
 from typing import Any, Dict, Mapping, Optional
+
 from dcc_mcp_3dsmax._render_advanced import configure_renderer, set_renderer
 from dcc_mcp_3dsmax._render_utils import render_settings
 from dcc_mcp_3dsmax.api import get_runtime, with_max

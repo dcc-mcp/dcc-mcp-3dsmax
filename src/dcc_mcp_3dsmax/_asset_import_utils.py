@@ -98,9 +98,7 @@ def create_arnold_usd_procedural(
 
     constructor = getattr(runtime, "Arnold_USD_Object", None)
     if not callable(constructor):
-        return import_error(
-            "MAXtoA Arnold_USD_Object is unavailable; install or load MAXtoA before importing USD"
-        )
+        return import_error("MAXtoA Arnold_USD_Object is unavailable; install or load MAXtoA before importing USD")
 
     try:
         node = constructor()

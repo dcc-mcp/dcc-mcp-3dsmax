@@ -3,7 +3,7 @@
 Synchronous dispatcher used outside the interactive 3ds Max UI:
 ``3dsmax -batch`` scripts.  No queue, no threads, no main-thread distinction.
 
-See: https://github.com/loonghao/dcc-mcp-3dsmax/issues/1
+See: https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/1
 """
 
 # Import future modules

@@ -8,9 +8,9 @@ import types
 from pathlib import Path
 
 from dcc_mcp_core.asset_import import (
+    AssetAttribution,
     AssetDescriptor,
     AssetFileVariant,
-    AssetAttribution,
     AxisHint,
     ImportToSceneRequest,
     ImportToSceneResult,
