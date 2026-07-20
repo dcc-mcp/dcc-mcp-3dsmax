@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.38](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.37...v0.1.38) (2026-07-20)
+
+
+### Bug Fixes
+
+* align adapter contracts and branding ([#134](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/134)) ([73e8d54](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/73e8d54f5452c9b6f514c5ad00637edf46de6150))
+
 ## [0.1.37](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.36...v0.1.37) (2026-07-16)
 
 
