@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.39](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.38...v0.1.39) (2026-07-24)
+
+
+### Features
+
+* **menu:** unified menu structure with Copy Instance ID and About DCC MCP ([5334921](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5334921d5f4ae6e7cce8e5725b02c1e2462d6218))
+
+
+### Bug Fixes
+
+* rename AppUiPolicy -&gt; UiControlPolicy and AppUiAuditRecord -&gt; UiControlAuditRecord ([eaa66c6](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/eaa66c6e84f6c9942bd5b79f1802027152211005))
+
 ## [0.1.38](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.37...v0.1.38) (2026-07-20)
 
 
