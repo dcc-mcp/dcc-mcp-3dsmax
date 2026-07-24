@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dcc_mcp_core.adapter_contracts import AppUiPolicy, UiActionKind
+from dcc_mcp_core.adapter_contracts import UiControlPolicy, UiActionKind
 
 from dcc_mcp_3dsmax import _app_ui as app_ui_mod
 
@@ -45,7 +45,7 @@ def test_app_ui_registers_when_enabled(monkeypatch):
 
 
 def test_default_policy_blocks_raw_coordinate_click():
-    policy = AppUiPolicy()
+    policy = UiControlPolicy()
     assert policy.allows_action(UiActionKind.CLICK) is True
     assert policy.allows_action(UiActionKind.FOCUS) is True
     assert policy.allows_action(UiActionKind.RAW_COORDINATE_CLICK) is False

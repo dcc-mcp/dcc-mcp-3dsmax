@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from dcc_mcp_core import json_loads
 from dcc_mcp_core._tool_registration import ToolSpec, register_tools
 from dcc_mcp_core.adapter_contracts import (
-    AppUiAuditRecord,
-    AppUiPolicy,
+    UiControlAuditRecord,
+    UiControlPolicy,
     UiActionKind,
     UiActionResult,
     UiBounds,
@@ -101,11 +101,11 @@ def _safe_session_id(session_id: Any) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)[:80] or "default"
 
 
-def _policy_from_params(params: Dict[str, Any]) -> AppUiPolicy:
+def _policy_from_params(params: Dict[str, Any]) -> UiControlPolicy:
     raw = params.get("policy") or {}
     if not isinstance(raw, dict):
         raw = {}
-    return AppUiPolicy(**{key: raw[key] for key in _POLICY_KEYS if key in raw})
+    return UiControlPolicy(**{key: raw[key] for key in _POLICY_KEYS if key in raw})
 
 
 def _session_state(session_id: str) -> Dict[str, Any]:
@@ -216,7 +216,7 @@ def _scope_metadata(root: Any) -> Dict[str, Any]:
     return {"window_title": title, "process_id": os.getpid()}
 
 
-def _window_allowed(state: Dict[str, Any], policy: AppUiPolicy) -> bool:
+def _window_allowed(state: Dict[str, Any], policy: UiControlPolicy) -> bool:
     title = str(state.get("window_title") or "").strip()
     process_id = int(state.get("process_id") or 0)
     if policy.require_scoped_window and not title and process_id <= 0:
@@ -402,7 +402,7 @@ def _audit_record(
     success: bool,
     control: Optional[Dict[str, Any]],
     state: Dict[str, Any],
-    policy: AppUiPolicy,
+    policy: UiControlPolicy,
     *,
     error_code: Optional[str] = None,
     message: Optional[str] = None,
@@ -416,7 +416,7 @@ def _audit_record(
     audit_metadata = {"backend": "qt", "snapshot_id": _snapshot_token(state)}
     if metadata:
         audit_metadata.update(metadata)
-    return AppUiAuditRecord(
+    return UiControlAuditRecord(
         action_kind=action,
         success=success,
         target_control_id=control.get("id") if control else None,
@@ -437,7 +437,7 @@ def _policy_denied(
     control_id: str,
     control: Optional[Dict[str, Any]],
     state: Dict[str, Any],
-    policy: AppUiPolicy,
+    policy: UiControlPolicy,
     message: str,
 ) -> Dict[str, Any]:
     result = UiActionResult(
@@ -458,7 +458,7 @@ def _unsupported_action(
     action: str,
     control: Dict[str, Any],
     state: Dict[str, Any],
-    policy: AppUiPolicy,
+    policy: UiControlPolicy,
     message: str,
 ) -> Dict[str, Any]:
     result = UiActionResult(
