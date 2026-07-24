@@ -955,8 +955,12 @@ class TestMenuIntegration:
         assert "DccMcp3dsmax_StartSidecar" in script
         assert "dcc_mcp_3dsmax.main()" in script
         assert "DccMcp3dsmax_StopSidecar" in script
+        assert "DccMcp3dsmax_CopyInstanceId" in script
+        assert "dcc_mcp_3dsmax.copy_instance_id()" in script
         assert "DccMcp3dsmax_OpenAdmin" in script
         assert "http://127.0.0.1:9765/admin?panel=instances" in script
+        assert "DccMcp3dsmax_AboutDccMcp" in script
+        assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
 
     def test_shutdown_callback_stops_sidecar_before_max_shutdown(self):
         """Shutdown callback uses the early 3ds Max shutdown notification."""
@@ -976,6 +980,8 @@ class TestMenuIntegration:
         assert "DCC MCP-DccMcp3dsmax_StartSidecar.mcr" in script
         assert "DCC MCP-DccMcp3dsmax_StopSidecar.mcr" in script
         assert "DCC MCP-DccMcp3dsmax_OpenAdmin.mcr" in script
+        assert "DCC MCP-DccMcp3dsmax_CopyInstanceId.mcr" in script
+        assert "DCC MCP-DccMcp3dsmax_AboutDccMcp.mcr" in script
         assert "DCC MCP-DccMcp3dsmax_PrintStatus.mcr" in script
         # Idempotent — all cleanup wrapped in try/catch
         assert "deleteFile" in script
