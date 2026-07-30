@@ -47,8 +47,12 @@ class _FakeRuntime:
         self.sliderTime = 1.0
         self.animationRangeStart = 1
         self.animationRangeEnd = 24
+        self.animationRange = types.SimpleNamespace(start=1, end=24)
         self.frameRate = 30.0
         self.set_keys = []
+
+    def Interval(self, start, end):  # noqa: N802 - mirrors pymxs runtime naming.
+        return types.SimpleNamespace(start=start, end=end)
 
     def getNodeByName(self, name):  # noqa: N802 - mirrors pymxs runtime naming.
         for node in self.objects:
@@ -90,8 +94,8 @@ def test_timeline_mutations_update_runtime(monkeypatch):
     assert runtime.currentTime == 12.0
     assert bad_timeline["success"] is False
     assert timeline["success"] is True
-    assert runtime.animationRangeStart == 10
-    assert runtime.animationRangeEnd == 20
+    assert runtime.animationRange.start == 10
+    assert runtime.animationRange.end == 20
     assert runtime.frameRate == 24.0
 
 
@@ -177,3 +181,39 @@ def test_transform_keys_use_pymxs_animation_context_instead_of_runtime_setkey(mo
     assert result["success"] is True, result
     assert ("enter", ("animate", True)) in events
     assert ("enter", ("attime", 1)) in events
+
+
+def test_interpolation_and_delete_update_native_controller_keys(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    keys = [types.SimpleNamespace(time=0.0), types.SimpleNamespace(time=360.0)]
+    components = {name: types.SimpleNamespace(keys=list(keys), properties={}) for name in ("x", "y", "z")}
+    rotation = types.SimpleNamespace(keys=[], properties=components)
+    runtime.hero.controller = types.SimpleNamespace(properties={"rotation": rotation})
+    runtime.hero.keyframes = [
+        {"frame": frame, "property": "rotation", "value": [0, 0, frame], "interpolation": None}
+        for frame in (0.0, 360.0)
+    ]
+    runtime.Name = str
+    runtime.ticksPerFrame = 160
+    runtime.getPropertyController = lambda controller, name: controller.properties.get(str(name))
+    runtime.getPropNames = lambda controller: list(controller.properties)
+    runtime.numKeys = lambda controller: len(controller.keys)
+    runtime.getKeyTime = lambda controller, index: controller.keys[index - 1].time * runtime.ticksPerFrame
+    runtime.getKey = lambda controller, index: controller.keys[index - 1]
+    runtime.setInTangentType = lambda key, tangent: setattr(key, "in_tangent", tangent)
+    runtime.setOutTangentType = lambda key, tangent: setattr(key, "out_tangent", tangent)
+    runtime.deleteKey = lambda controller, index: controller.keys.pop(index - 1)
+
+    interpolated = _load_action("action_set_key_interpolation.py").main(
+        node_names=["hero_mesh"], interpolation="linear"
+    )
+    listed = _load_action("action_list_keyframes.py").main(node_names=["hero_mesh"])
+    deleted = _load_action("action_delete_keyframes.py").main(
+        node_names=["hero_mesh"], properties=["rotation"]
+    )
+
+    assert interpolated["data"]["changes"][0]["native_changed_key_count"] == 6
+    assert listed["data"]["nodes"][0]["count"] == 2
+    assert all(key.in_tangent == key.out_tangent == "linear" for component in components.values() for key in keys)
+    assert deleted["data"]["changes"][0]["native_changed_key_count"] == 6
+    assert all(not component.keys for component in components.values())

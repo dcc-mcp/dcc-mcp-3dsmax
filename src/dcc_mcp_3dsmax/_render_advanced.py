@@ -55,10 +55,7 @@ def render_hdr_scene(
             warnings=fmt_warnings,
         )
     try:
-        try:
-            result = renderer(str(output_path))
-        except TypeError:
-            result = renderer()
+        result = _render_to_output(runtime, renderer, output_path)
     except Exception as exc:  # noqa: BLE001
         return render_error(
             "HDR render failed",
@@ -164,10 +161,7 @@ def render_multi_pass(
             element_warnings=element_warnings,
         )
     try:
-        try:
-            result = renderer(str(output_path))
-        except TypeError:
-            result = renderer()
+        result = _render_to_output(runtime, renderer, output_path)
     except Exception as exc:  # noqa: BLE001
         return render_error(
             "Multi-pass render failed",
@@ -336,3 +330,18 @@ def _find_renderer(runtime: Any) -> Any:
         or getattr(runtime, "renderScene", None)
         or getattr(runtime, "render_scene", None)
     )
+
+
+def _render_to_output(runtime: Any, renderer: Any, output_path: Path) -> Any:
+    """Invoke pymxs render with native output keywords before legacy fallbacks."""
+    kwargs = {"outputfile": str(output_path), "vfb": False}
+    active_camera = getattr(runtime, "activeCamera", None)
+    if active_camera is not None:
+        kwargs["camera"] = active_camera
+    try:
+        return renderer(**kwargs)
+    except TypeError:
+        try:
+            return renderer(str(output_path))
+        except TypeError:
+            return renderer()

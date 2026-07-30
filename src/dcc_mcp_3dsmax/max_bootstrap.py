@@ -226,6 +226,10 @@ def _server_binary_path() -> Path:
         if candidate.is_file():
             return candidate
 
+    current_scripts_binary = Path(sysconfig.get_path("scripts") or "") / binary_name
+    if current_scripts_binary.is_file():
+        return current_scripts_binary
+
     try:
         from dcc_mcp_server import binary_path  # noqa: PLC0415
 
@@ -235,10 +239,7 @@ def _server_binary_path() -> Path:
     except Exception:  # noqa: BLE001
         pass
 
-    fallback_candidates = [
-        Path(sysconfig.get_path("scripts") or "") / binary_name,
-        Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin") / binary_name,
-    ]
+    fallback_candidates = [Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin") / binary_name]
     try:
         user_site = Path(site.getusersitepackages())
         fallback_candidates.append(user_site.parent / ("Scripts" if os.name == "nt" else "bin") / binary_name)

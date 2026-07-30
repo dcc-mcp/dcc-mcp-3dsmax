@@ -46,9 +46,10 @@ Inspect and manage scene-level objects through `pymxs`. Tool contracts live in
 queries enter the 3ds Max host API.
 
 Use the read tools to list nodes and cameras, inspect selection, query
-bounding boxes and visibility, and retrieve session metadata. Use the mutation
-tools for targeted selection, duplication, deletion, grouping, parenting,
-visibility changes, pivot centering, and transform freezing.
+bounding boxes and visibility, and retrieve session metadata. Save explicitly
+with `save_scene`. Use the remaining mutation tools for targeted selection,
+duplication, deletion, grouping, parenting, visibility changes, pivot centering,
+and transform freezing.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

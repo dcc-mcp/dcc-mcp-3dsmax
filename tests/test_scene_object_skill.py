@@ -75,6 +75,7 @@ class _FakeRuntime:
         self.centered = []
         self.frozen = []
         self.executed = []
+        self.saved = []
 
     def maxVersion(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return (26000, 0)
@@ -130,6 +131,10 @@ class _FakeRuntime:
 
     def execute(self, script):
         self.executed.append(script)
+        return True
+
+    def saveMaxFile(self, file_path, quiet=True):  # noqa: N802 - mirrors pymxs runtime naming.
+        self.saved.append((file_path, quiet))
         return True
 
 
@@ -214,6 +219,16 @@ def test_scene_mutation_tools_update_fake_runtime(monkeypatch):
     assert frozen["success"] is True and runtime.frozen == ["hero_box"]
     assert deleted["success"] is True
     assert all(node.name != "hidden_helper" for node in runtime.objects)
+
+
+def test_save_scene_uses_native_max_file_api(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    output = tmp_path / "lookdev.max"
+
+    result = _load_action("action_save_scene.py").main(file_path=str(output))
+
+    assert result["success"] is True
+    assert runtime.saved == [(str(output.resolve()), True)]
 
 
 def test_scene_skill_runs_through_adapter_executor(monkeypatch):

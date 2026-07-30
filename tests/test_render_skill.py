@@ -170,3 +170,23 @@ def test_render_scene_uses_pymxs_outputfile_and_camera_keywords(monkeypatch, tmp
         "camera": runtime.camera,
         "vfb": False,
     }
+
+
+def test_render_hdr_uses_pymxs_outputfile_and_camera_keywords(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    output_path = tmp_path / "beauty.exr"
+
+    rendered = _load_action("action_render_hdr.py").main(
+        output_path=str(output_path),
+        overwrite=True,
+        width=960,
+        height=540,
+        camera_name="main_camera",
+    )
+
+    assert rendered["success"] is True
+    assert runtime.last_render_kwargs == {
+        "outputfile": str(output_path),
+        "camera": runtime.camera,
+        "vfb": False,
+    }

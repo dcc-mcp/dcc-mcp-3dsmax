@@ -1,4 +1,56 @@
 tools:
+  - name: get_color_management
+    description: Read the active 3ds Max scene color-management mode, OCIO config, rendering space, and status.
+    source_file: action_get_color_management.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema: {type: object, additionalProperties: false, properties: {}}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    search_aliases: ["get color management", "inspect ocio", "ocio status"]
+
+  - name: set_color_management
+    description: Configure the supplied OCIO config through Max's environment mode and set the scene-linear rendering color space.
+    source_file: action_set_color_management.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [ocio_config_path]
+      additionalProperties: false
+      properties:
+        ocio_config_path: {type: string, minLength: 1}
+        rendering_color_space: {type: string, minLength: 1, default: ACEScg}
+        data_color_space: {type: string, minLength: 1, default: Raw}
+        lock_settings: {type: boolean, default: true}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    search_aliases: ["set color management", "configure ocio", "set rendering color space"]
+
   - name: setup_hdr_lighting
     description: >-
       Load an HDR/EXR image as the environment/background map and set up a
@@ -68,6 +120,35 @@ tools:
       targets: ['scene_node', 'environment']
     produces:
       - 'environment_lighting'
+
+  - name: set_hdri_rotation
+    description: Rotate the active HDR environment in degrees without recreating the light rig.
+    source_file: action_set_hdri_rotation.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [rotation]
+      additionalProperties: false
+      properties:
+        rotation:
+          type: number
+          description: Horizontal environment rotation in degrees.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    search_aliases: ["set hdri rotation", "rotate environment", "lighting turntable"]
 
   - name: preview_material
     description: >-

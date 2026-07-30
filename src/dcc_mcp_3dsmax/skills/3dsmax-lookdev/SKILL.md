@@ -1,7 +1,7 @@
 ---
 name: 3dsmax-lookdev
 description: >-
-  Domain skill - configure HDR environment lighting, preview materials, and
+  Domain skill - configure OCIO color management, HDR environment lighting, preview materials, and
   assign renderer-specific materials (Arnold, V-Ray, Scanline) in 3ds Max.
 license: MIT
 compatibility: "dcc-mcp-core 0.17+, 3ds Max 2024+"
@@ -45,9 +45,13 @@ detection (Arnold, V-Ray, Scanline).
 
 ## Tools
 
+- **`get_color_management` / `set_color_management`** — Inspect or configure the
+  3ds Max 2024+ scene OCIO config and scene-linear rendering color space.
 - **`setup_hdr_lighting`** — Load an HDR/EXR image as the environment map,
   configure rotation and intensity, and optionally create a three-point light
   rig.
+- **`set_hdri_rotation`** — Rotate the active environment for a lighting
+  turntable without rebuilding the rig.
 - **`preview_material`** — Create a test sphere or quad, apply a named scene
   material, and report the viewport-visible result.
 - **`assign_renderer_material`** — Detect the active renderer

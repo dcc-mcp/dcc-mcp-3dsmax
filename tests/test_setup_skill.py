@@ -84,3 +84,17 @@ def test_query_startup_dir_uses_last_nonempty_output_line(monkeypatch):
     monkeypatch.setattr(setup, "capture", lambda _cmd: "startup noise\n\nC:/Users/me/3dsmax/startup\n")
 
     assert setup.query_3dsmax_startup_dir(Path("3dsmaxpy.exe")) == Path("C:/Users/me/3dsmax/startup")
+
+
+def test_install_package_uses_uv_for_embedded_python(tmp_path, monkeypatch):
+    setup = _load_setup_module()
+    commands = []
+    maxpy = Path("C:/Program Files/Autodesk/3ds Max 2024/Python/python.exe")
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "C:/tools/uv.exe" if name == "uv" else None)
+    monkeypatch.setattr(setup, "run", lambda command, cwd=None: commands.append((command, cwd)))
+
+    setup.install_package(maxpy, "local", tmp_path, skip_install=False)
+
+    assert commands == [
+        (["C:/tools/uv.exe", "pip", "install", "--python", str(maxpy), "-e", "."], tmp_path)
+    ]

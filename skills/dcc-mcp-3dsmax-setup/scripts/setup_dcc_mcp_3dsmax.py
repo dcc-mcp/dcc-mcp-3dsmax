@@ -85,6 +85,16 @@ def install_package(maxpy: Path, source: str, repo_root: Path, skip_install: boo
         print("Skipping pip install because --skip-install was passed.")
         return
 
+    uv = shutil.which("uv")
+    if uv:
+        if source == "local":
+            run([uv, "pip", "install", "--python", str(maxpy), "-e", "."], cwd=repo_root)
+        elif source == "pypi":
+            run([uv, "pip", "install", "--python", str(maxpy), "--upgrade", "dcc-mcp-3dsmax"])
+        else:
+            raise SystemExit("Unknown source: %s" % source)
+        return
+
     run([str(maxpy), "-m", "ensurepip", "--upgrade"])
     run(
         [

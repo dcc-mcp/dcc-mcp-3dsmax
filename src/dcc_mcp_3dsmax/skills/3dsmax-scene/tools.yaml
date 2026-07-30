@@ -43,6 +43,56 @@ tools:
       render: false
       targets: []
     produces: ['scene_info']
+  - name: save_scene
+    description: Save the current 3ds Max scene to an explicit .max file.
+    source_file: action_save_scene.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          description: Absolute output path ending in .max.
+        overwrite:
+          type: boolean
+          default: false
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Save the current 3ds Max scene."
+    tool_role: action
+    risk: medium
+    search_aliases: ["save_scene", "save scene", "save max file"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: true
+      render: false
+      targets: ["scene_file"]
+    produces: ['scene_file']
   - name: list_scene_nodes
     description: >-
       List scene nodes with stable identity, class, parent, visibility, and

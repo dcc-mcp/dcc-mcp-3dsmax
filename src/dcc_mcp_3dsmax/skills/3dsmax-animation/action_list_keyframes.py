@@ -17,5 +17,5 @@ def main(
     targets = resolve_anim_targets(rt, node_names=node_names, handles=handles, use_selection=use_selection)
     if not targets.get("success"):
         return targets
-    rows = [list_keyframes(node) for node in targets["objects"]]
+    rows = [list_keyframes(node, runtime=rt) for node in targets["objects"]]
     return anim_success("Listed keyframes", nodes=rows, count=len(rows))

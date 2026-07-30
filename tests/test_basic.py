@@ -816,6 +816,31 @@ class TestSidecar:
 
         assert max_bootstrap._server_binary_path() == bundled_binary
 
+    def test_server_binary_path_prefers_current_python_scripts_over_stale_package_location(
+        self, tmp_path, monkeypatch
+    ):
+        """Embedded Max Python must not launch a stale sidecar from another interpreter."""
+        import sys
+        from types import SimpleNamespace
+
+        from dcc_mcp_3dsmax import max_bootstrap
+
+        binary_name = "dcc-mcp-server.exe" if os.name == "nt" else "dcc-mcp-server"
+        current_binary = tmp_path / "max-python" / "Scripts" / binary_name
+        stale_binary = tmp_path / "system-python" / "Scripts" / binary_name
+        current_binary.parent.mkdir(parents=True)
+        stale_binary.parent.mkdir(parents=True)
+        current_binary.write_text("current", encoding="utf-8")
+        stale_binary.write_text("stale", encoding="utf-8")
+
+        monkeypatch.delenv("DCC_MCP_SERVER_BIN", raising=False)
+        monkeypatch.delenv("DCC_MCP_SERVER_ROOT", raising=False)
+        monkeypatch.setattr(max_bootstrap, "_bundled_server_binary_candidates", lambda _name: [])
+        monkeypatch.setattr(max_bootstrap.sysconfig, "get_path", lambda _name: str(current_binary.parent))
+        monkeypatch.setitem(sys.modules, "dcc_mcp_server", SimpleNamespace(binary_path=lambda: stale_binary))
+
+        assert max_bootstrap._server_binary_path() == current_binary
+
     def test_sidecar_dispatch_accepts_script_path_payload(self, tmp_path):
         """Sidecar payloads execute explicit script paths."""
         import json
@@ -961,6 +986,13 @@ class TestMenuIntegration:
         assert "http://127.0.0.1:9765/admin?panel=instances" in script
         assert "DccMcp3dsmax_AboutDccMcp" in script
         assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
+
+    def test_public_print_status_matches_menu_macro(self):
+        """The persisted Print Status macro calls the package-level public API."""
+        import dcc_mcp_3dsmax
+        from dcc_mcp_3dsmax.menu import print_status
+
+        assert dcc_mcp_3dsmax.print_status is print_status
 
     def test_shutdown_callback_stops_sidecar_before_max_shutdown(self):
         """Shutdown callback uses the early 3ds Max shutdown notification."""

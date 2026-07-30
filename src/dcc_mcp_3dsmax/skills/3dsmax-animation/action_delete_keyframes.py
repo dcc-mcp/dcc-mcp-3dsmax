@@ -24,9 +24,12 @@ def main(
     total = 0
     rows = []
     for node in targets["objects"]:
-        result = delete_keyframes(node, frames=frames, properties=properties)
+        result = delete_keyframes(rt, node, frames=frames, properties=properties)
         if not result.get("success"):
             return result
         rows.append(result["data"])
-        total += result["data"]["changed_key_count"]
+        total += max(
+            result["data"]["changed_key_count"],
+            result["data"].get("native_changed_key_count", 0),
+        )
     return anim_success("Deleted keyframes", changes=rows, changed_key_count=total)
