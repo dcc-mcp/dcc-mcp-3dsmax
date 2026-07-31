@@ -122,7 +122,7 @@ tools:
       - 'environment_lighting'
 
   - name: set_hdri_rotation
-    description: Rotate the active HDR environment in degrees without recreating the light rig.
+    description: Rotate the active HDR environment, optionally inserting a linear native key at one frame.
     source_file: action_set_hdri_rotation.py
     execution: sync
     affinity: main
@@ -135,6 +135,9 @@ tools:
         rotation:
           type: number
           description: Horizontal environment rotation in degrees.
+        frame:
+          type: number
+          description: Optional frame at which to insert a linear rotation key.
     output_schema:
       type: object
       additionalProperties: true

@@ -45,6 +45,9 @@ class _Runtime:
         self.environmentMapAmount = 0.0
         self.environmentMapAngle = 0.0
         self.ColorPipelineMgr = _ColorPipelineManager()
+        self.ticksPerFrame = 160
+        self._keys = []
+        self._controller = None
 
     def Point3(self, x, y, z):  # noqa: N802 - mirrors pymxs runtime naming.
         return [float(x), float(y), float(z)]
@@ -63,6 +66,36 @@ class _Runtime:
             self.ColorPipelineMgr.OCIOConfigPath = os.environ["OCIO"]
         return value
 
+    def getPropertyController(self, _owner, _name):  # noqa: N802
+        return self._controller
+
+    def Bezier_Float(self):  # noqa: N802
+        return self._keys
+
+    def setPropertyController(self, _owner, _name, controller):  # noqa: N802
+        self._controller = controller
+        return True
+
+    def addNewKey(self, controller, frame):  # noqa: N802
+        key = types.SimpleNamespace(time=frame)
+        controller.append(key)
+        return key
+
+    def numKeys(self, controller):  # noqa: N802
+        return len(controller)
+
+    def getKeyTime(self, controller, index):  # noqa: N802
+        return controller[index - 1].time * self.ticksPerFrame
+
+    def getKey(self, controller, index):  # noqa: N802
+        return controller[index - 1]
+
+    def setInTangentType(self, key, tangent):  # noqa: N802
+        key.in_tangent = tangent
+
+    def setOutTangentType(self, key, tangent):  # noqa: N802
+        key.out_tangent = tangent
+
 
 class _ColorPipelineManager:
     def __init__(self) -> None:
@@ -79,7 +112,11 @@ class _ColorPipelineManager:
 
 def _install_fake_pymxs(monkeypatch):
     runtime = _Runtime()
-    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+    monkeypatch.setitem(
+        sys.modules,
+        "pymxs",
+        types.SimpleNamespace(runtime=runtime),
+    )
     return runtime
 
 
@@ -111,6 +148,21 @@ def test_set_hdri_rotation_updates_native_uv_offset(monkeypatch, tmp_path):
     assert result["success"] is True
     assert result["data"]["u_offset"] == 0.5
     assert runtime.environmentMap.coords.U_Offset == 0.5
+
+
+def test_set_hdri_rotation_inserts_linear_unwrapped_key(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    hdri_path = tmp_path / "studio.hdr"
+    hdri_path.write_text("hdr", encoding="utf-8")
+    _load_action("action_setup_hdr_lighting.py").main(hdri_path=str(hdri_path))
+
+    result = _load_action("action_set_hdri_rotation.py").main(rotation=360, frame=359)
+
+    assert result["success"] is True
+    assert result["data"]["u_offset"] == 1.0
+    assert result["data"]["interpolation"] == "linear"
+    assert runtime._keys[0].in_tangent == "linear"
+    assert runtime._keys[0].out_tangent == "linear"
 
 
 def test_set_color_management_applies_custom_ocio_and_reports_readback(monkeypatch, tmp_path):

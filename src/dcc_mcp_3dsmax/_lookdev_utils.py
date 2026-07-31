@@ -117,15 +117,37 @@ def setup_hdr_lighting(
     return lookdev_success("Configured HDR lighting with rig warnings", **result)
 
 
-def set_hdri_rotation(runtime: Any, rotation: float) -> Dict[str, Any]:
+def set_hdri_rotation(runtime: Any, rotation: float, frame: Optional[float] = None) -> Dict[str, Any]:
     """Rotate the active environment bitmap through its native UV placement."""
     bitmap = getattr(runtime, "environmentMap", None)
     if bitmap is None:
         return lookdev_error("No active environment map")
-    u_offset = _set_bitmap_rotation(bitmap, rotation)
+    if frame is None:
+        u_offset = _set_bitmap_rotation(bitmap, rotation)
+    else:
+        try:
+            u_offset = float(rotation) / 360.0
+            controller = _ensure_bitmap_rotation_controller(runtime, bitmap)
+            key = runtime.addNewKey(controller, float(frame))
+            key.value = u_offset
+            name = getattr(runtime, "Name", str)
+            if hasattr(runtime, "setInTangentType") and hasattr(runtime, "setOutTangentType"):
+                runtime.setInTangentType(key, name("linear"))
+                runtime.setOutTangentType(key, name("linear"))
+            else:
+                key.inTangentType = name("linear")
+                key.outTangentType = name("linear")
+        except Exception as exc:  # noqa: BLE001
+            return lookdev_error("Could not key HDRI rotation", frame=float(frame), error=str(exc))
     if u_offset is None:
         return lookdev_error("Active environment map does not expose UV placement")
-    return lookdev_success("Updated HDRI rotation", rotation=float(rotation), u_offset=u_offset)
+    return lookdev_success(
+        "Updated HDRI rotation",
+        rotation=float(rotation),
+        u_offset=u_offset,
+        frame=None if frame is None else float(frame),
+        interpolation=None if frame is None else "linear",
+    )
 
 
 def _create_bitmap(runtime: Any, hdri_path: str) -> Any:
@@ -178,13 +200,26 @@ def _apply_environment_map(runtime: Any, bitmap: Any, *, intensity: float, rotat
     return warnings
 
 
-def _set_bitmap_rotation(bitmap: Any, rotation: float) -> Optional[float]:
+def _set_bitmap_rotation(bitmap: Any, rotation: float, *, wrap: bool = True) -> Optional[float]:
     coords = getattr(bitmap, "coords", None)
     if coords is None or not hasattr(coords, "U_Offset"):
         return None
-    u_offset = (float(rotation) % 360.0) / 360.0
+    u_offset = ((float(rotation) % 360.0) if wrap else float(rotation)) / 360.0
     coords.U_Offset = u_offset
     return float(coords.U_Offset)
+
+
+def _ensure_bitmap_rotation_controller(runtime: Any, bitmap: Any) -> Any:
+    coords = bitmap.coords
+    name = getattr(runtime, "Name", str)
+    property_name = name("U_Offset")
+    controller = runtime.getPropertyController(coords, property_name)
+    if controller is not None:
+        return controller
+    controller = runtime.Bezier_Float()
+    if runtime.setPropertyController(coords, property_name, controller) is False:
+        raise RuntimeError("3ds Max rejected the HDRI rotation controller")
+    return controller
 
 
 def _bitmap_summary(bitmap: Any) -> Dict[str, Any]:
