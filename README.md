@@ -4,15 +4,23 @@
   <img src="docs/assets/dcc-mcp-3dsmax.svg" alt="DCC-MCP · 3DSMAX" width="600">
 </p>
 
+3ds Max plugin for the DCC Model Context Protocol (MCP) ecosystem.
+
 ## Agent workflow
 
-AI agents should use the shared gateway through `dcc-mcp-cli`; IDE users may
-continue to use the MCP endpoint. Prefer typed skills and tools over raw scripts.
+Choose the connection path that matches your client:
 
-### Install or update the CLI
+- **Shell or headless agent:** use `dcc-mcp-cli` through the shared gateway.
+- **IDE MCP client:** connect to `http://127.0.0.1:9765/mcp`.
+- **3ds Max setup:** follow [`install.md`](install.md) to install the runtime
+  and startup hook.
 
-`dcc-mcp-cli` is the preferred control path for every shell-capable agent. If
-it is missing, ask the user before installing the latest official release:
+Prefer typed skills and tools over raw scripts.
+
+### Install and update the CLI
+
+If `dcc-mcp-cli` is missing, obtain user consent before installing the official
+release:
 
 ```bash
 # Linux/macOS
@@ -22,51 +30,15 @@ curl -fsSL https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-core/main/scripts/i
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-core/main/scripts/install-cli.ps1 | iex"
 ```
 
-Keep an official build current through the release manifest:
+Check for updates, then stage the latest CLI for the next launch:
 
 ```bash
 dcc-mcp-cli update check
 dcc-mcp-cli update apply
 ```
 
-`update apply` downloads and stages the latest CLI for the next launch. It
-does not update a running `dcc-mcp-server`; update that server in its own
-environment.
-
-```bash
-dcc-mcp-cli dcc-types
-dcc-mcp-cli list
-dcc-mcp-cli search --query "<task>" --dcc-type 3dsmax
-dcc-mcp-cli describe <tool-slug>
-dcc-mcp-cli call <tool-slug> --json '{"key":"value"}'
-```
-
-`dcc-types` reports release-catalog support; `list` reports live sessions. If a
-tool belongs to an inactive progressive skill, call `dcc-mcp-cli load-skill <skill-name> --dcc-type 3dsmax` before retrying. For post-task improvement,
-attach a stable session id with `--meta-json`, query `dcc-mcp-cli stats --range 24h --session-id <task-id>`, then pass the bounded evidence to the
-`review_skill_improvement` prompt from `dcc-mcp-skills-creator`.
-
-
-<p align="center">
-  <img src="assets/3dsmax-mcp-readme-hero.png"
-       alt="3ds Max MCP adapter screenshot"
-       width="760"
-       loading="lazy" />
-</p>
-
-3ds Max plugin for the DCC Model Context Protocol (MCP) ecosystem.
-
-- [Features](#features)
-- [Agent install](#agent-install-recommended)
-- [Installation](#installation)
-- [Quickstart](#quickstart-inside-3ds-max-maxscript-listener)
-- [Runtime Bridge](#runtime-bridge)
-- [Skill Development](#skill-development)
-
-> **Status:** This project is under active development. APIs, packaging, and 3ds Max integration details may change quickly while the adapter tracks the latest `dcc-mcp-core` releases.  
-> Direct image link: [`3dsmax-mcp-readme-hero.png`](assets/3dsmax-mcp-readme-hero.png)
-
-<br/>
+`update apply` stages the CLI only. It does not update a running
+`dcc-mcp-server`; update that server in its own environment.
 
 ## Features
 
