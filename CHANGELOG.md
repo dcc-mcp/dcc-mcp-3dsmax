@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.40](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.39...v0.1.40) (2026-08-06)
+
+
+### Features
+
+* add ocio lookdev turntable controls ([0f75830](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/0f7583030d64100b5d57f34052d757d52fcabb31))
+* key native HDRI rotation ([83e51ba](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/83e51ba09e5cf8e4e8d366186f286ce9846a228a))
+* **menu:** implement support for new CUI menu system in 3ds Max 2025+ ([8bed811](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8bed811c88ffc1685c42a4465b2eb3b5423c722e))
+
 ## [0.1.39](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.38...v0.1.39) (2026-07-24)
 
 
