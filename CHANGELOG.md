@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.40...v0.2.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* migrate UI Control to dcc-cua 0.4.0 ([#143](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/143))
+
+### Features
+
+* migrate UI Control to dcc-cua 0.4.0 ([#143](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/143)) ([75a1c04](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/75a1c040c55cd563a6638c7c85ed87d2e17f66f4))
+
+
+### Bug Fixes
+
+* support sidecar skill loading ([#145](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/145)) ([5707227](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5707227cd09ffd7c150a84ce4fc97b189f46b678))
+
+
+### Documentation
+
+* refine README agent workflow ([c42210f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/c42210f50f0dcbadcea1704310a6adf9dc41ec3f))
+
 ## [0.1.40](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.39...v0.1.40) (2026-08-06)
 
 
