@@ -39,7 +39,7 @@ a running server.
 `dcc-mcp-3dsmax` embeds a standards-compliant MCP Streamable HTTP server directly inside Autodesk 3ds Max. It exposes ~130 3ds Max operations as MCP tools that any AI agent (Claude, Cursor, Gemini, etc.) can call over HTTP.
 
 **Current version:** 0.1.21 <!-- x-release-please-version -->
-**Core dependency:** `dcc-mcp-core>=0.18.20,<1.0.0`
+**Core dependency:** `dcc-mcp-core>=0.20.0,<1.0.0`
 **Python:** 3.7+
 **3ds Max:** 2017+ (with pymxs)
 
@@ -133,7 +133,6 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 | `DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT` | `0` | Disable all arbitrary script execution |
 | `DCC_MCP_3DSMAX_ENABLE_GATEWAY_FAILOVER` | `1` | Enable gateway failover |
 | `DCC_MCP_3DSMAX_QT_UI_INSPECTOR` | `0` | Enable Qt UI inspector tools |
-| `DCC_MCP_3DSMAX_APP_UI` | `0` | Disable Qt-backed `app_ui__*` interaction tools |
 | `DCC_MCP_3DSMAX_SEMANTIC_INDEX` | `0` | Enable semantic skill recall |
 | `DCC_MCP_3DSMAX_PROJECT_TOOLS` | `1` | Enable project state tools |
 | `DCC_MCP_3DSMAX_RESOURCES` | `1` | Enable `scene://current` resource |

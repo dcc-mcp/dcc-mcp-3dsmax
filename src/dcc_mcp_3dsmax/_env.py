@@ -50,8 +50,6 @@ ENV_RESOURCES = "DCC_MCP_3DSMAX_RESOURCES"
 ENV_PROJECT_TOOLS = "DCC_MCP_3DSMAX_PROJECT_TOOLS"
 #: Falsey token skips the shared ``qt_ui_inspector__*`` tools.
 ENV_QT_UI_INSPECTOR = "DCC_MCP_3DSMAX_QT_UI_INSPECTOR"
-#: Falsey token skips the Qt-backed ``app_ui__*`` tools.
-ENV_APP_UI = "DCC_MCP_3DSMAX_APP_UI"
 #: ``"1"`` enables morphology-aware semantic recall in ``search_skills``.
 ENV_SEMANTIC_INDEX = "DCC_MCP_3DSMAX_SEMANTIC_INDEX"
 #: ``hashed`` (default) or ``onnx`` embedder for the semantic index.
@@ -205,13 +203,6 @@ def resolve_project_tools_enabled(flag: Optional[bool] = None) -> bool:
 def resolve_qt_ui_inspector_enabled() -> bool:
     """Resolve whether the shared ``qt_ui_inspector__*`` tools should register."""
     from dcc_mcp_3dsmax._qt_inspector import resolve_qt_ui_inspector_enabled as _resolve  # noqa: PLC0415
-
-    return _resolve()
-
-
-def resolve_app_ui_enabled() -> bool:
-    """Resolve whether the Qt-backed ``app_ui__*`` tools should register."""
-    from dcc_mcp_3dsmax._app_ui import resolve_app_ui_enabled as _resolve  # noqa: PLC0415
 
     return _resolve()
 

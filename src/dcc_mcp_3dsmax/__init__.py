@@ -36,7 +36,6 @@ from typing import Any
 # Import local modules
 from dcc_mcp_3dsmax.__version__ import __version__
 from dcc_mcp_3dsmax._env import (
-    ENV_APP_UI,
     ENV_DISABLE_ARBITRARY_SCRIPT,
     ENV_DISABLE_EXECUTE_MAXSCRIPT,
     ENV_DISABLE_EXECUTE_PYTHON,
@@ -47,7 +46,6 @@ from dcc_mcp_3dsmax._env import (
     ENV_RESOURCES,
     ENV_SEMANTIC_EMBEDDER,
     ENV_SEMANTIC_INDEX,
-    resolve_app_ui_enabled,
     resolve_enable_gateway_failover,
     resolve_execute_maxscript_disabled,
     resolve_execute_python_disabled,
@@ -96,7 +94,6 @@ _LAZY_EXPORTS = {
     "install_shutdown_callback": ("dcc_mcp_3dsmax.menu", "install_shutdown_callback"),
     "copy_instance_id": ("dcc_mcp_3dsmax.menu", "copy_instance_id"),
     "about_dcc_mcp": ("dcc_mcp_3dsmax.menu", "about_dcc_mcp"),
-    "print_status": ("dcc_mcp_3dsmax.menu", "print_status"),
     "MaxMcpServer": ("dcc_mcp_3dsmax.server", "MaxMcpServer"),
     "MaxServerOptions": ("dcc_mcp_3dsmax.server", "MaxServerOptions"),
     "start_server": ("dcc_mcp_3dsmax.server", "start_server"),
@@ -169,7 +166,6 @@ __all__ = [
     "install_shutdown_callback",
     "copy_instance_id",
     "about_dcc_mcp",
-    "print_status",
     # Version
     "get_3dsmax_version_string",
     "get_3dsmax_version_number",
@@ -202,7 +198,6 @@ __all__ = [
     "ENV_RESOURCES",
     "ENV_PROJECT_TOOLS",
     "ENV_QT_UI_INSPECTOR",
-    "ENV_APP_UI",
     "ENV_SEMANTIC_INDEX",
     "ENV_SEMANTIC_EMBEDDER",
     "resolve_enable_gateway_failover",
@@ -212,7 +207,6 @@ __all__ = [
     "resolve_resources_enabled",
     "resolve_project_tools_enabled",
     "resolve_qt_ui_inspector_enabled",
-    "resolve_app_ui_enabled",
     "resolve_semantic_index_enabled",
     "resolve_semantic_embedder_kind",
     # Readiness (parity #184)

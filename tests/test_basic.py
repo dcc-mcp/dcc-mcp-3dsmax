@@ -160,6 +160,32 @@ class TestServerOptions:
         paths = server._collect_skill_paths()
         assert str(skill_dir) in paths
 
+    def test_server_binds_core_ui_control_to_exact_3dsmax_scope(self, monkeypatch):
+        """Core 0.20 owns UI Control through dcc-cua; the adapter only grants scope."""
+        from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+        monkeypatch.setenv("DCC_MCP_UI_CONTROL_BACKEND", "mock")
+        monkeypatch.setenv("DCC_MCP_UI_CONTROL_PROCESS_ID", "1")
+        monkeypatch.setenv("DCC_MCP_UI_CONTROL_WINDOW_HANDLE", "2")
+        monkeypatch.setenv("DCC_MCP_APP_UI_BACKEND", "windows-uia")
+        monkeypatch.setenv("DCC_MCP_3DSMAX_APP_UI", "1")
+
+        MaxMcpServer(
+            options=MaxServerOptions(
+                port=0,
+                dcc_pid=321,
+                dcc_window_handle=654,
+                enable_gateway_failover=False,
+                job_storage_path="",
+            )
+        )
+
+        assert os.environ["DCC_MCP_UI_CONTROL_BACKEND"] == "cua"
+        assert os.environ["DCC_MCP_UI_CONTROL_PROCESS_ID"] == "321"
+        assert os.environ["DCC_MCP_UI_CONTROL_WINDOW_HANDLE"] == "654"
+        assert "DCC_MCP_APP_UI_BACKEND" not in os.environ
+        assert "DCC_MCP_3DSMAX_APP_UI" not in os.environ
+
     def test_options_wire_core_execution_dispatcher(self):
         """Dispatcher options are converted into core execution settings."""
         from dcc_mcp_3dsmax.dispatcher import MaxStandaloneDispatcher

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 # Import built-in modules
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,7 +37,6 @@ from dcc_mcp_core.server_base import DccServerBase
 
 # Import local modules
 from dcc_mcp_3dsmax import (
-    _app_ui,
     _env,
     _executor,
     _project_tools,
@@ -75,6 +75,26 @@ _ENV_EXTRA_SKILL_PATHS = "DCC_MCP_3DSMAX_SKILL_PATHS"
 _ENV_GENERIC_SKILL_PATHS = "DCC_MCP_SKILL_PATHS"
 
 _DCC_NAME = "3dsmax"
+
+
+def _configure_ui_control_scope(*, process_id: Optional[int], window_handle: Optional[int]) -> None:
+    """Bind core 0.20 UI Control to the current 3ds Max process/window."""
+    os.environ["DCC_MCP_UI_CONTROL_BACKEND"] = "cua"
+    os.environ["DCC_MCP_UI_CONTROL_PROCESS_ID"] = str(process_id or os.getpid())
+    if window_handle is None:
+        os.environ.pop("DCC_MCP_UI_CONTROL_WINDOW_HANDLE", None)
+    else:
+        os.environ["DCC_MCP_UI_CONTROL_WINDOW_HANDLE"] = str(window_handle)
+
+    for legacy_name in (
+        "DCC_MCP_UI_CONTROL_UIA_PROCESS_ID",
+        "DCC_MCP_UI_CONTROL_UIA_WINDOW_HANDLE",
+        "DCC_MCP_APP_UI_BACKEND",
+        "DCC_MCP_APP_UI_UIA_PROCESS_ID",
+        "DCC_MCP_APP_UI_UIA_WINDOW_HANDLE",
+        "DCC_MCP_3DSMAX_APP_UI",
+    ):
+        os.environ.pop(legacy_name, None)
 
 
 def _host_dispatcher_from(dispatcher: Any) -> Any:
@@ -231,6 +251,10 @@ class MaxMcpServer(DccServerBase):
                 readiness_timeout_secs=readiness_timeout_secs,
             )
 
+        _configure_ui_control_scope(
+            process_id=options.dcc_pid,
+            window_handle=options.dcc_window_handle,
+        )
         super().__init__(options=options.to_core_options())
         self._extra_skill_paths: List[str] = list(options.extra_skill_paths or [])
         self._max_dispatcher: Any = None
@@ -605,17 +629,6 @@ class MaxMcpServer(DccServerBase):
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] qt-ui-inspector registration failed: %s", _DCC_NAME, exc)
-
-    def _register_app_ui(self) -> None:
-        """Register the Qt-backed ``app_ui__*`` tools (main-thread routed)."""
-        try:
-            _app_ui.register_3dsmax_app_ui(
-                self._server,
-                dcc_name=_DCC_NAME,
-                dispatcher=self._max_dispatcher,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[%s] app-ui registration failed: %s", _DCC_NAME, exc)
 
     def _register_capability_manifest_tool(self) -> None:
         """Register the ``dcc_capability_manifest`` MCP tool."""

@@ -80,15 +80,6 @@ class QtUiInspectorPhase(RegistrationPhase):
         context.server._register_qt_ui_inspector()  # noqa: SLF001
 
 
-class AppUiPhase(RegistrationPhase):
-    """Register the Qt-backed ``app_ui__*`` tools (main-thread routed)."""
-
-    name = "app_ui"
-
-    def run(self, context: RegistrationContext) -> None:
-        context.server._register_app_ui()  # noqa: SLF001
-
-
 class CapabilityManifestPhase(RegistrationPhase):
     """Register the ``dcc_capability_manifest`` MCP tool."""
 
@@ -134,7 +125,6 @@ def default_registration_phases() -> Sequence[RegistrationPhase]:
         IntrospectToolsPhase(),
         FeedbackToolPhase(),
         QtUiInspectorPhase(),
-        AppUiPhase(),
         CapabilityManifestPhase(),
         ProjectToolsPhase(),
         ResourcesPhase(),
