@@ -96,8 +96,95 @@ def _server_or_placeholder(server_lookup: Callable[[], Any]) -> Any:
         return _NoServer()
 
 
-def _resolve_action_source(action_name: str, *, server: Any = None, payload: Any = None) -> Optional[str]:
+def _load_skill(server: Any, args: Mapping[str, Any]) -> dict:
+    """Load one catalog skill through the same host-thread sidecar route."""
+    skill_name = args.get("skill_name")
+    if not isinstance(skill_name, str) or not skill_name.strip():
+        return _lifecycle_error("payload-malformed", "load_skill requires a non-empty skill_name")
+    skill_name = skill_name.strip()
+
+    if isinstance(server, _NoServer):
+        return _lifecycle_error("server-not-running", "3ds Max server is not running")
+
+    loader = getattr(server, "load_skill", None)
+    if not callable(loader):
+        return _lifecycle_error("unknown-action", "3ds Max server does not support load_skill")
+
+    try:
+        accepted = bool(loader(skill_name))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("sidecar load_skill(%r) failed", skill_name)
+        return _lifecycle_error(
+            "dispatch-failed",
+            "Failed to load skill: {}".format(skill_name),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+
+    loaded = _is_skill_loaded(server, skill_name, fallback=accepted)
+    if not accepted or not loaded:
+        return _lifecycle_error("skill-load-failed", "Failed to load skill: {}".format(skill_name))
+
+    return {
+        "success": True,
+        "loaded": True,
+        "skill_name": skill_name,
+        "dcc_type": "3dsmax",
+        "registered_tools": _registered_tool_names(server, skill_name),
+        "message": "Loaded skill: {}".format(skill_name),
+    }
+
+
+def _lifecycle_error(code: str, message: str, **context: Any) -> dict:
+    result = {"success": False, "error": code, "message": message}
+    if context:
+        result["context"] = context
+    return result
+
+
+def _is_skill_loaded(server: Any, skill_name: str, *, fallback: bool) -> bool:
+    checker = getattr(server, "is_skill_loaded", None)
+    if not callable(checker):
+        return fallback
+    try:
+        return bool(checker(skill_name))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("is_skill_loaded failed for %s: %s", skill_name, exc)
+        return fallback
+
+
+def _registered_tool_names(server: Any, skill_name: str) -> list:
+    names = []
+    for action in _list_actions(server):
+        owner = _get_value(action, "skill_name") or _get_value(action, "skill")
+        if owner != skill_name:
+            continue
+        name = _get_value(action, "name") or _get_value(action, "action")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return sorted(set(names))
+
+
+def _list_actions(server: Any) -> list:
+    lister = getattr(server, "list_actions", None)
+    if not callable(lister):
+        return []
+    try:
+        return list(lister() or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("list_actions failed while reporting load_skill result: %s", exc)
+        return []
+
+
+def _resolve_action_source(action_name: str, *, server: Any = None, payload: Any = None) -> Any:
     _ = payload
+    if action_name == "load_skill":
+        return {
+            "source_file": str(Path(__file__).resolve()),
+            "skill_name": "dcc-adapter",
+            "thread_affinity": "main",
+            "execution": "sync",
+        }
     path = _resolve_script_path(server, action_name)
     if path is not None:
         return str(path)
@@ -106,6 +193,8 @@ def _resolve_action_source(action_name: str, *, server: Any = None, payload: Any
 
 
 def _run_skill_script(request: Any) -> Any:
+    if request.action == "load_skill":
+        return _load_skill(request.server, request.args)
     result = _executor.run_skill_script(request.script_path, request.args)
     if isinstance(result, Mapping):
         result = dict(result)

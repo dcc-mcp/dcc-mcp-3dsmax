@@ -910,6 +910,58 @@ class TestSidecar:
         assert result["action"] == "3dsmax-modeling__create_box"
         assert result.get("status") == "error" or result.get("success") is False
 
+    def test_sidecar_dispatch_load_skill_updates_catalog_state(self):
+        """Advertised load_skill requests activate the discovery catalog."""
+        from dcc_mcp_3dsmax.sidecar._dispatcher import dispatch_payload_dict
+
+        class FakeServer:
+            def __init__(self):
+                self.loaded = set()
+
+            def is_skill_loaded(self, skill_name):
+                return skill_name in self.loaded
+
+            def load_skill(self, skill_name):
+                if skill_name != "3dsmax-scene":
+                    return False
+                self.loaded.add(skill_name)
+                return True
+
+            def list_actions(self):
+                if "3dsmax-scene" not in self.loaded:
+                    return []
+                return [
+                    {
+                        "name": "3dsmax_scene__get_scene_info",
+                        "skill_name": "3dsmax-scene",
+                    }
+                ]
+
+        server = FakeServer()
+        result = dispatch_payload_dict(
+            {
+                "action": "load_skill",
+                "args": {"skill_name": "3dsmax-scene"},
+                "request_id": "load-1",
+            },
+            server_lookup=lambda: server,
+        )
+
+        assert result["success"] is True
+        assert result["loaded"] is True
+        assert result["skill_name"] == "3dsmax-scene"
+        assert result["registered_tools"] == ["3dsmax_scene__get_scene_info"]
+        assert result["request_id"] == "load-1"
+        assert server.is_skill_loaded("3dsmax-scene") is True
+
+        missing = dispatch_payload_dict(
+            {"action": "load_skill", "args": {"skill_name": "missing-skill"}},
+            server_lookup=lambda: server,
+        )
+        assert missing["success"] is False
+        assert missing["error"] == "skill-load-failed"
+        assert "loaded" not in missing
+
     def test_bridge_http_dispatch_roundtrip(self, tmp_path):
         """Bridge accepts structured dispatch requests over localhost HTTP."""
         import json
