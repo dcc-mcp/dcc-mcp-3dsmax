@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.0...v0.2.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **materials:** preserve normal maps and projected UV discovery ([#146](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/146)) ([967345b](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/967345b3eca71d792bd249459a3271914bd4c810))
+* **materials:** use native Physical Material bump slot ([#148](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/148)) ([e5b7b9d](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e5b7b9daee18b95daf7b2a07ad4cc9d9e240cc92))
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.1.40...v0.2.0) (2026-08-12)
 
 
