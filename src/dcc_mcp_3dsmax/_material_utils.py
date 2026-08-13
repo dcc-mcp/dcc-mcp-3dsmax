@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes, node_identity, resolve_node_objects
 
@@ -85,7 +85,7 @@ def bitmap_connections(material: Any) -> List[Dict[str, Any]]:
             bitmap = getattr(material, attr, None)
             if bitmap is None:
                 continue
-            path = str(getattr(bitmap, "filename", "") or getattr(bitmap, "path", ""))
+            path = _bitmap_path(bitmap)
             rows.append(
                 {
                     "slot": slot,
@@ -220,19 +220,59 @@ def create_bitmap(runtime: Any, texture_path: str) -> Any:
     return bitmap
 
 
-def assign_bitmap(material: Any, slot: str, bitmap: Any) -> List[str]:
+def assign_bitmap(material: Any, slot: str, bitmap: Any, *, runtime: Any = None) -> List[str]:
     """Assign a bitmap to one common map slot."""
     attrs = MAP_SLOTS.get(slot)
     if not attrs:
         return ["Unsupported map slot: {}".format(slot)]
     warnings = []
+    assigned_map = bitmap
+    if slot == "normal" and runtime is not None:
+        assigned_map, wrapper_warnings = _normal_map(runtime, bitmap)
+        warnings.extend(wrapper_warnings)
     for attr in attrs:
         try:
-            setattr(material, attr, bitmap)
+            setattr(material, attr, assigned_map)
             return warnings
         except Exception as exc:  # noqa: BLE001
             warnings.append("Could not set map slot {}: {}".format(attr, exc))
     return warnings
+
+
+def _normal_map(runtime: Any, bitmap: Any) -> Tuple[Any, List[str]]:
+    """Wrap a bitmap in Max's native Normal Bump texmap when available."""
+    warnings = []
+    for constructor_name in ("Normal_Bump", "NormalBump"):
+        constructor = getattr(runtime, constructor_name, None)
+        if not callable(constructor):
+            continue
+        try:
+            wrapper = constructor()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append("Could not create {}: {}".format(constructor_name, exc))
+            continue
+        for attr in ("normal_map", "normalMap"):
+            try:
+                setattr(wrapper, attr, bitmap)
+                return wrapper, warnings
+            except Exception as exc:  # noqa: BLE001
+                warnings.append("Could not set Normal Bump {}: {}".format(attr, exc))
+    warnings.append("Normal Bump texmap unavailable; assigned the bitmap directly")
+    return bitmap, warnings
+
+
+def _bitmap_path(value: Any) -> str:
+    """Resolve a bitmap filename through direct or Normal Bump connections."""
+    direct = getattr(value, "filename", "") or getattr(value, "path", "")
+    if direct:
+        return str(direct)
+    for attr in ("normal_map", "normalMap", "bump_map", "bumpMap"):
+        nested = getattr(value, attr, None)
+        if nested is not None and nested is not value:
+            path = getattr(nested, "filename", "") or getattr(nested, "path", "")
+            if path:
+                return str(path)
+    return ""
 
 
 def missing_textures(materials: Sequence[Any]) -> List[Dict[str, Any]]:

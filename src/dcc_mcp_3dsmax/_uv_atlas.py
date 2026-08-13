@@ -65,6 +65,8 @@ def channel_summary(runtime: Any, node: Any) -> Dict[str, Any]:
         )
     if not rows:
         rows = _runtime_channel_rows(runtime, node)
+    if not rows:
+        rows = _modifier_channel_rows(node)
     return {"node": node_identity(node), "channels": rows, "count": len(rows)}
 
 
@@ -228,6 +230,31 @@ def _runtime_channel_rows(runtime: Any, node: Any) -> List[Dict[str, Any]]:
     return [
         {"channel": index, "present": True, "uv_count": 0, "face_count": 0, "shell_count": 0}
         for index in range(1, count + 1)
+    ]
+
+
+def _modifier_channel_rows(node: Any) -> List[Dict[str, Any]]:
+    """Discover UV channels represented by UVW/Unwrap modifiers."""
+    channels = set()
+    try:
+        modifiers = list(getattr(node, "modifiers", []))
+    except Exception:  # noqa: BLE001
+        return []
+    for modifier in modifiers:
+        label = "{} {}".format(type(modifier).__name__, getattr(modifier, "name", "")).lower()
+        if "uvw" not in label and "unwrap" not in label:
+            continue
+        for attr in ("mapChannel", "map_channel"):
+            try:
+                channel = int(getattr(modifier, attr))
+            except Exception:  # noqa: BLE001
+                continue
+            if 1 <= channel <= 99:
+                channels.add(channel)
+                break
+    return [
+        {"channel": channel, "present": True, "uv_count": 0, "face_count": 0, "shell_count": 0}
+        for channel in sorted(channels)
     ]
 
 

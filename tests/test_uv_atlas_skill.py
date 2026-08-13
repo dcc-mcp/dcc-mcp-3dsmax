@@ -184,3 +184,26 @@ def test_uv_projection_unwrap_pack_and_normalize_add_modifiers(monkeypatch):
     assert runtime.hero.modifiers[0].maptype == "box"
     assert ("pack", 0.05) in runtime.hero.modifiers[2].operations
     assert ("normalize", None) in runtime.hero.modifiers[3].operations
+
+
+def test_list_uv_channels_discovers_projection_modifier_without_python_node_state(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    node = runtime.hero
+    del node.uv_channels
+    original_setattr = node.__class__.__setattr__
+
+    def reject_dynamic_uv_state(self, name, value):
+        if name == "uv_channels":
+            raise AttributeError("Max wrapper does not allow arbitrary properties")
+        return original_setattr(self, name, value)
+
+    monkeypatch.setattr(node.__class__, "__setattr__", reject_dynamic_uv_state)
+    runtime.polyOp.getNumMaps = lambda _node: (_ for _ in ()).throw(TypeError("primitive unsupported"))
+
+    projected = _load_action("action_apply_uv_projection.py").main(
+        node_names=["hero_mesh"], channel=7, projection="box"
+    )
+    listed = _load_action("action_list_uv_channels.py").main(node_names=["hero_mesh"])
+
+    assert projected["success"] is True
+    assert [row["channel"] for row in listed["data"]["nodes"][0]["channels"]] == [7]

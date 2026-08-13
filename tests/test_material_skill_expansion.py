@@ -25,6 +25,11 @@ class _BitmapTexture:
         self.filename = filename
 
 
+class _NormalBump:
+    def __init__(self) -> None:
+        self.normal_map = None
+
+
 class _PhysicalMaterial:
     def __init__(self) -> None:
         self.name = "Physical"
@@ -32,6 +37,9 @@ class _PhysicalMaterial:
         self.roughness = 0.5
         self.metalness = 0.0
         self.diffuseMap = None
+        self.normalMap = None
+        self.roughnessMap = None
+        self.metalnessMap = None
 
 
 class _StandardMaterial:
@@ -93,6 +101,9 @@ class _FakeRuntime:
 
     def Bitmaptexture(self, filename=""):  # noqa: N802 - mirrors pymxs runtime naming.
         return _BitmapTexture(filename)
+
+    def Normal_Bump(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        return _NormalBump()
 
     def append(self, collection, value):
         collection.values.append(value)
@@ -180,3 +191,24 @@ def test_material_reset_and_missing_texture_reports(monkeypatch):
     assert "does not exist" in blocked["message"]
     assert reset["success"] is True
     assert runtime.objects[0].material is None
+
+
+def test_physical_normal_map_survives_other_pbr_map_assignments(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    paths = {}
+    for slot in ("normal", "roughness", "metalness"):
+        path = tmp_path / (slot + ".png")
+        path.write_text("png", encoding="utf-8")
+        paths[slot] = path
+
+    material = runtime.physical
+    for slot in ("normal", "roughness", "metalness"):
+        result = _load_action("action_assign_bitmap_texture.py").main("Physical", slot, str(paths[slot]))
+        assert result["success"] is True
+
+    connections = _load_action("action_list_bitmap_connections.py").main("Physical")
+    by_slot = {row["slot"]: row for row in connections["data"]["connections"]}
+
+    assert set(by_slot) >= {"normal", "roughness", "metalness"}
+    assert by_slot["normal"]["path"] == str(paths["normal"])
+    assert material.normalMap.normal_map.filename == str(paths["normal"])

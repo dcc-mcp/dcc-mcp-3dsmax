@@ -27,7 +27,7 @@ def main(material_name: str, slot: str, texture_path: str, allow_missing: bool =
     if material is None:
         return material_error("Material not found", material_name=material_name)
     bitmap = create_bitmap(rt, str(path))
-    warnings = assign_bitmap(material, slot, bitmap)
+    warnings = assign_bitmap(material, slot, bitmap, runtime=rt)
     return material_success(
         "Assigned bitmap texture",
         material_name=material_name,
