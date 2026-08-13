@@ -19,10 +19,14 @@ NUMERIC_ATTRS = {
     "glossiness": ("glossiness", "glossinessValue"),
 }
 MAP_SLOTS = {
+    # pymxs exposes modern Physical Material properties with native snake_case
+    # names.  MXSWrapperBase may silently accept an unknown camelCase Python
+    # attribute without connecting it to the host material, so native names
+    # must be attempted first.
     "diffuse": ("diffuseMap", "baseColorMap"),
     "base_color": ("baseColorMap", "diffuseMap"),
-    "normal": ("normalMap", "bumpMap"),
-    "bump": ("bumpMap", "normalMap"),
+    "normal": ("bump_map", "normal_map", "normalMap", "bumpMap"),
+    "bump": ("bump_map", "bumpMap", "normal_map", "normalMap"),
     "roughness": ("roughnessMap",),
     "metalness": ("metalnessMap", "metallicMap"),
     "opacity": ("opacityMap",),

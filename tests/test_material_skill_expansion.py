@@ -41,6 +41,35 @@ class _PhysicalMaterial:
         self.roughnessMap = None
         self.metalnessMap = None
 
+    @property
+    def bump_map(self):
+        return self.normalMap
+
+    @bump_map.setter
+    def bump_map(self, value):
+        self.normalMap = value
+
+
+class _PermissivePhysicalMaterial(_PhysicalMaterial):
+    """Model MXSWrapperBase accepting a non-native property without persistence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._native_bump_map = None
+
+    @property
+    def bump_map(self):
+        return self._native_bump_map
+
+    @bump_map.setter
+    def bump_map(self, value):
+        self._native_bump_map = value
+
+    def __setattr__(self, name, value) -> None:
+        if name in {"normalMap", "normal_map"}:
+            return
+        super().__setattr__(name, value)
+
 
 class _StandardMaterial:
     def __init__(self, name: str = "Standard") -> None:
@@ -211,4 +240,27 @@ def test_physical_normal_map_survives_other_pbr_map_assignments(monkeypatch, tmp
 
     assert set(by_slot) >= {"normal", "roughness", "metalness"}
     assert by_slot["normal"]["path"] == str(paths["normal"])
-    assert material.normalMap.normal_map.filename == str(paths["normal"])
+    assert material.bump_map.normal_map.filename == str(paths["normal"])
+
+
+def test_physical_normal_map_prefers_native_pymxs_bump_property(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.physical = _PermissivePhysicalMaterial()
+    runtime.sceneMaterials = _MaterialLibrary([runtime.standard, runtime.physical])
+    texture = tmp_path / "normal.png"
+    texture.write_text("png", encoding="utf-8")
+
+    assigned = _load_action("action_assign_bitmap_texture.py").main("Physical", "normal", str(texture))
+    connections = _load_action("action_list_bitmap_connections.py").main("Physical")
+
+    assert assigned["success"] is True
+    assert runtime.physical.bump_map.normal_map.filename == str(texture)
+    assert connections["data"]["connections"] == [
+        {
+            "slot": "normal",
+            "attribute": "bump_map",
+            "map_type": "_NormalBump",
+            "path": str(texture),
+            "exists": True,
+        }
+    ]
