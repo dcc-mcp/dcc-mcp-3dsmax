@@ -227,7 +227,7 @@ if pump:
 ### `create_pumped_dispatcher(budget_ms=8)`
 
 Backward-compatible alias for `create_dispatcher()`. Interactive hosts return a
-`MaxUiDispatcher` backed by `dcc-mcp-core` 0.18.7 `HostUiDispatcherBase` plus a
+`MaxUiDispatcher` backed by `dcc-mcp-core` 0.20.10 `HostUiDispatcherBase` plus a
 `MaxUiPump` wrapper around `HostPumpController`; standalone/headless contexts
 return `MaxStandaloneDispatcher` and no pump.
 

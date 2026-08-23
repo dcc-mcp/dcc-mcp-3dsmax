@@ -62,15 +62,6 @@ class IntrospectToolsPhase(RegistrationPhase):
         context.server._register_introspect_tools()  # noqa: SLF001
 
 
-class FeedbackToolPhase(RegistrationPhase):
-    """Register the ``dcc_feedback__report`` MCP tool."""
-
-    name = "feedback_tool"
-
-    def run(self, context: RegistrationContext) -> None:
-        context.server._register_feedback_tool()  # noqa: SLF001
-
-
 class QtUiInspectorPhase(RegistrationPhase):
     """Register the shared ``qt_ui_inspector__*`` tools (main-thread routed)."""
 
@@ -123,7 +114,6 @@ def default_registration_phases() -> Sequence[RegistrationPhase]:
         RecipesToolsPhase(),
         SkillReferenceDocsPhase(),
         IntrospectToolsPhase(),
-        FeedbackToolPhase(),
         QtUiInspectorPhase(),
         CapabilityManifestPhase(),
         ProjectToolsPhase(),

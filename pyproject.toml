@@ -27,9 +27,9 @@ classifiers = [
 ]
 
 dependencies = [
-    # Release Train anchor: dynamic instance-port discovery contract.
-    "dcc-mcp-core>=0.20.0,<1.0.0",
-    "dcc-mcp-server>=0.20.0,<1.0.0",
+    # Core/server 0.20.10 own gateway feedback registration and sidecar forwarding.
+    "dcc-mcp-core>=0.20.10,<1.0.0",
+    "dcc-mcp-server>=0.20.10,<1.0.0",
 ]
 
 [project.optional-dependencies]
