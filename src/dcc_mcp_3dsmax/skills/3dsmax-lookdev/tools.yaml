@@ -62,8 +62,9 @@ tools:
   - name: setup_hdr_lighting
     description: >-
       Load an HDR/EXR image as the environment/background map and set up a
-      three-point light rig. Returns the bitmap info, rig details, and any
-      warnings.
+      renderer-compatible three-point light rig. Arnold lights are verified
+      through native host readback before the environment changes. Returns the
+      bitmap info, rig details, and any warnings.
     source_file: action_setup_hdr_lighting.py
     execution: sync
     affinity: main

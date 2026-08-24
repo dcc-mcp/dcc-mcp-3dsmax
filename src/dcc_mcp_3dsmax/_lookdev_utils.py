@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from dcc_mcp_3dsmax._camera_light_utils import create_three_point_light_rig
+from dcc_mcp_3dsmax._render_utils import current_renderer
 
 
 def lookdev_success(message: str, **data: Any) -> Dict[str, Any]:
@@ -248,29 +249,47 @@ def setup_hdr_lighting(
     if not path.is_file():
         return lookdev_error("HDRI path is not a file", hdri_path=str(path))
 
+    renderer_family = _renderer_family(runtime)
+    if renderer_family == "arnold" and not callable(getattr(runtime, "Arnold_Light", None)):
+        return lookdev_error(
+            "Active Arnold renderer has no compatible typed light factory",
+            renderer_family=renderer_family,
+            failure_reason="compatible_light_factory_unavailable",
+        )
+
+    rig_light_type = "arnold" if renderer_family == "arnold" else "omni"
+
     bitmap = _create_bitmap(runtime, str(path))
-    env_warnings = _apply_environment_map(runtime, bitmap, intensity=float(intensity), rotation=float(rotation))
     rig = create_three_point_light_rig(
         runtime,
         name_prefix=name_prefix,
         target_position=target_position,
         distance=distance,
+        light_type=rig_light_type,
     )
+    if not rig.get("success"):
+        return lookdev_error(
+            "Could not configure renderer-compatible HDR lighting",
+            renderer_family=renderer_family,
+            light_compatibility="unverified",
+            failure_reason="renderer_light_readback_failed",
+            rig=rig,
+        )
+
+    env_warnings = _apply_environment_map(runtime, bitmap, intensity=float(intensity), rotation=float(rotation))
     result = {
         "hdri_path": str(path),
         "bitmap": _bitmap_summary(bitmap),
         "intensity": float(intensity),
         "rotation": float(rotation),
+        "renderer_family": renderer_family,
+        "light_compatibility": "verified",
         "environment_warnings": env_warnings,
         "rig": rig,
+        "changed_node_count": int(rig["data"].get("changed_node_count", 0)),
+        "lights": rig["data"].get("lights", []),
     }
-    if rig.get("success"):
-        result["changed_node_count"] = int(rig["data"].get("changed_node_count", 0))
-        result["lights"] = rig["data"].get("lights", [])
-        return lookdev_success("Configured HDR lighting", **result)
-    result["changed_node_count"] = 0
-    result["warnings"] = [rig.get("message", "Lighting rig creation failed")]
-    return lookdev_success("Configured HDR lighting with rig warnings", **result)
+    return lookdev_success("Configured HDR lighting", **result)
 
 
 def set_hdri_rotation(runtime: Any, rotation: float, frame: Optional[float] = None) -> Dict[str, Any]:
@@ -304,6 +323,25 @@ def set_hdri_rotation(runtime: Any, rotation: float, frame: Optional[float] = No
         frame=None if frame is None else float(frame),
         interpolation=None if frame is None else "linear",
     )
+
+
+def _renderer_family(runtime: Any) -> str:
+    renderer = current_renderer(runtime)
+    if renderer is None:
+        return "unknown"
+    class_of = getattr(runtime, "classOf", None)
+    try:
+        name = str(class_of(renderer)) if callable(class_of) else type(renderer).__name__
+    except Exception:  # noqa: BLE001 - host wrappers can reject class introspection.
+        name = type(renderer).__name__
+    normalized = name.lower()
+    if "arnold" in normalized:
+        return "arnold"
+    if "vray" in normalized or "v-ray" in normalized:
+        return "vray"
+    if "scanline" in normalized:
+        return "scanline"
+    return "other"
 
 
 def _create_bitmap(runtime: Any, hdri_path: str) -> Any:

@@ -51,8 +51,10 @@ detection (Arnold, V-Ray, Scanline).
   `sRGB` / `un-tone-mapped`), validates it against the loaded config, and
   requires an exact host readback. Failed configuration is rolled back.
 - **`setup_hdr_lighting`** — Load an HDR/EXR image as the environment map,
-  configure rotation and intensity, and optionally create a three-point light
-  rig.
+  configure rotation and intensity, and create a renderer-compatible
+  three-point light rig. Arnold scenes use native Arnold lights with host
+  property readback; an unavailable or incompatible light capability fails
+  closed before the environment is changed.
 - **`set_hdri_rotation`** — Rotate the active environment for a lighting
   turntable without rebuilding the rig.
 - **`preview_material`** — Create a test sphere or quad, apply a named scene
