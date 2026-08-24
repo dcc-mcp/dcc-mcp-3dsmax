@@ -1,6 +1,6 @@
 tools:
   - name: get_color_management
-    description: Read the active 3ds Max scene color-management mode, OCIO config, rendering space, and status.
+    description: Read the active 3ds Max scene color-management mode, OCIO config, rendering space, status, and verified frame-buffer display/view transform.
     source_file: action_get_color_management.py
     execution: sync
     affinity: main
@@ -22,7 +22,7 @@ tools:
     search_aliases: ["get color management", "inspect ocio", "ocio status"]
 
   - name: set_color_management
-    description: Configure the supplied OCIO config through Max's environment mode and set the scene-linear rendering color space.
+    description: Configure the supplied OCIO config and optionally set a native, verified frame-buffer display/view transform.
     source_file: action_set_color_management.py
     execution: sync
     affinity: main
@@ -36,6 +36,14 @@ tools:
         rendering_color_space: {type: string, minLength: 1, default: ACEScg}
         data_color_space: {type: string, minLength: 1, default: Raw}
         lock_settings: {type: boolean, default: true}
+        display:
+          type: string
+          minLength: 1
+          description: Optional native OCIO display name; requires view_transform and is validated against ColorPipelineMgr.
+        view_transform:
+          type: string
+          minLength: 1
+          description: Optional native OCIO view name for the selected display; requires display.
     output_schema:
       type: object
       additionalProperties: true
@@ -49,7 +57,7 @@ tools:
     destructive: false
     idempotent: true
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
-    search_aliases: ["set color management", "configure ocio", "set rendering color space"]
+    search_aliases: ["set color management", "configure ocio", "set rendering color space", "set display transform", "set view transform"]
 
   - name: setup_hdr_lighting
     description: >-

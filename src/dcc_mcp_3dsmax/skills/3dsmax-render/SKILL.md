@@ -47,3 +47,6 @@ inspect render settings, and change common render output options through
 
 Output-producing tools validate extensions, parent directories, and overwrite
 behavior before invoking host operations, then return artifact metadata.
+Render settings and completed render results declare the native frame-buffer
+`view_transform`; hosts without the 3ds Max 2024+ display/view API return an
+explicit unsupported reason instead of assuming an sRGB transform.

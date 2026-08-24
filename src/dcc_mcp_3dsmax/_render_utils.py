@@ -57,6 +57,15 @@ def artifact_info(path: Path) -> Dict[str, Any]:
 
 def render_settings(runtime: Any) -> Dict[str, Any]:
     """Return common render settings."""
+    from dcc_mcp_3dsmax._lookdev_utils import get_display_view_transform
+
+    try:
+        import pymxs
+
+        byref = getattr(pymxs, "byref", None)
+    except ImportError:
+        byref = None
+    display_view = get_display_view_transform(runtime, byref=byref)
     renderer = current_renderer(runtime)
     return {
         "width": int(getattr(runtime, "renderWidth", 0) or 0),
@@ -67,6 +76,8 @@ def render_settings(runtime: Any) -> Dict[str, Any]:
         "camera": _camera_name(getattr(runtime, "activeCamera", None)),
         "quality_preset": str(getattr(runtime, "renderQualityPreset", "") or ""),
         "renderer": type(renderer).__name__,
+        "display_view": display_view,
+        "view_transform": display_view["view_transform"],
     }
 
 

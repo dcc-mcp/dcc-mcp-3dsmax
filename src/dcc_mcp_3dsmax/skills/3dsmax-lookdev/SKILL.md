@@ -46,7 +46,10 @@ detection (Arnold, V-Ray, Scanline).
 ## Tools
 
 - **`get_color_management` / `set_color_management`** — Inspect or configure the
-  3ds Max 2024+ scene OCIO config and scene-linear rendering color space.
+  3ds Max 2024+ scene OCIO config and scene-linear rendering color space. The
+  setter can also select a native frame-buffer display/view pair (for example,
+  `sRGB` / `un-tone-mapped`), validates it against the loaded config, and
+  requires an exact host readback. Failed configuration is rolled back.
 - **`setup_hdr_lighting`** — Load an HDR/EXR image as the environment map,
   configure rotation and intensity, and optionally create a three-point light
   rig.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from dcc_mcp_3dsmax._camera_light_utils import create_three_point_light_rig
 
@@ -19,11 +19,75 @@ def lookdev_error(message: str, **data: Any) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": data}
 
 
-def get_color_management(runtime: Any) -> Dict[str, Any]:
+def get_display_view_transform(
+    runtime: Any,
+    *,
+    byref: Optional[Callable[[Any], Any]] = None,
+    target: str = "FrameBuffer",
+) -> Dict[str, Any]:
+    """Read one native ColorPipelineMgr display/view target."""
+    manager = getattr(runtime, "ColorPipelineMgr", None)
+    getter = getattr(manager, "GetDefaultDisplayViewTransform", None)
+    if manager is None or not callable(getter):
+        return {
+            "supported": False,
+            "target": target,
+            "automatic": None,
+            "display": None,
+            "view_transform": None,
+            "reason": "display_view_api_unavailable",
+        }
+    if byref is None:
+        return {
+            "supported": False,
+            "target": target,
+            "automatic": None,
+            "display": None,
+            "view_transform": None,
+            "reason": "pymxs_byref_unavailable",
+        }
+    try:
+        result = getter(
+            _max_name(runtime, target),
+            byref(None),
+            byref(None),
+            byref(None),
+        )
+    except Exception as exc:  # noqa: BLE001 - pymxs reports host failures as RuntimeError.
+        return {
+            "supported": False,
+            "target": target,
+            "automatic": None,
+            "display": None,
+            "view_transform": None,
+            "reason": "display_view_readback_failed",
+            "error": str(exc),
+        }
+    if not isinstance(result, tuple) or len(result) < 4:
+        return {
+            "supported": False,
+            "target": target,
+            "automatic": None,
+            "display": None,
+            "view_transform": None,
+            "reason": "invalid_display_view_readback",
+        }
+    return {
+        "supported": True,
+        "target": target,
+        "automatic": bool(result[-3]),
+        "display": str(result[-2]),
+        "view_transform": str(result[-1]),
+        "reason": None,
+    }
+
+
+def get_color_management(runtime: Any, *, byref: Optional[Callable[[Any], Any]] = None) -> Dict[str, Any]:
     """Read the 3ds Max 2024+ scene color-pipeline settings."""
     manager = getattr(runtime, "ColorPipelineMgr", None)
     if manager is None:
         return lookdev_error("ColorPipelineMgr is unavailable in this 3ds Max version")
+    display_view = get_display_view_transform(runtime, byref=byref)
     return lookdev_success(
         "Read color management",
         mode=str(manager.Mode),
@@ -32,6 +96,9 @@ def get_color_management(runtime: Any) -> Dict[str, Any]:
         data_color_space=str(manager.DataColorSpace),
         status=str(manager.Status),
         locked=bool(manager.Locked),
+        display_view=display_view,
+        display=display_view["display"],
+        view_transform=display_view["view_transform"],
     )
 
 
@@ -42,6 +109,9 @@ def set_color_management(
     rendering_color_space: str = "ACEScg",
     data_color_space: str = "Raw",
     lock_settings: bool = True,
+    display: Optional[str] = None,
+    view_transform: Optional[str] = None,
+    byref: Optional[Callable[[Any], Any]] = None,
 ) -> Dict[str, Any]:
     """Configure the scene to use a custom OCIO config and rendering space."""
     path = Path(ocio_config_path).expanduser()
@@ -51,28 +121,114 @@ def set_color_management(
     if manager is None:
         return lookdev_error("ColorPipelineMgr is unavailable in this 3ds Max version")
 
+    if (display is None) != (view_transform is None):
+        return lookdev_error("display and view_transform must be supplied together")
+
+    previous_display_view = get_display_view_transform(runtime, byref=byref)
+    if display is not None and not previous_display_view["supported"]:
+        return lookdev_error(
+            "Cannot safely configure display/view transform without a rollback snapshot",
+            reason="display_view_snapshot_unavailable",
+            snapshot_reason=previous_display_view["reason"],
+            mutation_started=False,
+            rolled_back=False,
+        )
+
+    previous = {
+        "mode": manager.Mode,
+        "ocio_config_path": manager.OCIOConfigPath,
+        "rendering_color_space": manager.RenderingColorSpace,
+        "data_color_space": manager.DataColorSpace,
+        "locked": bool(manager.Locked),
+        "display_view": previous_display_view,
+        "ocio_env": os.environ.get("OCIO"),
+    }
     try:
         os.environ["OCIO"] = str(path)
-        name = getattr(runtime, "Name", lambda value: value)
-        manager.Mode = name("OCIO_EnvVar")
         manager.Locked = False
-        manager.ReInitialize()
+        manager.Mode = _max_name(runtime, "OCIO_EnvVar")
+        if manager.ReInitialize() is False:
+            raise RuntimeError("ColorPipelineMgr rejected the OCIO configuration")
         manager.RenderingColorSpace = rendering_color_space
         manager.DataColorSpace = data_color_space
+        if display is not None and view_transform is not None:
+            resolved_display = _resolve_color_choice(manager.GetDisplayList(), display, "display")
+            resolved_view = _resolve_color_choice(
+                manager.GetViewList(resolved_display), view_transform, "view transform"
+            )
+            manager.SetDefaultDisplayViewTransform(
+                _max_name(runtime, "FrameBuffer"),
+                False,
+                display=resolved_display,
+                viewTransform=resolved_view,
+            )
         manager.Locked = bool(lock_settings)
+        result = get_color_management(runtime, byref=byref)
+        if not result["success"]:
+            raise RuntimeError(result["message"])
+        data = result["data"]
+        if "ocio_envvar" not in data["mode"].lower() or "normal" not in data["status"].lower():
+            raise RuntimeError("OCIO color management did not become valid")
+        if data["rendering_color_space"].lower() != rendering_color_space.lower():
+            raise RuntimeError("Rendering color space was not applied")
+        if display is not None and view_transform is not None:
+            display_view = data["display_view"]
+            if not display_view["supported"]:
+                raise RuntimeError("Display/view transform readback is unavailable")
+            if display_view["automatic"]:
+                raise RuntimeError("Frame buffer display/view transform remained automatic")
+            if display_view["display"].lower() != display.lower():
+                raise RuntimeError("Frame buffer display was not applied")
+            if display_view["view_transform"].lower() != view_transform.lower():
+                raise RuntimeError("Frame buffer view transform was not applied")
     except Exception as exc:  # noqa: BLE001 - pymxs reports host failures as RuntimeError.
-        return lookdev_error("Failed to configure color management", error=str(exc))
+        rollback_error = _restore_color_management(runtime, manager, previous)
+        error_data = {"error": str(exc), "rolled_back": rollback_error is None}
+        if rollback_error is not None:
+            error_data["rollback_error"] = rollback_error
+        return lookdev_error("Failed to configure color management", **error_data)
 
-    result = get_color_management(runtime)
-    if not result["success"]:
-        return result
-    data = result["data"]
-    if "ocio_envvar" not in data["mode"].lower() or "normal" not in data["status"].lower():
-        return lookdev_error("OCIO color management did not become valid", **data)
-    if data["rendering_color_space"].lower() != rendering_color_space.lower():
-        return lookdev_error("Rendering color space was not applied", **data)
     result["message"] = "Configured OCIO color management"
     return result
+
+
+def _max_name(runtime: Any, value: str) -> Any:
+    return getattr(runtime, "Name", lambda item: item)(value)
+
+
+def _resolve_color_choice(values: Sequence[Any], requested: str, label: str) -> str:
+    choices = [str(value) for value in values]
+    for choice in choices:
+        if choice.lower() == requested.lower():
+            return choice
+    raise ValueError("Unknown {} {!r}; available: {}".format(label, requested, ", ".join(choices)))
+
+
+def _restore_color_management(runtime: Any, manager: Any, previous: Dict[str, Any]) -> Optional[str]:
+    try:
+        manager.Locked = False
+        if previous["ocio_env"] is None:
+            os.environ.pop("OCIO", None)
+        else:
+            os.environ["OCIO"] = previous["ocio_env"]
+        manager.OCIOConfigPath = previous["ocio_config_path"]
+        manager.Mode = previous["mode"]
+        if manager.ReInitialize() is False:
+            raise RuntimeError("ColorPipelineMgr rejected the previous configuration")
+        manager.RenderingColorSpace = previous["rendering_color_space"]
+        manager.DataColorSpace = previous["data_color_space"]
+        display_view = previous["display_view"]
+        if display_view["supported"]:
+            manager.SetDefaultDisplayViewTransform(
+                _max_name(runtime, display_view["target"]),
+                bool(display_view["automatic"]),
+                display=display_view["display"],
+                viewTransform=display_view["view_transform"],
+            )
+        manager.Locked = previous["locked"]
+    except Exception as exc:  # noqa: BLE001 - rollback must report, never mask, host failures.
+        return str(exc)
+    return None
 
 
 def setup_hdr_lighting(
