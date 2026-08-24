@@ -107,7 +107,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 |-------|-------|-------|
 | `3dsmax-scene` | scene | `get_scene_info`, `get_scene_status`, `new_scene`, `open_scene`, `save_scene`, `save_scene_as`, `merge_file`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms` |
 | `3dsmax-scripting` | authoring | `execute_python`, `execute_maxscript`, `run_python_check`, `list_runtime_symbols`, `inspect_runtime_symbol`, `list_macros`, `resolve_node_reference`, `reload_adapter_module` |
-| `3dsmax-modeling` | authoring | `create_box`, `create_sphere`, `create_cylinder`, `create_plane` |
+| `3dsmax-modeling` | authoring | `create_box`, `create_sphere`, `create_cylinder`, `create_plane`, `lathe_profile` |
 | `3dsmax-geometry-io` | authoring | `validate_geometry_file`, `import_fbx`, `import_geometry`, `export_fbx`, `export_obj` |
 | `3dsmax-mesh-ops` | authoring | `get_mesh_topology`, `get_selected_mesh_topology`, `get_smoothing_groups`, `get_modifier_stack`, `triangulate_meshes`, `cleanup_meshes`, `attach_meshes`, `detach_selected_faces`, `apply_subdivision`, `create_proxy_meshes`, `set_explicit_normals`, `clear_explicit_normals`, `assign_smoothing_group` |
 | `3dsmax-uv-atlas` | authoring | `list_uv_channels`, `create_uv_channel`, `delete_uv_channel`, `copy_uv_channel`, `get_uv_shell_summary`, `apply_uv_projection`, `unwrap_uvs`, `pack_uvs`, `detect_uv_overlaps`, `normalize_uvs`, `prepare_texture_atlas` |
