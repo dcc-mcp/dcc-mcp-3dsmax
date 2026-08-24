@@ -59,10 +59,7 @@ def dispatch_payload_dict(
         bundled_skill_roots=[_BUILTIN_SKILLS_DIR],
     )
     body = dispatcher.dispatch_payload(parsed)
-    if (
-        parsed.get("action") == _CORE_FEEDBACK_ACTION
-        and body.get("error") == "unknown-action"
-    ):
+    if parsed.get("action") == _CORE_FEEDBACK_ACTION and body.get("error") == "unknown-action":
         body = {
             "success": False,
             "error": "gateway-feedback-forwarder-required",

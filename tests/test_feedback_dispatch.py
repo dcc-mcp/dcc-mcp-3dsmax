@@ -52,6 +52,34 @@ def test_adapter_registration_does_not_override_core_feedback_forwarder():
     assert "_register_feedback_tool" not in MaxMcpServer.__dict__
 
 
+def test_core_registration_keeps_feedback_discoverable_without_adapter_override():
+    """Search and describe metadata must come from the same Core-owned tool."""
+    from dcc_mcp_3dsmax.dispatcher import MaxStandaloneDispatcher
+    from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+    server = MaxMcpServer(
+        options=MaxServerOptions(
+            port=0,
+            dispatcher=MaxStandaloneDispatcher(),
+            enable_gateway_failover=False,
+            job_storage_path="",
+        )
+    )
+    try:
+        server.register_builtin_actions(include_bundled=False)
+        metadata = server._server.registry.get_action("dcc_feedback__report")
+    finally:
+        server.stop()
+
+    assert metadata is not None
+    assert metadata["name"] == "dcc_feedback__report"
+    assert metadata["dcc"] == "3dsmax"
+    assert metadata["execution"] == "sync"
+    assert metadata["source_file"] is None
+    assert metadata["input_schema"]["additionalProperties"] is False
+    assert "shared Core handler forwards" in metadata["description"]
+
+
 def test_feedback_reaching_host_dispatch_fails_closed_with_request_id():
     """A legacy server must never turn an unforwarded report into success."""
     from dcc_mcp_3dsmax.sidecar._dispatcher import dispatch_payload_dict
