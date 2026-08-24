@@ -46,6 +46,14 @@ overrides fall back to the versioned install. The sidecar command and process
 environment are built through `dcc_mcp_core.install_lifecycle`, so registry,
 gateway-daemon, and remote-gateway options stay aligned with the core runtime.
 
+`dcc_feedback__report` is registered and dispatched by shared Core 0.20.11 or
+newer. The process sidecar forwards it to gateway `/v1/feedback` before any
+host RPC, preserving the request id and the current instance binding. It only
+reports success after validating the gateway receipt. The adapter does not
+register a second feedback handler or local store. If an older server wrongly
+sends that action to the host bridge, the bridge returns
+`gateway-feedback-forwarder-required` and does not claim persistence.
+
 ## Rez / Pipeline Bootstrap
 
 For managed deployments, the startup script can use package roots from the
@@ -135,7 +143,7 @@ and whether the local bridge is currently busy.
 The HTTP listener runs on a background thread. When `pymxs` is available, the
 legacy bridge queues direct `/dispatch` requests and drains them from a hidden
 MaxScript timer, keeping those scene edits on the 3ds Max UI thread. Gateway
-`tools/call` traffic uses the shared `dcc-mcp-core` 0.18.7
+`tools/call` traffic uses the shared `dcc-mcp-core` 0.20.11
 `HostUiDispatcherBase` plus `HostPumpController` path; the adapter only maps
 3ds Max's .NET timer to the core timer contract. The `qtserver://` sidecar path
 uses the core universal Qt dispatcher and core `SidecarActionDispatcher`.

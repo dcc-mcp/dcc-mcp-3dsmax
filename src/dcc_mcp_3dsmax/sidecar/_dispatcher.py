@@ -12,6 +12,7 @@ from dcc_mcp_core import SidecarActionDispatcher
 from dcc_mcp_3dsmax import _executor
 
 _BUILTIN_SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
+_CORE_FEEDBACK_ACTION = "dcc_feedback__report"
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ def dispatch_payload_dict(
         bundled_skill_roots=[_BUILTIN_SKILLS_DIR],
     )
     body = dispatcher.dispatch_payload(parsed)
+    if parsed.get("action") == _CORE_FEEDBACK_ACTION and body.get("error") == "unknown-action":
+        body = {
+            "success": False,
+            "error": "gateway-feedback-forwarder-required",
+            "message": "Feedback must be forwarded by dcc-mcp-server before host dispatch",
+        }
     body.setdefault("request_id", str(parsed.get("request_id") or ""))
     action = parsed.get("action")
     if isinstance(action, str) and action:
@@ -178,6 +185,8 @@ def _list_actions(server: Any) -> list:
 
 def _resolve_action_source(action_name: str, *, server: Any = None, payload: Any = None) -> Any:
     _ = payload
+    if action_name == _CORE_FEEDBACK_ACTION:
+        return None
     if action_name == "load_skill":
         return {
             "source_file": str(Path(__file__).resolve()),

@@ -607,18 +607,6 @@ class MaxMcpServer(DccServerBase):
         except Exception as exc:  # noqa: BLE001
             logger.debug("[%s] introspect tools failed: %s", _DCC_NAME, exc)
 
-    def _register_feedback_tool(self) -> None:
-        """Register the ``dcc_feedback__report`` MCP tool (core)."""
-        try:
-            from dcc_mcp_core.feedback import register_feedback_tool  # noqa: PLC0415
-        except ImportError as exc:
-            logger.debug("[%s] feedback tool skipped (import): %s", _DCC_NAME, exc)
-            return
-        try:
-            register_feedback_tool(self._server, dcc_name=_DCC_NAME)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[%s] feedback tool failed: %s", _DCC_NAME, exc)
-
     def _register_qt_ui_inspector(self) -> None:
         """Adopt the shared core ``qt_ui_inspector__*`` tools (main-thread routed)."""
         try:
