@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.2](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.1...v0.2.2) (2026-08-24)
+
+
+### Features
+
+* add typed animation and rigging workflows ([#160](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/160)) ([a7a35f1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/a7a35f1ed18591074b415f7829406df2c5adbb8e))
+* add typed lathe profile tool ([#162](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/162)) ([e545dbc](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e545dbce8543424e2d2995b4ce6a3bb257cdc20f))
+* add verified render display transforms ([#161](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/161)) ([5f98746](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5f9874688bb34c3237823db9444f38a78a34e9f3))
+* add verified scene lifecycle tools ([#159](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/159)) ([8bf0c77](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8bf0c77294550f3fcd5d1c63b106ad679112527e))
+
+
+### Bug Fixes
+
+* route feedback through the Core gateway ([#158](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/158)) ([179b9fd](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/179b9fdeb4508bd1a4edcee4772b3051afe1eff8))
+* share execute_python namespace ([#157](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/157)) ([b5bc57f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b5bc57f523695dd8075e031967f2c921ed52ce79))
+* use verified Arnold lookdev lights ([#163](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/163)) ([cc242f9](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/cc242f98000bd0bba247eed952cb09384d52caa6))
+* verify lathe rollback by node handle ([#166](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/166)) ([ddfc585](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ddfc585c66f3f00c997b0055273563be350863c8))
+
 ## [0.2.1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.0...v0.2.1) (2026-08-13)
 
 
