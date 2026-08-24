@@ -127,12 +127,43 @@ def create_light(
     shadows: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a host-native light node."""
+    result, light = _create_light_with_node(
+        runtime,
+        name=name,
+        light_type=light_type,
+        position=position,
+        target_position=target_position,
+        intensity=intensity,
+        color=color,
+        shadows=shadows,
+    )
+    if not result.get("success") and light is not None:
+        incomplete = _rollback_owned_nodes(runtime, [_owned_light(runtime, light)])
+        result.setdefault("data", {}).update(_rollback_summary(incomplete))
+    return result
+
+
+def _create_light_with_node(
+    runtime: Any,
+    *,
+    name: str,
+    light_type: str = "omni",
+    position: Optional[Sequence[float]] = None,
+    target_position: Optional[Sequence[float]] = None,
+    intensity: Optional[float] = None,
+    color: Optional[Sequence[int]] = None,
+    shadows: Optional[bool] = None,
+) -> Tuple[Dict[str, Any], Optional[Any]]:
+    """Create a light and retain its exact host reference for owned rollback."""
     factories = LIGHT_FACTORIES.get(light_type)
     if factories is None:
-        return cam_error("Unsupported light_type", light_type=light_type)
+        return cam_error("Unsupported light_type", light_type=light_type), None
     light, warnings = _construct_runtime_object(runtime, factories)
     if light is None:
-        return cam_error("No supported light constructor was available", light_type=light_type, warnings=warnings)
+        return (
+            cam_error("No supported light constructor was available", light_type=light_type, warnings=warnings),
+            None,
+        )
     _set_name(light, name)
     _set_supported_attrs(runtime, light, ("light_type",), light_type)
     _set_supported_attrs(runtime, light, ("is_light",), True)
@@ -150,39 +181,51 @@ def create_light(
     )
     summary = light_summary(light, runtime=runtime)
     if light_type == "arnold" and "arnold" not in summary["native_class"].lower():
-        _delete_node(runtime, light)
-        return cam_error(
-            "Renderer light factory returned an incompatible class",
-            light_type=light_type,
-            native_class=summary["native_class"],
+        return (
+            cam_error(
+                "Renderer light factory returned an incompatible class",
+                light_type=light_type,
+                native_class=summary["native_class"],
+                light=summary,
+            ),
+            light,
         )
     if intensity is not None and not _float_matches(summary["intensity"], float(intensity)):
-        _delete_node(runtime, light)
-        return cam_error(
-            "Light intensity readback did not match the request",
-            light_type=light_type,
-            requested_intensity=float(intensity),
-            actual_intensity=summary["intensity"],
+        return (
+            cam_error(
+                "Light intensity readback did not match the request",
+                light_type=light_type,
+                requested_intensity=float(intensity),
+                actual_intensity=summary["intensity"],
+                light=summary,
+            ),
+            light,
         )
     if shadows is not None and summary["shadows"] is not bool(shadows):
-        _delete_node(runtime, light)
-        return cam_error(
-            "Light shadow readback did not match the request",
-            light_type=light_type,
-            requested_shadows=bool(shadows),
-            actual_shadows=summary["shadows"],
+        return (
+            cam_error(
+                "Light shadow readback did not match the request",
+                light_type=light_type,
+                requested_shadows=bool(shadows),
+                actual_shadows=summary["shadows"],
+                light=summary,
+            ),
+            light,
         )
     requested_color = _color(color) if color is not None else None
     if requested_color is not None and summary["color"] != requested_color:
-        _delete_node(runtime, light)
-        return cam_error(
-            "Light color readback did not match the request",
-            light_type=light_type,
-            requested_color=requested_color,
-            actual_color=summary["color"],
+        return (
+            cam_error(
+                "Light color readback did not match the request",
+                light_type=light_type,
+                requested_color=requested_color,
+                actual_color=summary["color"],
+                light=summary,
+            ),
+            light,
         )
     _append_scene_object(runtime, light)
-    return cam_success("Created light", light=summary, changed_node_count=1, warnings=warnings)
+    return cam_success("Created light", light=summary, changed_node_count=1, warnings=warnings), light
 
 
 def set_light_properties(
@@ -248,9 +291,10 @@ def create_three_point_light_rig(
         ),
     ]
     created = []
+    owned_lights = []
     errors = []
     for name, position, intensity, color in specs:
-        result = create_light(
+        result, node = _create_light_with_node(
             runtime,
             name=name,
             light_type=light_type,
@@ -260,18 +304,19 @@ def create_three_point_light_rig(
             color=color,
             shadows=True,
         )
-        if result.get("success"):
-            created.append(result["data"]["light"])
-        else:
+        if node is not None:
+            owned_lights.append(_owned_light(runtime, node))
+        if not result.get("success") or node is None:
             errors.append(result)
+            break
+        created.append(result["data"]["light"])
     if errors:
-        _delete_named_nodes(runtime, [row["node"]["node_name"] for row in created])
+        incomplete = _rollback_owned_nodes(runtime, owned_lights)
         return cam_error(
             "Could not create a verified three-point light rig",
             light_type=light_type,
-            lights=[],
             errors=errors,
-            changed_node_count=0,
+            **_rollback_summary(incomplete),
         )
     return cam_success(
         "Created three-point light rig", light_type=light_type, lights=created, changed_node_count=len(created)
@@ -458,7 +503,10 @@ def _append_scene_object(runtime: Any, node: Any) -> None:
 
 
 def _delete_node(runtime: Any, node: Any) -> None:
-    delete = getattr(runtime, "delete", None)
+    try:
+        delete = getattr(runtime, "delete", None)
+    except Exception:  # noqa: BLE001 - rollback verification remains authoritative.
+        delete = None
     if callable(delete):
         try:
             delete(node)
@@ -467,15 +515,60 @@ def _delete_node(runtime: Any, node: Any) -> None:
             pass
     try:
         runtime.objects.remove(node)
-    except (AttributeError, ValueError):
+    except Exception:  # noqa: BLE001 - rollback verification remains authoritative.
         pass
 
 
-def _delete_named_nodes(runtime: Any, names: Sequence[str]) -> None:
-    wanted = set(names)
-    for node in list(getattr(runtime, "objects", [])):
-        if str(getattr(node, "name", "")) in wanted:
-            _delete_node(runtime, node)
+def _owned_light(runtime: Any, node: Any) -> Tuple[Any, Optional[int], Dict[str, Any]]:
+    """Capture the raw node, immutable handle, and diagnostics before deletion."""
+    try:
+        handle = int(getattr(node, "handle"))
+    except (AttributeError, TypeError, ValueError):
+        handle = None
+    return node, handle, light_summary(node, runtime=runtime)
+
+
+def _rollback_owned_nodes(
+    runtime: Any,
+    owned_lights: Sequence[Tuple[Any, Optional[int], Dict[str, Any]]],
+) -> List[Tuple[Any, Optional[int], Dict[str, Any]]]:
+    """Delete exact owned references and return nodes whose absence is unproven."""
+    for node, _handle, _summary in owned_lights:
+        _delete_node(runtime, node)
+
+    incomplete = []
+    for owned_light in owned_lights:
+        _node, handle, _summary = owned_light
+        if not _node_handle_is_absent(runtime, handle):
+            incomplete.append(owned_light)
+    return incomplete
+
+
+def _node_handle_is_absent(runtime: Any, handle: Optional[int]) -> bool:
+    if handle is None:
+        return False
+    try:
+        max_ops = getattr(runtime, "maxOps", None)
+        get_node_by_handle = getattr(max_ops, "getNodeByHandle", None)
+    except Exception:  # noqa: BLE001 - unverifiable deletion must fail closed.
+        return False
+    if not callable(get_node_by_handle):
+        return False
+    try:
+        return get_node_by_handle(handle) is None
+    except Exception:  # noqa: BLE001 - unverifiable deletion must fail closed.
+        return False
+
+
+def _rollback_summary(
+    incomplete: Sequence[Tuple[Any, Optional[int], Dict[str, Any]]],
+) -> Dict[str, Any]:
+    return {
+        "rolled_back": not incomplete,
+        "changed_node_count": len(incomplete),
+        "lights": [summary for _node, _handle, summary in incomplete],
+        "rollback_incomplete_handles": [handle for _node, handle, _summary in incomplete if handle is not None],
+    }
 
 
 def _set_name(node: Any, name: str) -> None:

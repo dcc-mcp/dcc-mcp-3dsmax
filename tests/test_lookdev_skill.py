@@ -39,10 +39,26 @@ class _Node:
         self.enabled = True
 
 
+class _MaxOps:
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+
+    def getNodeByHandle(self, handle):  # noqa: N802 - mirrors the native maxOps API.
+        self.runtime.looked_up_handles.append(handle)
+        if self.runtime.handle_lookup_raises:
+            raise RuntimeError("native handle lookup failure")
+        return next((node for node in self.runtime.objects if node.handle == handle), None)
+
+
 class _Runtime:
     def __init__(self) -> None:
         self.objects = []
         self._next_handle = 10
+        self.delete_is_noop = False
+        self.handle_lookup_raises = False
+        self.deleted_handles = []
+        self.looked_up_handles = []
+        self.maxOps = _MaxOps(self)
         self.environmentMap = None
         self.environmentMapOn = False
         self.environmentMapAmount = 0.0
@@ -60,6 +76,11 @@ class _Runtime:
         self._next_handle += 1
         self.objects.append(node)
         return node
+
+    def delete(self, node):
+        self.deleted_handles.append(node.handle)
+        if not self.delete_is_noop:
+            self.objects.remove(node)
 
     def BitmapTexture(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return types.SimpleNamespace(filename="", coords=types.SimpleNamespace(U_Offset=0.0))
@@ -152,6 +173,16 @@ class _Float32ArnoldNode(_StrictArnoldNode):
         self._intensity = struct.unpack("f", struct.pack("f", float(value)))[0]
 
 
+class _BadColorNode(_StrictArnoldNode):
+    @property
+    def color(self):
+        return _MaxColor(0, 0, 0)
+
+    @color.setter
+    def color(self, value):
+        self._native_color = value
+
+
 def _install_fake_pymxs(monkeypatch):
     runtime = _Runtime()
     monkeypatch.setitem(
@@ -160,6 +191,25 @@ def _install_fake_pymxs(monkeypatch):
         types.SimpleNamespace(runtime=runtime),
     )
     return runtime
+
+
+def _configure_autoregistered_arnold_failure(runtime):
+    runtime.renderers = types.SimpleNamespace(current=_ArnoldRenderer())
+    runtime.color = lambda red, green, blue: _MaxColor(red, green, blue)
+    created_count = 0
+
+    def arnold_light():
+        nonlocal created_count
+        node_type = _BadColorNode if created_count == 1 else _StrictArnoldNode
+        node = node_type("light", runtime._next_handle, "Arnold_Light")
+        runtime._next_handle += 1
+        created_count += 1
+        node.cast_shadows = False
+        runtime.objects.append(node)
+        return node
+
+    runtime.Arnold_Light = arnold_light
+    runtime.classOf = lambda value: value.className
 
 
 def test_setup_hdr_lighting_sets_environment_and_rig(monkeypatch, tmp_path):
@@ -179,9 +229,7 @@ def test_setup_hdr_lighting_sets_environment_and_rig(monkeypatch, tmp_path):
     assert [node.name for node in runtime.objects] == ["Shot_key", "Shot_fill", "Shot_rim"]
 
 
-def test_setup_hdr_lighting_fails_closed_before_mutation_when_arnold_lights_are_unavailable(
-    monkeypatch, tmp_path
-):
+def test_setup_hdr_lighting_fails_closed_before_mutation_when_arnold_lights_are_unavailable(monkeypatch, tmp_path):
     runtime = _install_fake_pymxs(monkeypatch)
     runtime.renderers = types.SimpleNamespace(current=_ArnoldRenderer())
     hdri_path = tmp_path / "studio.hdr"
@@ -273,18 +321,104 @@ def test_setup_hdr_lighting_rolls_back_when_native_arnold_color_cannot_be_applie
     assert runtime.environmentMap is None
 
 
+def test_setup_hdr_lighting_reports_incomplete_rollback_after_silent_delete_noop(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.delete_is_noop = True
+    _configure_autoregistered_arnold_failure(runtime)
+    hdri_path = tmp_path / "studio.hdr"
+    hdri_path.write_text("hdr", encoding="utf-8")
+
+    result = _load_action("action_setup_hdr_lighting.py").main(hdri_path=str(hdri_path))
+
+    rollback = result["data"]["rig"]["data"]
+    assert result["success"] is False
+    assert rollback["rolled_back"] is False
+    assert rollback["changed_node_count"] == 2
+    assert rollback["rollback_incomplete_handles"] == [10, 11]
+    assert [row["node"]["object_id"] for row in rollback["lights"]] == [10, 11]
+    assert [node.handle for node in runtime.objects] == [10, 11]
+    assert runtime.deleted_handles == [10, 11]
+    assert runtime.looked_up_handles == [10, 11]
+
+
+def test_setup_hdr_lighting_reports_unverified_rollback_when_handle_query_raises(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.handle_lookup_raises = True
+    _configure_autoregistered_arnold_failure(runtime)
+    hdri_path = tmp_path / "studio.hdr"
+    hdri_path.write_text("hdr", encoding="utf-8")
+
+    result = _load_action("action_setup_hdr_lighting.py").main(hdri_path=str(hdri_path))
+
+    rollback = result["data"]["rig"]["data"]
+    assert result["success"] is False
+    assert rollback["rolled_back"] is False
+    assert rollback["changed_node_count"] == 2
+    assert rollback["rollback_incomplete_handles"] == [10, 11]
+    assert [row["node"]["object_id"] for row in rollback["lights"]] == [10, 11]
+    assert runtime.objects == []
+    assert runtime.deleted_handles == [10, 11]
+    assert runtime.looked_up_handles == [10, 11]
+
+
+def test_setup_hdr_lighting_verifies_failing_and_earlier_owned_nodes_are_absent(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    _configure_autoregistered_arnold_failure(runtime)
+    hdri_path = tmp_path / "studio.hdr"
+    hdri_path.write_text("hdr", encoding="utf-8")
+
+    result = _load_action("action_setup_hdr_lighting.py").main(hdri_path=str(hdri_path))
+
+    rollback = result["data"]["rig"]["data"]
+    assert result["success"] is False
+    assert rollback["rolled_back"] is True
+    assert rollback["changed_node_count"] == 0
+    assert rollback["lights"] == []
+    assert rollback["rollback_incomplete_handles"] == []
+    assert runtime.objects == []
+    assert runtime.deleted_handles == [10, 11]
+    assert runtime.looked_up_handles == [10, 11]
+
+
+def test_setup_hdr_lighting_rollback_preserves_preexisting_same_name_light(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.renderers = types.SimpleNamespace(current=_ArnoldRenderer())
+    runtime.color = lambda red, green, blue: _MaxColor(red, green, blue)
+    runtime._next_handle = 101
+    original = _Node("Review_key", 1, "Arnold_Light")
+    runtime.objects.append(original)
+    _configure_autoregistered_arnold_failure(runtime)
+    hdri_path = tmp_path / "studio.hdr"
+    hdri_path.write_text("hdr", encoding="utf-8")
+
+    result = _load_action("action_setup_hdr_lighting.py").main(hdri_path=str(hdri_path))
+
+    assert result["success"] is False
+    rollback = result["data"]["rig"]["data"]
+    assert rollback["rolled_back"] is True
+    assert rollback["changed_node_count"] == 0
+    assert rollback["rollback_incomplete_handles"] == []
+    assert runtime.objects == [original]
+    assert original.handle == 1
+    assert runtime.deleted_handles == [101, 102]
+    assert runtime.looked_up_handles == [101, 102]
+
+
 def test_setup_hdr_lighting_accepts_host_float_precision_readback(monkeypatch, tmp_path):
     runtime = _install_fake_pymxs(monkeypatch)
     runtime.renderers = types.SimpleNamespace(current=_ArnoldRenderer())
     runtime.color = lambda red, green, blue: _MaxColor(red, green, blue)
     runtime.Name = lambda value: value
-    runtime.isProperty = lambda _node, name: name in {
-        "position",
-        "on",
-        "intensity",
-        "color",
-        "cast_shadows",
-    }
+    runtime.isProperty = lambda _node, name: (
+        name
+        in {
+            "position",
+            "on",
+            "intensity",
+            "color",
+            "cast_shadows",
+        }
+    )
 
     def arnold_light():
         node = _Float32ArnoldNode("light", runtime._next_handle, "Arnold_Light")
