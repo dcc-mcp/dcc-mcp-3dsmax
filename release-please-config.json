@@ -19,6 +19,10 @@
         {
           "type": "generic",
           "path": "src/dcc_mcp_3dsmax/__version__.py"
+        },
+        {
+          "type": "generic",
+          "path": "AGENTS.md"
         }
       ]
     }
