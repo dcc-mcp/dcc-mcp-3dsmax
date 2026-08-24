@@ -76,6 +76,7 @@ class _FakeRuntime:
         self.frozen = []
         self.executed = []
         self.saved = []
+        self._dirty = True
 
     def maxVersion(self):  # noqa: N802 - mirrors pymxs runtime naming.
         return (26000, 0)
@@ -135,7 +136,15 @@ class _FakeRuntime:
 
     def saveMaxFile(self, file_path, quiet=True):  # noqa: N802 - mirrors pymxs runtime naming.
         self.saved.append((file_path, quiet))
+        path = Path(file_path)
+        path.write_bytes(b"saved max fixture")
+        self.maxFileName = path.name
+        self.maxFilePath = str(path.parent)
+        self._dirty = False
         return True
+
+    def getSaveRequired(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        return self._dirty
 
 
 def _install_fake_pymxs(monkeypatch):

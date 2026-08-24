@@ -209,8 +209,8 @@ server.shutdown()                  # stop and cleanup
 ## Bundled Skills — Complete Tool Inventory
 
 ### scene stage (default loaded)
-`3dsmax-scene` (16 tools):
-`get_scene_info`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms`
+`3dsmax-scene` (22 tools):
+`get_scene_info`, `get_scene_status`, `new_scene`, `open_scene`, `save_scene`, `save_scene_as`, `merge_file`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms`
 
 ### authoring stage (load on demand)
 
