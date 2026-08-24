@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -10,10 +11,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-render"
+LOOKDEV_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-lookdev"
 
 
 def _load_action(script_name: str):
-    path = SKILL_DIR / script_name
+    return _load_action_from(SKILL_DIR, script_name)
+
+
+def _load_action_from(skill_dir: Path, script_name: str):
+    path = skill_dir / script_name
     spec = importlib.util.spec_from_file_location(path.stem + "_test_module", str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -51,6 +57,10 @@ class _FakeRuntime:
         self.currentRenderer = object()
         self.renderQualityPreset = "preview"
         self.last_render_kwargs = None
+        self.ColorPipelineMgr = _ColorPipelineManager()
+
+    def Name(self, value):  # noqa: N802 - mirrors pymxs runtime naming.
+        return value
 
     def classOf(self, node):  # noqa: N802 - mirrors pymxs runtime naming.
         return "Targetcamera" if node is self.camera else type(node).__name__
@@ -74,9 +84,45 @@ class _FakeRuntime:
         return object()
 
 
+class _ColorPipelineManager:
+    def __init__(self) -> None:
+        self.Mode = "OCIO_Default"
+        self.OCIOConfigPath = ""
+        self.RenderingColorSpace = "ACEScg"
+        self.DataColorSpace = "Raw"
+        self.Status = "Normal"
+        self.Locked = True
+        self._display = "Rec.1886 Rec.709 - Display"
+        self._view_transform = "ACES 1.0 SDR-video"
+
+    def GetDisplayList(self):  # noqa: N802 - mirrors MAXScript interface naming.
+        return ["sRGB", "Rec.1886 Rec.709 - Display"]
+
+    def ReInitialize(self):  # noqa: N802 - mirrors MAXScript interface naming.
+        return True
+
+    def GetViewList(self, display):  # noqa: N802 - mirrors MAXScript interface naming.
+        assert display == "sRGB"
+        return ["un-tone-mapped", "ACES 1.0 SDR-video"]
+
+    def SetDefaultDisplayViewTransform(  # noqa: N802 - mirrors MAXScript interface naming.
+        self, target, automatic, *, display, viewTransform
+    ):
+        assert target == "FrameBuffer"
+        assert automatic is False
+        self._display = display
+        self._view_transform = viewTransform
+
+    def GetDefaultDisplayViewTransform(  # noqa: N802 - mirrors MAXScript interface naming.
+        self, target, automatic, display, viewTransform
+    ):
+        assert target == "FrameBuffer"
+        return None, False, self._display, self._view_transform
+
+
 def _install_fake_pymxs(monkeypatch):
     runtime = _FakeRuntime()
-    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime, byref=lambda value: value))
     return runtime
 
 
@@ -170,6 +216,107 @@ def test_render_scene_uses_pymxs_outputfile_and_camera_keywords(monkeypatch, tmp
         "camera": runtime.camera,
         "vfb": False,
     }
+
+
+def test_color_management_declares_verified_frame_buffer_transform(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    config = tmp_path / "studio.ocio"
+    config.write_text("ocio_profile_version: 2", encoding="utf-8")
+    output_path = tmp_path / "beauty.png"
+
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    configured = run_skill_script(
+        str(LOOKDEV_SKILL_DIR / "action_set_color_management.py"),
+        {
+            "ocio_config_path": str(config),
+            "display": "sRGB",
+            "view_transform": "un-tone-mapped",
+        },
+    )
+    rendered = run_skill_script(
+        str(SKILL_DIR / "action_render_scene.py"),
+        {"output_path": str(output_path), "overwrite": True},
+    )
+
+    assert configured["success"] is True, configured
+    assert configured["data"]["display"] == "sRGB"
+    assert configured["data"]["view_transform"] == "un-tone-mapped"
+    assert rendered["success"] is True
+    assert rendered["data"]["settings"]["view_transform"] == "un-tone-mapped"
+    assert runtime.ColorPipelineMgr._view_transform == "un-tone-mapped"
+
+
+def test_color_management_rejects_unknown_display_without_persisting_mutation(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    config = tmp_path / "studio.ocio"
+    config.write_text("ocio_profile_version: 2", encoding="utf-8")
+
+    result = _load_action_from(LOOKDEV_SKILL_DIR, "action_set_color_management.py").main(
+        ocio_config_path=str(config),
+        display="Missing display",
+        view_transform="un-tone-mapped",
+    )
+
+    assert result["success"] is False
+    assert "Unknown display" in result["data"]["error"]
+    assert runtime.ColorPipelineMgr.Mode == "OCIO_Default"
+    assert runtime.ColorPipelineMgr.Locked is True
+    assert runtime.ColorPipelineMgr._display == "Rec.1886 Rec.709 - Display"
+
+
+def test_color_management_fails_before_mutation_when_display_snapshot_is_unavailable(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    manager = runtime.ColorPipelineMgr
+    config = tmp_path / "studio.ocio"
+    config.write_text("ocio_profile_version: 2", encoding="utf-8")
+    setter_calls = []
+    reinitialize_calls = []
+    previous = {
+        "mode": manager.Mode,
+        "config": manager.OCIOConfigPath,
+        "rendering": manager.RenderingColorSpace,
+        "data": manager.DataColorSpace,
+        "locked": manager.Locked,
+        "display": manager._display,
+        "view_transform": manager._view_transform,
+        "ocio_env": os.environ.get("OCIO"),
+    }
+
+    def fail_readback(*_args):
+        raise RuntimeError("display snapshot unavailable")
+
+    def record_setter(*args, **kwargs):
+        setter_calls.append((args, kwargs))
+
+    def record_reinitialize():
+        reinitialize_calls.append(True)
+        return True
+
+    manager.GetDefaultDisplayViewTransform = fail_readback
+    manager.SetDefaultDisplayViewTransform = record_setter
+    manager.ReInitialize = record_reinitialize
+
+    result = _load_action_from(LOOKDEV_SKILL_DIR, "action_set_color_management.py").main(
+        ocio_config_path=str(config),
+        display="sRGB",
+        view_transform="un-tone-mapped",
+    )
+
+    assert result["success"] is False
+    assert result["data"]["reason"] == "display_view_snapshot_unavailable"
+    assert result["data"]["mutation_started"] is False
+    assert result["data"]["rolled_back"] is False
+    assert setter_calls == []
+    assert reinitialize_calls == []
+    assert manager.Mode == previous["mode"]
+    assert manager.OCIOConfigPath == previous["config"]
+    assert manager.RenderingColorSpace == previous["rendering"]
+    assert manager.DataColorSpace == previous["data"]
+    assert manager.Locked == previous["locked"]
+    assert manager._display == previous["display"]
+    assert manager._view_transform == previous["view_transform"]
+    assert os.environ.get("OCIO") == previous["ocio_env"]
 
 
 def test_render_hdr_uses_pymxs_outputfile_and_camera_keywords(monkeypatch, tmp_path):

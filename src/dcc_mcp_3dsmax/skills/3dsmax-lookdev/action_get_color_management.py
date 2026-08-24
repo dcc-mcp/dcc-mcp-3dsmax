@@ -10,4 +10,6 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 @with_max
 def main() -> Dict[str, Any]:
-    return get_color_management(get_runtime())
+    import pymxs
+
+    return get_color_management(get_runtime(), byref=getattr(pymxs, "byref", None))
