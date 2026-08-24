@@ -214,7 +214,7 @@ server.shutdown()                  # stop and cleanup
 
 ### authoring stage (load on demand)
 
-`3dsmax-modeling` (4): `create_box`, `create_sphere`, `create_cylinder`, `create_plane`
+`3dsmax-modeling` (5): `create_box`, `create_sphere`, `create_cylinder`, `create_plane`, `lathe_profile`
 
 `3dsmax-geometry-io` (5): `validate_geometry_file`, `import_fbx`, `import_geometry`, `export_fbx`, `export_obj`
 `3dsmax-import-to-scene` (1): `import_to_scene`

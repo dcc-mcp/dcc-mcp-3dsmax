@@ -87,6 +87,97 @@ tools:
       render: false
       targets: []
     produces: ['scene_nodes']
+  - name: lathe_profile
+    description: >-
+      Create a native 3ds Max Lathe stack from an ordered XZ-plane profile.
+      Use for bounded rotational forms such as bottles, columns, and vessels.
+      Returns native scene readback for the profile and modifier options.
+    source_file: action_lathe_profile.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [profile_points]
+      additionalProperties: false
+      properties:
+        profile_points:
+          type: array
+          minItems: 2
+          maxItems: 256
+          description: Ordered radius/height pairs mapped to the XZ profile plane.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: number
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional name for the created spline node.
+        degrees:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 360
+          default: 360
+          description: Rotation angle in degrees.
+        segments:
+          type: integer
+          minimum: 3
+          maximum: 256
+          default: 16
+          description: Number of native Lathe segments.
+        weld_core:
+          type: boolean
+          default: true
+          description: Weld vertices that meet on the native Lathe axis.
+        flip_normals:
+          type: boolean
+          default: false
+          description: Flip the generated surface normals.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Create a rotational surface from a bounded XZ-plane profile."
+    tool_role: action
+    risk: medium
+    search_aliases: ["lathe_profile", "lathe profile", "lathe", "revolve profile"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ['scene_nodes']
+    call_examples:
+      - arguments:
+          profile_points: [[0, 0], [12, 0], [8, 20], [0, 20]]
+          name: lathed_vase
+          segments: 24
+        note: "Create a closed vessel profile using the native Lathe modifier"
   - name: create_sphere
     description: >-
       Create a sphere primitive in the current 3ds Max scene. Use when the user
