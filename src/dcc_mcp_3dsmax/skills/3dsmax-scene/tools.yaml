@@ -43,10 +43,102 @@ tools:
       render: false
       targets: []
     produces: ['scene_info']
-  - name: save_scene
-    description: Save the current 3ds Max scene to an explicit .max file.
-    source_file: action_save_scene.py
+  - name: get_scene_status
+    description: >-
+      Read the current scene file path, dirty state, object count, units, and
+      renderer for lifecycle post-condition checks.
+    source_file: action_get_scene_status.py
     execution: sync
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties: {}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Read the scene lifecycle status before or after a file operation."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_scene_status", "scene status", "dirty scene"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["scene_status"]
+  - name: new_scene
+    description: >-
+      Reset to an empty scene. A dirty scene is rejected unless force is true.
+    source_file: action_new_scene.py
+    execution: sync
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        force:
+          type: boolean
+          default: false
+          description: Explicitly discard unsaved scene changes when true.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Create a verified empty 3ds Max scene."
+    tool_role: destructive
+    risk: high
+    search_aliases: ["new_scene", "new scene", "reset scene"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene"]
+    produces: ["scene_status"]
+  - name: open_scene
+    description: >-
+      Open an existing absolute .max file without dialogs. A dirty scene is
+      rejected unless force is true.
+    source_file: action_open_scene.py
+    execution: async
+    job_strategy: monolithic
     affinity: main
     enforce_thread_affinity: true
     input_schema:
@@ -57,31 +149,85 @@ tools:
         file_path:
           type: string
           minLength: 1
-          description: Absolute output path ending in .max.
-        overwrite:
+          maxLength: 4096
+          description: Existing absolute .max scene path.
+        force:
           type: boolean
           default: false
+          description: Explicitly discard unsaved current-scene changes.
     output_schema:
       type: object
       additionalProperties: true
       properties:
         success: {type: boolean}
-        status: {type: string}
         message: {type: string}
         data: {type: object}
-    timeout_hint_secs: 60
+    timeout_hint_secs: 120
     read_only: false
-    destructive: false
+    destructive: true
     idempotent: false
     annotations:
       read_only_hint: false
-      destructive_hint: false
+      destructive_hint: true
       idempotent_hint: false
       open_world_hint: false
-
-    intent: "Save the current 3ds Max scene."
-    tool_role: action
-    risk: medium
+      deferred_hint: true
+    intent: "Open and verify one typed 3ds Max scene path."
+    tool_role: destructive
+    risk: high
+    search_aliases: ["open_scene", "open max file", "load scene"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: true
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ["scene"]
+    produces: ["scene_status"]
+  - name: save_scene
+    description: >-
+      Save the current scene to its existing path. The legacy explicit
+      file_path and overwrite parameters remain supported.
+    source_file: action_save_scene.py
+    execution: async
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Optional legacy absolute .max output path.
+        overwrite:
+          type: boolean
+          default: false
+          description: Allow replacement when the legacy file_path exists.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+      deferred_hint: true
+    intent: "Save and verify the current 3ds Max scene file."
+    tool_role: destructive
+    risk: high
     search_aliases: ["save_scene", "save scene", "save max file"]
     side_effects:
       creates: true
@@ -92,7 +238,132 @@ tools:
       file_output: true
       render: false
       targets: ["scene_file"]
-    produces: ['scene_file']
+    produces: ["scene_file", "scene_status"]
+  - name: save_scene_as
+    description: >-
+      Save the current scene to an explicit absolute .max path and make it the
+      verified current scene.
+    source_file: action_save_scene_as.py
+    execution: async
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Absolute .max output path.
+        overwrite:
+          type: boolean
+          default: false
+          description: Allow replacement when the output file exists.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+      deferred_hint: true
+    intent: "Save and verify the current scene under one explicit file path."
+    tool_role: destructive
+    risk: high
+    search_aliases: ["save_scene_as", "save scene as", "save as max file"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: true
+      render: false
+      targets: ["scene_file"]
+    produces: ["scene_file", "scene_status"]
+  - name: merge_file
+    description: >-
+      Merge all or selected nodes from an absolute .max file using fixed,
+      no-prompt duplicate, material, and reparent policies.
+    source_file: action_merge_file.py
+    execution: async
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Existing absolute .max source path.
+        node_names:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: {type: string, minLength: 1, maxLength: 256}
+          description: Optional exact source node names; omit to merge all nodes.
+        duplicate_names:
+          type: string
+          enum: [rename, skip, merge]
+          default: rename
+        material_duplicates:
+          type: string
+          enum: [rename, use_scene, use_merged]
+          default: rename
+        reparent:
+          type: string
+          enum: [never, always]
+          default: never
+        select_merged:
+          type: boolean
+          default: false
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+      deferred_hint: true
+    intent: "Merge and verify objects from one bounded 3ds Max scene file."
+    tool_role: action
+    risk: medium
+    search_aliases: ["merge_file", "merge max file", "merge scene objects"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes", "scene_status"]
   - name: list_scene_nodes
     description: >-
       List scene nodes with stable identity, class, parent, visibility, and

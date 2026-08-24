@@ -2,32 +2,29 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from dcc_mcp_3dsmax._scene_lifecycle import save_scene_to_path, scene_status
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 @with_max
-def main(file_path: str, overwrite: bool = False) -> Dict[str, Any]:
-    """Save the current scene to an explicit .max path."""
-    path = Path(file_path).expanduser().resolve()
-    if path.suffix.lower() != ".max":
-        return {"success": False, "message": "file_path must end with .max", "data": {"file_path": str(path)}}
-    if not path.parent.is_dir():
+def main(file_path: Optional[str] = None, overwrite: bool = False) -> Dict[str, Any]:
+    """Save to the current path, retaining the legacy explicit-path form."""
+    rt = get_runtime()
+    before = scene_status(rt)
+    requested_path = file_path if file_path is not None else before["current_file_path"]
+    if not requested_path:
         return {
             "success": False,
-            "message": "Scene output directory does not exist",
-            "data": {"file_path": str(path)},
+            "message": "Current scene has no file path; use save_scene_as",
+            "data": {"failure_stage": "precondition", "failure_reason": "current_scene_has_no_path"},
         }
-    if path.exists() and not overwrite:
-        return {"success": False, "message": "Scene file already exists", "data": {"file_path": str(path)}}
 
-    saved = get_runtime().saveMaxFile(str(path), quiet=True)
-    if saved is False:
-        return {
-            "success": False,
-            "message": "3ds Max failed to save the scene",
-            "data": {"file_path": str(path)},
-        }
-    return {"success": True, "message": "Saved 3ds Max scene", "data": {"file_path": str(path)}}
+    explicit_path = file_path is not None
+    return save_scene_to_path(
+        rt,
+        requested_path,
+        overwrite=overwrite,
+        allow_existing_current=not explicit_path,
+    )
