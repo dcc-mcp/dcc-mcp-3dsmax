@@ -335,3 +335,270 @@ tools:
       render: false
       targets: []
     produces: ['system_info']
+  - name: get_skin_weights
+    description: Read native Skin modifier weights and normalization state for explicit vertices.
+    source_file: action_get_skin_weights.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema: &skin_read_schema
+      type: object
+      additionalProperties: false
+      properties:
+        node_name: {type: string, minLength: 1, maxLength: 128}
+        handle: {type: integer}
+        vertex_indices: {type: array, minItems: 1, maxItems: 100000, uniqueItems: true, items: {type: integer, minimum: 1}}
+        modifier_name: {type: string, minLength: 1, maxLength: 128}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Read per-vertex Skin weights through native skinOps."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_skin_weights", "get skin weights", "vertex weights"]
+    side_effects: {creates: false, modifies: false, deletes: false, exports: false, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['skin_weights']
+  - name: set_skin_weights
+    description: Replace a bounded native Skin weight batch with rollback and host readback.
+    source_file: action_set_skin_weights.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [vertices]
+      additionalProperties: false
+      properties:
+        node_name: {type: string, minLength: 1, maxLength: 128}
+        handle: {type: integer}
+        modifier_name: {type: string, minLength: 1, maxLength: 128}
+        normalize: {type: boolean, default: true}
+        vertices:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items:
+            type: object
+            required: [vertex, influences]
+            additionalProperties: false
+            properties:
+              vertex: {type: integer, minimum: 1}
+              influences:
+                type: array
+                minItems: 1
+                maxItems: 256
+                items:
+                  type: object
+                  required: [bone_id, weight]
+                  additionalProperties: false
+                  properties:
+                    bone_id: {type: integer, minimum: 1}
+                    weight: {type: number, minimum: 0}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Set explicit Skin weights and verify every changed vertex."
+    tool_role: action
+    risk: medium
+    search_aliases: ["set_skin_weights", "set skin weights", "edit vertex weights"]
+    side_effects: {creates: false, modifies: true, deletes: false, exports: false, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['skin_weights']
+  - name: copy_weights
+    description: Copy exact-topology Skin weights and map target bones by exact name.
+    source_file: action_copy_weights.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        source_name: {type: string, minLength: 1, maxLength: 128}
+        source_handle: {type: integer}
+        target_name: {type: string, minLength: 1, maxLength: 128}
+        target_handle: {type: integer}
+        vertex_indices: {type: array, minItems: 1, maxItems: 100000, uniqueItems: true, items: {type: integer, minimum: 1}}
+        source_modifier_name: {type: string, minLength: 1, maxLength: 128}
+        target_modifier_name: {type: string, minLength: 1, maxLength: 128}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Copy and verify exact-topology Skin weights without UI fallback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["copy_weights", "copy skin weights", "transfer weights"]
+    side_effects: {creates: false, modifies: true, deletes: false, exports: false, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['skin_weights']
+  - name: export_skin_weights
+    description: Atomically write typed Skin weights to an explicit absolute JSON path.
+    source_file: action_export_skin_weights.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [output_path]
+      additionalProperties: false
+      properties:
+        output_path: {type: string, minLength: 1, maxLength: 4096}
+        node_name: {type: string, minLength: 1, maxLength: 128}
+        handle: {type: integer}
+        vertex_indices: {type: array, minItems: 1, maxItems: 100000, uniqueItems: true, items: {type: integer, minimum: 1}}
+        modifier_name: {type: string, minLength: 1, maxLength: 128}
+        overwrite: {type: boolean, default: false}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Export an integrity-digested Skin weight JSON file."
+    tool_role: action
+    risk: medium
+    search_aliases: ["export_skin_weights", "export skin weights", "save weights file"]
+    side_effects: {creates: true, modifies: false, deletes: false, exports: true, imports: false, file_output: true, render: false, targets: ['file:json']}
+    produces: ['file:skin_weights']
+  - name: import_skin_weights
+    description: Verify and import typed Skin weights from an explicit absolute JSON path.
+    source_file: action_import_skin_weights.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [input_path]
+      additionalProperties: false
+      properties:
+        input_path: {type: string, minLength: 1, maxLength: 4096}
+        node_name: {type: string, minLength: 1, maxLength: 128}
+        handle: {type: integer}
+        modifier_name: {type: string, minLength: 1, maxLength: 128}
+        expected_sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Import an integrity-checked Skin weight file and verify host readback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["import_skin_weights", "import skin weights", "load weights file"]
+    side_effects: {creates: false, modifies: true, deletes: false, exports: false, imports: true, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['skin_weights']
+  - name: save_pose
+    description: Capture explicit controller transforms in the typed pose JSON shape.
+    source_file: action_save_pose.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema: *target_schema
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Capture a controller pose for typed round-trip reuse."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["save_pose", "save pose", "capture controller pose"]
+    side_effects: {creates: false, modifies: false, deletes: false, exports: true, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['pose_data']
+  - name: load_pose
+    description: Preflight, load, and host-readback-verify a typed controller pose.
+    source_file: action_load_pose.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [pose_data]
+      additionalProperties: false
+      properties:
+        pose_data:
+          type: object
+          required: [schema, nodes]
+          additionalProperties: false
+          properties:
+            schema: {type: string, const: "dcc-mcp/pose@1"}
+            nodes: {type: array, minItems: 1, maxItems: 512, items: {type: object}}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Restore a validated controller pose with rollback and transform readback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["load_pose", "load pose", "restore controller pose"]
+    side_effects: {creates: false, modifies: true, deletes: false, exports: false, imports: true, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['pose_data']
+  - name: create_control
+    description: Create and verify a bounded circle or point controller helper.
+    source_file: action_create_control.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        shape: {type: string, enum: [circle, point], default: circle}
+        size: {type: number, exclusiveMinimum: 0, maximum: 1000000, default: 10}
+        position: {type: array, minItems: 3, maxItems: 3, items: {type: number}}
+        color: {type: array, minItems: 3, maxItems: 3, items: {type: integer, minimum: 0, maximum: 255}}
+    output_schema: *output_schema
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+    intent: "Create a named, colored rig control without arbitrary scripting."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_control", "create rig control", "controller shape"]
+    side_effects: {creates: true, modifies: false, deletes: false, exports: false, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['scene_nodes']
+  - name: create_constraint
+    description: Create and verify a shared-name point, orient, aim, or parent constraint.
+    source_file: action_create_constraint.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [constraint_type]
+      additionalProperties: false
+      properties:
+        constrained_name: {type: string, minLength: 1, maxLength: 128}
+        constrained_handle: {type: integer}
+        target_name: {type: string, minLength: 1, maxLength: 128}
+        target_handle: {type: integer}
+        constraint_type: {type: string, enum: [point, orient, aim, parent]}
+        weight: {type: number, minimum: 0, maximum: 100, default: 100}
+        maintain_offset: {type: boolean, default: false}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+    intent: "Create a name-mirrored typed constraint and verify its target."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_constraint", "create constraint", "parent aim orient point"]
+    side_effects: {creates: false, modifies: true, deletes: false, exports: false, imports: false, file_output: false, render: false, targets: ['scene_nodes']}
+    produces: ['scene_nodes']
