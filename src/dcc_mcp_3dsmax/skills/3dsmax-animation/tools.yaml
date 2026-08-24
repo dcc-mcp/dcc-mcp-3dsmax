@@ -499,3 +499,165 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['scene_nodes']
+  - name: set_keyframes
+    description: Set and host-readback-verify a bounded transform keyframe batch on explicit nodes.
+    source_file: action_set_keyframes.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [keys]
+      additionalProperties: false
+      properties:
+        node_names: {type: array, maxItems: 128, items: {type: string, minLength: 1, maxLength: 128}}
+        handles: {type: array, maxItems: 128, items: {type: integer}}
+        use_selection: {type: boolean, default: false}
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items:
+            type: object
+            required: [frame, property, value]
+            additionalProperties: false
+            properties:
+              frame: {type: number}
+              property: {type: string, enum: [position, rotation, scale]}
+              value: {type: array, minItems: 3, maxItems: 4, items: {type: number}}
+              interpolation: {type: string, enum: [auto, bezier, linear, step]}
+              in_tangent: {type: string, enum: [auto, bezier, linear, step], default: auto}
+              out_tangent: {type: string, enum: [auto, bezier, linear, step], default: auto}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+    intent: "Set a whole transform curve batch and verify host readback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["set_keyframes", "set keyframes", "batch animation keys"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes']
+    produces: ['animation_curves']
+  - name: get_anim_curves
+    description: Read values, tangents, and redundant key counts in the anim-curves v1 shape.
+    source_file: action_get_anim_curves.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names: {type: array, maxItems: 128, items: {type: string, minLength: 1, maxLength: 128}}
+        handles: {type: array, maxItems: 128, items: {type: integer}}
+        use_selection: {type: boolean, default: false}
+        properties:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [position, rotation, scale]}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Read typed animation curves for structural and numeric assertions."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_anim_curves", "get animation curves", "curve readback"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes']
+    produces: ['animation_curves']
+  - name: export_anim_curves
+    description: Export typed anim-curves v1 JSON data for explicit target nodes.
+    source_file: action_export_anim_curves.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names: {type: array, maxItems: 128, items: {type: string, minLength: 1, maxLength: 128}}
+        handles: {type: array, maxItems: 128, items: {type: integer}}
+        use_selection: {type: boolean, default: false}
+        properties:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [position, rotation, scale]}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Export the typed cross-adapter animation curve payload."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["export_anim_curves", "export animation curves", "animation curve json"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: true
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes']
+    produces: ['animation_curves']
+  - name: import_anim_curves
+    description: Preflight, import, and host-readback-verify anim-curves v1 JSON data.
+    source_file: action_import_anim_curves.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [curve_data]
+      additionalProperties: false
+      properties:
+        curve_data:
+          type: object
+          required: [schema, fps, curves]
+          additionalProperties: false
+          properties:
+            schema: {type: string, const: "dcc-mcp/anim-curves@1"}
+            fps: {type: number, exclusiveMinimum: 0}
+            curves: {type: array, minItems: 1, maxItems: 384, items: {type: object}}
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+    intent: "Import a complete typed curve payload only after validating every target and key."
+    tool_role: action
+    risk: medium
+    search_aliases: ["import_anim_curves", "import animation curves", "animation curve json"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ['scene_nodes']
+    produces: ['animation_curves']

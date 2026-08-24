@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._mesh_ops import add_modifier
-from dcc_mcp_3dsmax._scene_utils import node_identity, resolve_node_object, resolve_node_objects
+from dcc_mcp_3dsmax._scene_utils import node_identity, resolve_node_objects
 
 DEFORMER_CONSTRUCTORS: Dict[str, Tuple[str, ...]] = {
     "skin": ("Skin", "SkinModifier"),
@@ -15,13 +15,6 @@ DEFORMER_CONSTRUCTORS: Dict[str, Tuple[str, ...]] = {
     "path_deform": ("PathDeform", "Path_Deform"),
     "skin_wrap": ("Skin_Wrap", "SkinWrap"),
     "morpher": ("Morpher",),
-}
-
-CONSTRAINT_CONSTRUCTORS: Dict[str, Tuple[str, ...]] = {
-    "position": ("Position_Constraint", "PositionConstraint"),
-    "orientation": ("Orientation_Constraint", "OrientationConstraint"),
-    "look_at": ("LookAt_Constraint", "LookAtConstraint"),
-    "path": ("Path_Constraint", "PathConstraint"),
 }
 
 
@@ -263,40 +256,20 @@ def set_constraint_target(
     target_handle: Optional[int] = None,
     constraint_type: str,
     weight: float = 100.0,
+    maintain_offset: bool = False,
 ) -> Dict[str, Any]:
     """Create or update a basic transform constraint target."""
-    if constraint_type not in CONSTRAINT_CONSTRUCTORS:
-        return rig_error("Unsupported constraint_type", constraint_type=constraint_type)
-    constrained_result, constrained = resolve_node_object(
-        runtime, node_name=constrained_name, handle=constrained_handle
-    )
-    if constrained is None:
-        return rig_error("Could not resolve constrained node", constrained=constrained_result)
-    target_result, target = resolve_node_object(runtime, node_name=target_name, handle=target_handle)
-    if target is None:
-        return rig_error("Could not resolve constraint target", target=target_result)
-    if node_identity(constrained) == node_identity(target):
-        return rig_error("Constraint target must be different from constrained node", node=node_identity(constrained))
+    from dcc_mcp_3dsmax._rig_constraint_contract import set_constraint_target as set_constraint  # noqa: PLC0415
 
-    constraint, warnings = _construct_runtime_object(runtime, CONSTRAINT_CONSTRUCTORS[constraint_type])
-    if constraint is None:
-        return rig_error(
-            "No supported constraint constructor was available", constraint_type=constraint_type, warnings=warnings
-        )
-
-    _set_optional_attr(constraint, "constraint_type", constraint_type, warnings, strict=False)
-    _set_optional_attr(constraint, "target", target, warnings, strict=False)
-    _set_optional_attr(constraint, "weight", float(weight), warnings, strict=False)
-    _append_constraint_target(constraint, target, weight, warnings)
-    _attach_constraint(constrained, constraint_type, constraint, warnings)
-
-    return rig_success(
-        "Set constraint target",
-        constrained=node_identity(constrained),
-        target=node_identity(target),
+    return set_constraint(
+        runtime,
+        constrained_name=constrained_name,
+        constrained_handle=constrained_handle,
+        target_name=target_name,
+        target_handle=target_handle,
         constraint_type=constraint_type,
-        changed_target_count=1,
-        warnings=warnings,
+        weight=weight,
+        maintain_offset=maintain_offset,
     )
 
 
@@ -447,54 +420,6 @@ def _matches_modifier(modifier: Any, *, deformer_type: Optional[str], modifier_n
         any(token.lower().replace("_", "") in text for token in constructors)
         or getattr(modifier, "deformer_type", None) == deformer_type
     )
-
-
-def _append_constraint_target(constraint: Any, target: Any, weight: float, warnings: List[str]) -> None:
-    for method_name in ("appendTarget", "addTarget"):
-        method = getattr(constraint, method_name, None)
-        if callable(method):
-            try:
-                method(target, weight)
-                return
-            except Exception as exc:  # noqa: BLE001
-                warnings.append("Could not call {}: {}".format(method_name, exc))
-    targets = getattr(constraint, "targets", None)
-    if targets is None:
-        try:
-            constraint.targets = []
-            targets = constraint.targets
-        except Exception:  # noqa: BLE001
-            return
-    try:
-        targets.append({"target": target, "weight": float(weight)})
-    except Exception as exc:  # noqa: BLE001
-        warnings.append("Could not append constraint target: {}".format(exc))
-
-
-def _attach_constraint(node: Any, constraint_type: str, constraint: Any, warnings: List[str]) -> None:
-    constraints = getattr(node, "constraints", None)
-    if constraints is None:
-        try:
-            node.constraints = []
-            constraints = node.constraints
-        except Exception as exc:  # noqa: BLE001
-            warnings.append("Could not store constraint metadata: {}".format(exc))
-            constraints = None
-    if constraints is not None:
-        try:
-            constraints.append(constraint)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append("Could not append constraint metadata: {}".format(exc))
-
-    channel = "rotation" if constraint_type in {"orientation", "look_at"} else "position"
-    slot = getattr(node, channel, None)
-    if slot is not None:
-        try:
-            slot.controller = constraint
-            return
-        except Exception:  # noqa: BLE001
-            pass
-    _set_optional_attr(node, "{}_constraint".format(channel), constraint, warnings, strict=False)
 
 
 def _has_symbol(runtime: Any, name: str) -> bool:

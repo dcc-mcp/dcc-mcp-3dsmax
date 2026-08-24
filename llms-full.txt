@@ -225,9 +225,9 @@ server.shutdown()                  # stop and cleanup
 
 `3dsmax-materials` (12): `create_standard_material`, `apply_material`, `list_scene_materials`, `list_node_material_assignments`, `inspect_material`, `list_bitmap_connections`, `create_physical_material`, `create_pbr_material`, `reset_material`, `set_material_attributes`, `assign_bitmap_texture`, `report_missing_textures`
 
-`3dsmax-animation` (13): `set_keyframe`, `play_animation`, `get_time_settings`, `get_animation_controllers`, `list_keyframes`, `set_current_time`, `set_timeline_settings`, `set_transform_keyframe`, `delete_keyframes`, `set_key_interpolation`, `bake_transform_animation`, `export_animation_curves`, `import_animation_curves`
+`3dsmax-animation` (17): `set_keyframe`, `play_animation`, `get_time_settings`, `get_animation_controllers`, `list_keyframes`, `set_current_time`, `set_timeline_settings`, `set_transform_keyframe`, `delete_keyframes`, `set_key_interpolation`, `bake_transform_animation`, `export_animation_curves`, `import_animation_curves`, `set_keyframes`, `get_anim_curves`, `export_anim_curves`, `import_anim_curves`
 
-`3dsmax-rigging` (9): `create_helper_node`, `create_bone_node`, `create_joint_chain`, `create_path_helper`, `list_rig_state`, `apply_deformer_modifier`, `remove_deformer_modifier`, `set_constraint_target`, `get_character_system_availability`
+`3dsmax-rigging` (18): `create_helper_node`, `create_bone_node`, `create_joint_chain`, `create_path_helper`, `list_rig_state`, `apply_deformer_modifier`, `remove_deformer_modifier`, `set_constraint_target`, `get_character_system_availability`, `get_skin_weights`, `set_skin_weights`, `copy_weights`, `export_skin_weights`, `import_skin_weights`, `save_pose`, `load_pose`, `create_control`, `create_constraint`
 
 `3dsmax-render` (9): `capture_viewport`, `create_preview`, `get_render_settings`, `get_scene_render_statistics`, `set_render_output_options`, `set_frame_range`, `set_render_resolution`, `set_render_camera`, `set_render_quality_preset`
 
