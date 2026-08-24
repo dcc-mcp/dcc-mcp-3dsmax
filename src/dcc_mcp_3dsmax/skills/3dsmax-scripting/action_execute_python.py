@@ -29,24 +29,23 @@ def main(code: str, confirm_execution: bool, expression: Optional[str] = None) -
     rt = get_runtime()
     stdout = io.StringIO()
     stderr = io.StringIO()
-    globals_dict: Dict[str, Any] = {
+    namespace: Dict[str, Any] = {
         "pymxs": pymxs,
         "rt": rt,
         "runtime": rt,
     }
-    locals_dict: Dict[str, Any] = {}
 
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            exec(compile(code, "<dcc_mcp_3dsmax_execute_python>", "exec"), globals_dict, locals_dict)  # noqa: S102
+            exec(compile(code, "<dcc_mcp_3dsmax_execute_python>", "exec"), namespace, namespace)  # noqa: S102
             if expression is not None:
                 result = eval(  # noqa: S307
                     compile(expression, "<dcc_mcp_3dsmax_execute_python_expression>", "eval"),
-                    globals_dict,
-                    locals_dict,
+                    namespace,
+                    namespace,
                 )
             else:
-                result = locals_dict.get("result")
+                result = namespace.get("result")
     except Exception as exc:  # noqa: BLE001
         return {
             "success": False,

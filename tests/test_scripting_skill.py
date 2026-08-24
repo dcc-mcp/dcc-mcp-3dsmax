@@ -83,6 +83,23 @@ def test_execute_python_returns_stdout_and_result(monkeypatch):
     assert result["data"]["result"] == {"node_count": 1}
 
 
+def test_execute_python_resolves_top_level_functions_in_shared_namespace(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+    action = _load_action("action_execute_python.py")
+
+    result = action.main(
+        "def answer():\n"
+        "    return 42\n"
+        "def call_answer():\n"
+        "    return answer()\n"
+        "result = call_answer()",
+        confirm_execution=True,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["result"] == 42
+
+
 def test_execute_python_returns_error_envelope(monkeypatch):
     _install_fake_pymxs(monkeypatch)
     action = _load_action("action_execute_python.py")
