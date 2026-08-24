@@ -20,9 +20,9 @@ class _Point3:
 
 
 class _SplineShape:
-    def __init__(self) -> None:
-        self.name = "Shape001"
-        self.handle = 42
+    def __init__(self, *, name: str = "Shape001", handle: int = 42) -> None:
+        self.name = name
+        self.handle = handle
         self.splines = []
         self.modifiers = []
 
@@ -35,13 +35,49 @@ class _Lathe:
         self.flipNormals = False
 
 
+class _FakeMaxOps:
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+
+    def getNodeByHandle(self, handle):  # noqa: N802 - mirrors the native maxOps API.
+        if self.runtime.handle_lookup_raises:
+            raise RuntimeError("native handle lookup failure")
+        if self.runtime.shape is not None and self.runtime.shape.handle == handle:
+            return self.runtime.shape
+        same_name_node = self.runtime.same_name_node
+        if same_name_node is not None and same_name_node.handle == handle:
+            return same_name_node
+        return None
+
+
 class _FakeRuntime:
-    def __init__(self, *, tamper_modifier: bool = False, fail_add_modifier: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        tamper_modifier: bool = False,
+        fail_add_modifier: bool = False,
+        delete_is_noop: bool = False,
+        handle_lookup_raises: bool = False,
+        max_ops_missing: bool = False,
+        max_ops_access_raises: bool = False,
+        same_name_survivor: bool = False,
+    ) -> None:
         self.shape = None
+        self.same_name_node = _SplineShape(handle=7) if same_name_survivor else None
         self.updated = False
         self.tamper_modifier = tamper_modifier
         self.fail_add_modifier = fail_add_modifier
+        self.delete_is_noop = delete_is_noop
+        self.handle_lookup_raises = handle_lookup_raises
+        self.max_ops_access_raises = max_ops_access_raises
+        self._max_ops = None if max_ops_missing else _FakeMaxOps(self)
         self.deleted = []
+
+    @property
+    def maxOps(self):  # noqa: N802 - mirrors the native runtime interface owner.
+        if self.max_ops_access_raises:
+            raise RuntimeError("native maxOps access failure")
+        return self._max_ops
 
     @staticmethod
     def Name(value):  # noqa: N802 - mirrors pymxs runtime naming.
@@ -82,12 +118,14 @@ class _FakeRuntime:
 
     def delete(self, node):
         self.deleted.append(node)
-        if node is self.shape:
+        if node is self.shape and not self.delete_is_noop:
             self.shape = None
 
     def getNodeByName(self, name):  # noqa: N802 - mirrors pymxs runtime naming.
         if self.shape is not None and self.shape.name == name:
             return self.shape
+        if self.same_name_node is not None and self.same_name_node.name == name:
+            return self.same_name_node
         return None
 
     @staticmethod
@@ -204,6 +242,88 @@ def test_lathe_profile_rolls_back_when_native_creation_raises(monkeypatch):
     assert result["data"]["failure_stage"] == "create_native_lathe"
     assert result["data"]["rolled_back"] is True
     assert len(runtime.deleted) == 1
+    assert runtime.shape is None
+
+
+def test_lathe_profile_does_not_claim_rollback_when_native_delete_is_a_noop(monkeypatch):
+    """A non-raising delete call is not proof that the created node is absent."""
+    runtime = _FakeRuntime(tamper_modifier=True, delete_is_noop=True)
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    result = run_skill_script(
+        str(SKILL_DIR / "action_lathe_profile.py"),
+        {"profile_points": [[0.0, 0.0], [4.0, 0.0], [0.0, 8.0]], "segments": 24},
+    )
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "readback_native_lathe"
+    assert result["data"]["rolled_back"] is False
+    assert runtime.shape is not None
+    assert runtime.deleted == [runtime.shape]
+
+
+def test_lathe_profile_rollback_uses_exact_handle_and_preserves_same_name_node(monkeypatch):
+    """Rollback removes only the created node even when another node has its name."""
+    runtime = _FakeRuntime(tamper_modifier=True, same_name_survivor=True)
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    result = run_skill_script(
+        str(SKILL_DIR / "action_lathe_profile.py"),
+        {"profile_points": [[0.0, 0.0], [4.0, 0.0], [0.0, 8.0]], "segments": 24},
+    )
+    created_node = runtime.deleted[0]
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    assert runtime.deleted == [created_node]
+    assert created_node.handle == 42
+    assert runtime.same_name_node is not None
+    assert runtime.same_name_node.handle == 7
+    assert runtime.getNodeByName("Shape001") is runtime.same_name_node
+
+
+def test_lathe_profile_does_not_claim_rollback_when_handle_readback_raises(monkeypatch):
+    """Rollback remains unverified when the exact-handle absence query fails."""
+    runtime = _FakeRuntime(tamper_modifier=True, handle_lookup_raises=True)
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    result = run_skill_script(
+        str(SKILL_DIR / "action_lathe_profile.py"),
+        {"profile_points": [[0.0, 0.0], [4.0, 0.0], [0.0, 8.0]], "segments": 24},
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
+    assert runtime.shape is None
+
+
+@pytest.mark.parametrize(
+    "runtime_kwargs",
+    [
+        {"max_ops_missing": True},
+        {"max_ops_access_raises": True},
+    ],
+)
+def test_lathe_profile_does_not_claim_rollback_without_max_ops_readback(monkeypatch, runtime_kwargs):
+    """Missing or inaccessible maxOps cannot prove that the exact node is absent."""
+    runtime = _FakeRuntime(tamper_modifier=True, **runtime_kwargs)
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    result = run_skill_script(
+        str(SKILL_DIR / "action_lathe_profile.py"),
+        {"profile_points": [[0.0, 0.0], [4.0, 0.0], [0.0, 8.0]], "segments": 24},
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
     assert runtime.shape is None
 
 
