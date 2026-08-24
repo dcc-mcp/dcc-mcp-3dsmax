@@ -13,14 +13,31 @@ def _validation_error(message: str) -> dict:
 
 
 def _rollback(runtime, node) -> bool:
-    delete = getattr(runtime, "delete", None)
+    try:
+        delete = getattr(runtime, "delete", None)
+    except Exception:  # noqa: BLE001 - rollback must preserve the original host failure.
+        return False
     if not callable(delete):
         return False
+    try:
+        node_handle = int(node.handle)
+    except Exception:  # noqa: BLE001 - an unavailable identity cannot prove rollback.
+        node_handle = None
     try:
         delete(node)
     except Exception:  # noqa: BLE001 - rollback must not hide the readback failure.
         return False
-    return True
+    try:
+        max_ops = getattr(runtime, "maxOps", None)
+        get_node_by_handle = getattr(max_ops, "getNodeByHandle", None)
+    except Exception:  # noqa: BLE001 - an unverified rollback must fail closed.
+        return False
+    if node_handle is None or not callable(get_node_by_handle):
+        return False
+    try:
+        return get_node_by_handle(node_handle) is None
+    except Exception:  # noqa: BLE001 - an unverified rollback must fail closed.
+        return False
 
 
 def _validated_inputs(
