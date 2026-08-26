@@ -103,7 +103,9 @@ Verification checks receipt ownership and digests, imports the exact adapter
 and Core versions in the selected interpreter, checks bootstrap-error records,
 and waits for the typed `3dsmax_diagnostics__ping` sidecar probe. Only
 `verify.directly_usable=true` proves the runtime is callable. A copied hook or
-a live process alone is insufficient.
+a live process alone is insufficient. Invalid or failed readiness results are
+reported with bounded reason identities; probe exception text and values are
+never copied into the public report.
 
 No automated test in this repository claims to have opened a real 3ds Max
 instance. Run the generated smoke prompt only after the operator starts the
@@ -121,10 +123,11 @@ dcc-mcp-3dsmax upgrade --json --yes --dcc-path "C:\Program Files\Autodesk\3ds Ma
 The selected host, target Python, and any already-installed Core are checked
 before pip, hook, or receipt mutation. The hook and receipt are staged before
 commit. Before pip runs, the CLI records the exact frozen package provenance
-and dependency state. If commit fails, it restores the previous files and
-reconciles that complete package snapshot, then verifies its digest. A rollback
-that cannot be proven exact returns `package_rollback_incomplete`; it is never
-reported as a successful recovery. A Windows file lock returns exit 50 with a
+and dependency state. If commit fails, it restores the previous files and reads
+back their exact presence, bytes, and digests, and always attempts to reconcile
+the complete package snapshot and verify its digest. Any file or package
+mismatch returns `transaction_rollback_incomplete`; it is never reported as a
+successful recovery. A Windows file lock returns exit 50 with a
 restart-and-verify next step instead of deleting the live installation.
 
 ## Uninstall
@@ -161,8 +164,10 @@ host is usable until verification sees Core 0.20.20 or newer.
 
 Stop further lifecycle mutations and preserve the one-object JSON report. The
 previous package provenance, dependency set, hook, or receipt could not be
-verified after recovery. Repair the selected interpreter from a trusted exact
-artifact or environment lock, then run `status --json` and `verify --json`.
+verified after recovery. Transaction rollback still attempts both file
+restoration and package reconciliation before reporting an incomplete result.
+Repair the selected interpreter from a trusted exact artifact or environment
+lock, then run `status --json` and `verify --json`.
 
 ### `receipt_missing`, `receipt_invalid`, or `startup_hook_missing_or_modified`
 

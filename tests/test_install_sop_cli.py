@@ -325,6 +325,88 @@ def test_verify_rejects_hostile_readiness_status_object(tmp_path, capsys, monkey
     assert report["verify"]["failure_reason"] == "invalid_readiness_status"
 
 
+def test_verify_rejects_hostile_readiness_string_subclass(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+
+    class HostileStatus(str):
+        def __eq__(self, _other):
+            raise RuntimeError("PRIVATE_COMPARE_SECRET C:/private/path")
+
+        def __hash__(self):
+            raise RuntimeError("PRIVATE_HASH_SECRET x:private-uri")
+
+        def __str__(self):
+            raise RuntimeError("PRIVATE_STRING_SECRET x:private-uri")
+
+    monkeypatch.setattr(
+        cli,
+        "_wait_readiness",
+        lambda _timeout: {"success": True, "status": HostileStatus("ready")},
+    )
+
+    exit_code = cli.main(_args(layout, "verify"))
+    captured = capsys.readouterr()
+
+    assert exit_code == 40
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert "PRIVATE_" not in captured.out
+    report = cli.loads_public_report(captured.out)
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "readiness",
+        "failure_reason": "invalid_readiness_status",
+    }
+
+
+@pytest.mark.parametrize("verb", ["install", "upgrade", "verify"])
+@pytest.mark.parametrize("success", [True, False])
+def test_public_verbs_reject_hostile_readiness_string_subclasses(tmp_path, capsys, monkeypatch, verb, success) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    if verb in {"upgrade", "verify"}:
+        _install_for_verify(cli, layout, capsys, monkeypatch)
+    else:
+        _stub_target(monkeypatch, cli)
+
+    class HostileStatus(str):
+        def __eq__(self, _other):
+            raise RuntimeError("PRIVATE_COMPARE_SECRET C:/private/path")
+
+        def __hash__(self):
+            raise RuntimeError("PRIVATE_HASH_SECRET x:private-uri")
+
+        def __str__(self):
+            raise RuntimeError("PRIVATE_STRING_SECRET x:private-uri")
+
+    monkeypatch.setattr(
+        cli,
+        "_wait_readiness",
+        lambda _timeout: {"success": success, "status": HostileStatus("ready")},
+    )
+
+    extra = ("--yes",) if verb in {"install", "upgrade"} else ()
+    exit_code = cli.main(_args(layout, verb, *extra))
+    captured = capsys.readouterr()
+
+    assert exit_code == (50 if verb in {"install", "upgrade"} else 40)
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert "PRIVATE_" not in captured.out
+    assert "private-uri" not in captured.out
+    report = cli.loads_public_report(captured.out)
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "readiness",
+        "failure_reason": "invalid_readiness_status",
+    }
+    if verb in {"install", "upgrade"}:
+        assert report["status"] == "requires_restart"
+        assert report["steps"][3] == {"id": "commit", "status": "ok"}
+
+
 def test_verify_maps_bootstrap_log_exception_to_one_safe_report(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     layout = _layout(tmp_path)
@@ -399,6 +481,21 @@ def test_public_cli_does_not_capture_base_exceptions(tmp_path, monkeypatch) -> N
 
     with pytest.raises(KeyboardInterrupt):
         cli.main(_args(layout, "status"))
+
+
+@pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_readiness_does_not_capture_base_exceptions(tmp_path, capsys, monkeypatch, exception_type) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+
+    def interrupt_readiness(_timeout):
+        raise exception_type()
+
+    monkeypatch.setattr(cli, "_wait_readiness", interrupt_readiness)
+
+    with pytest.raises(exception_type):
+        cli.main(_args(layout, "verify"))
 
 
 @pytest.mark.parametrize(
@@ -527,6 +624,93 @@ def test_package_rollback_fails_closed_when_restore_subprocess_fails(tmp_path, m
     assert "PRIVATE_ROLLBACK_SECRET" not in captured.value.reason
 
 
+def test_transaction_rollback_detects_post_restore_overwrite_and_still_reconciles_packages(
+    tmp_path, monkeypatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "upgrade", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True)
+    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"mutated hook")
+    ctx.receipt_path.write_bytes(b"mutated receipt")
+    prior_package_state = cli._package_state_from_lines([])
+    package_calls = []
+    real_restore = cli._restore
+
+    def restore_then_overwrite(path, content):
+        real_restore(path, content)
+        if path == ctx.hook_path:
+            path.write_bytes(b"foreign-after-restore")
+
+    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("package"),
+    )
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._rollback_transaction(
+            ctx,
+            prior_package_state,
+            b"original hook",
+            b"original receipt",
+            True,
+        )
+
+    assert captured.value.stage == "rollback"
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert package_calls == ["package"]
+    assert ctx.hook_path.read_bytes() == b"foreign-after-restore"
+    assert ctx.receipt_path.read_bytes() == b"original receipt"
+
+
+def test_transaction_rollback_combines_file_and_package_failures(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "upgrade", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True)
+    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"mutated hook")
+    ctx.receipt_path.write_bytes(b"mutated receipt")
+    prior_package_state = cli._package_state_from_lines([])
+    restore_calls = []
+    package_calls = []
+    real_restore = cli._restore
+
+    def restore_then_overwrite(path, content):
+        restore_calls.append(path)
+        real_restore(path, content)
+        if path == ctx.hook_path:
+            path.write_bytes(b"foreign-after-restore")
+
+    def fail_package_restore(_ctx, _prior):
+        package_calls.append("package")
+        raise cli.LifecycleError(30, "rollback", "package_rollback_incomplete")
+
+    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+    monkeypatch.setattr(cli, "_restore_package_state", fail_package_restore)
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._rollback_transaction(
+            ctx,
+            prior_package_state,
+            b"original hook",
+            b"original receipt",
+            True,
+        )
+
+    assert captured.value.stage == "rollback"
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert restore_calls == [ctx.hook_path, ctx.receipt_path]
+    assert package_calls == ["package"]
+    assert ctx.hook_path.read_bytes() == b"foreign-after-restore"
+    assert ctx.receipt_path.read_bytes() == b"original receipt"
+
+
 @pytest.mark.parametrize("verb", ["install", "upgrade"])
 def test_install_and_upgrade_report_incomplete_package_rollback(tmp_path, capsys, monkeypatch, verb) -> None:
     cli = _install_cli()
@@ -553,7 +737,7 @@ def test_install_and_upgrade_report_incomplete_package_rollback(tmp_path, capsys
     assert report["verify"] == {
         "directly_usable": False,
         "failure_stage": "rollback",
-        "failure_reason": "package_rollback_incomplete",
+        "failure_reason": "transaction_rollback_incomplete",
     }
 
 
@@ -582,8 +766,81 @@ def test_uninstall_reports_incomplete_package_rollback(tmp_path, capsys, monkeyp
     assert report["verify"] == {
         "directly_usable": False,
         "failure_stage": "rollback",
-        "failure_reason": "package_rollback_incomplete",
+        "failure_reason": "transaction_rollback_incomplete",
     }
+
+
+@pytest.mark.parametrize("verb", ["install", "upgrade", "uninstall"])
+@pytest.mark.parametrize("package_failure", [False, True])
+def test_public_mutations_report_post_restore_overwrite_as_incomplete_rollback(
+    tmp_path, capsys, monkeypatch, verb, package_failure
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    if verb in {"upgrade", "uninstall"}:
+        _install_for_verify(cli, layout, capsys, monkeypatch)
+    else:
+        _stub_target(monkeypatch, cli)
+
+    hook_path = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    package_calls = []
+    hook_restore_calls = 0
+    real_restore = cli._restore
+
+    def restore_then_overwrite(path, content):
+        nonlocal hook_restore_calls
+        real_restore(path, content)
+        if path == hook_path:
+            hook_restore_calls += 1
+            rollback_call = hook_restore_calls == (2 if verb == "uninstall" else 1)
+            if rollback_call:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"foreign-after-restore")
+
+    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+
+    def restore_package(_ctx, _prior):
+        package_calls.append("package")
+        if package_failure:
+            raise cli.LifecycleError(30, "rollback", "package_rollback_incomplete")
+
+    monkeypatch.setattr(cli, "_restore_package_state", restore_package)
+    if verb in {"install", "upgrade"}:
+        real_replace = cli._replace_file
+
+        def fail_receipt_commit(source, destination):
+            if destination == layout["receipt"]:
+                raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(cli, "_replace_file", fail_receipt_commit)
+    else:
+        real_unlink = Path.unlink
+
+        def fail_receipt_unlink(path, *args, **kwargs):
+            if path == layout["receipt"]:
+                raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_receipt_unlink)
+
+    exit_code = cli.main(_args(layout, verb, "--yes"))
+    captured = capsys.readouterr()
+
+    assert exit_code == 30
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert "PRIVATE_" not in captured.out
+    assert "private-uri" not in captured.out
+    report = cli.loads_public_report(captured.out)
+    assert report["status"] == "failed"
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "rollback",
+        "failure_reason": "transaction_rollback_incomplete",
+    }
+    assert package_calls == ["package"]
+    assert hook_path.read_bytes() == b"foreign-after-restore"
 
 
 @pytest.mark.parametrize("verb", ["install", "upgrade"])
