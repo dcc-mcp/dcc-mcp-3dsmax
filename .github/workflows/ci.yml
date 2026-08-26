@@ -33,6 +33,9 @@ jobs:
       - name: Test with pytest
         run: python -m pytest
 
+      - name: Install SOP lifecycle smoke
+        run: python -m pytest tests/test_install_sop_cli.py
+
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
         uses: codecov/codecov-action@v4

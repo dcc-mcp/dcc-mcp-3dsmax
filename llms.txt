@@ -1,5 +1,13 @@
 # dcc-mcp-3dsmax - AI reference
 
+## Install SOP v1 (Windows)
+
+Use the standard `dcc-mcp-3dsmax install|status|verify|upgrade|uninstall`
+lifecycle. Plan with `--json --dry-run`, mutate only with `--yes`, preserve the
+receipt, and follow structured restart steps. A valid install is not proof of
+host readiness; require `verify.directly_usable=true`. The authoritative
+runbook is `install.md`. Repository tests do not claim real 3ds Max execution.
+
 ## Start server (inside 3ds Max MAXScript Listener)
 
 ```python

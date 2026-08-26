@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover - Python < 3.11
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FEEDBACK_FORWARDER_VERSION = "0.20.11"
+RUNTIME_CONTRACT_VERSION = "0.20.20"
 
 
 def _project_dependencies():
@@ -25,15 +25,15 @@ def test_runtime_dependency_floor_includes_core_feedback_forwarder():
 
     for package_name in ("dcc-mcp-core", "dcc-mcp-server"):
         requirement = dependencies[package_name]
-        assert requirement.specifier.contains(FEEDBACK_FORWARDER_VERSION)
-        assert not requirement.specifier.contains("0.20.10")
-        assert not requirement.specifier.contains("0.20.9")
+        assert requirement.specifier.contains(RUNTIME_CONTRACT_VERSION)
+        assert not requirement.specifier.contains("0.20.19")
+        assert not requirement.specifier.contains("0.20.11")
 
 
 def test_documented_install_surfaces_use_feedback_forwarder_floor():
     """Operator and agent install paths must not resolve a legacy server."""
-    expected = "dcc-mcp-core>=0.20.11"
-    expected_server = "dcc-mcp-server>=0.20.11"
+    expected = "dcc-mcp-core>=0.20.20"
+    expected_server = "dcc-mcp-server>=0.20.20"
 
     for relative_path in ("README.md", "llms-full.txt", "justfile"):
         text = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -76,8 +76,9 @@ def test_core_registration_keeps_feedback_discoverable_without_adapter_override(
     assert metadata["dcc"] == "3dsmax"
     assert metadata["execution"] == "sync"
     assert metadata["source_file"] is None
-    assert metadata["input_schema"]["additionalProperties"] is False
-    assert "shared Core handler forwards" in metadata["description"]
+    assert metadata["input_schema"]["oneOf"]
+    assert all(branch["additionalProperties"] is False for branch in metadata["input_schema"]["oneOf"])
+    assert "before forwarding to the gateway" in metadata["description"]
 
 
 def test_feedback_reaching_host_dispatch_fails_closed_with_request_id():

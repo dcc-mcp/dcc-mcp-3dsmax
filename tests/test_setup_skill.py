@@ -29,6 +29,7 @@ def test_startup_script_starts_runtime_from_checkout(tmp_path):
     assert "dcc_mcp_3dsmax.install_menu()" in text
     assert "dcc_mcp_3dsmax.install_shutdown_callback()" in text
     assert "dcc_mcp_3dsmax.main()" in text
+    assert "capture_bootstrap_errors" in text
     assert "DCC_MCP_GATEWAY_PORT" not in text
 
 

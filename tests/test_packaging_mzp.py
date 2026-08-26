@@ -76,6 +76,8 @@ def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
     assert "dcc_mcp_3dsmax.install_menu()" in text
     assert "dcc_mcp_3dsmax.install_shutdown_callback()" in text
     assert "dcc_mcp_3dsmax.main()" in text
+    assert "capture_bootstrap_errors" in text
+    assert "with capture_bootstrap_errors(" in text
     assert "def _cleanup_obsolete_payloads(active_key):" in text
     assert "_cleanup_obsolete_payloads(key)" in text
     assert 'button installBtn "Install"' in text
@@ -123,6 +125,8 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "dcc_mcp_3dsmax.install_menu()" in text
     assert "dcc_mcp_3dsmax.install_shutdown_callback()" in text
     assert "dcc_mcp_3dsmax.main()" in text
+    assert "capture_bootstrap_errors" in text
+    assert "phase='mzp_startup'" in text
     assert "DCC_MCP_3DSMAX_PORT" not in text
     assert "DCC_MCP_GATEWAY_PORT" not in text
     assert "def _cleanup_obsolete_payloads(active_root):" in text

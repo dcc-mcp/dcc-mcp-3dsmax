@@ -157,10 +157,12 @@
     py += "        else:\n"
     py += "            sys.path.insert(0, str(pkg))\n"
     py += "    os.environ.setdefault('DCC_MCP_SERVER_ROOT', str(pkg))\n"
-    py += "    import dcc_mcp_3dsmax\n"
-    py += "    dcc_mcp_3dsmax.install_menu()\n"
-    py += "    dcc_mcp_3dsmax.install_shutdown_callback()\n"
-    py += "    dcc_mcp_3dsmax.main()\n"
-    py += "    print('dcc-mcp-3dsmax runtime ready:', pkg)\n"
+    py += "    from dcc_mcp_core import capture_bootstrap_errors\n"
+    py += "    with capture_bootstrap_errors('3dsmax', adapter_version=None, min_core_version='0.20.20', phase='mzp_startup', log_dir=str(root / 'bootstrap-errors')):\n"
+    py += "        import dcc_mcp_3dsmax\n"
+    py += "        dcc_mcp_3dsmax.install_menu()\n"
+    py += "        dcc_mcp_3dsmax.install_shutdown_callback()\n"
+    py += "        dcc_mcp_3dsmax.main()\n"
+    py += "        print('dcc-mcp-3dsmax runtime ready:', pkg)\n"
     python.Execute py
 )

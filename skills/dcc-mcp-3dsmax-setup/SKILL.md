@@ -12,7 +12,7 @@ metadata:
     dcc: 3dsmax
     layer: operator
     stage: bootstrap
-    version: 1.0.0
+    version: 1.1.0
     tags:
     - 3dsmax
     - mcp
@@ -53,43 +53,47 @@ End with:
 
 ## Fast Path
 
-From the absolute repository root (`REPO_ROOT`), run:
+Install the public lifecycle CLI, then plan with explicit paths before any
+mutation:
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py
+```powershell
+python -m pip install --upgrade dcc-mcp-3dsmax
+dcc-mcp-3dsmax install --json --dry-run `
+  --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" `
+  --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-The script:
+Inspect the one-object Install SOP v1 report. With user consent, execute the
+same plan using `--yes`, preserve the receipt, follow a restart next step if
+present, and run `dcc-mcp-3dsmax verify --json` with the same paths. Only
+`verify.directly_usable=true` proves the typed sidecar probe succeeded.
 
-1. Finds `3dsmaxpy.exe` from `--maxpy`, `MAX_PY`, `DCC_MCP_3DSMAX_PYTHON`,
-   `DCC_MCP_3DSMAX_MAXPY`, `PATH`, or common Autodesk install locations.
-2. Installs this checkout into 3ds Max: `3dsmaxpy -m pip install -e .`.
-3. Verifies `import dcc_mcp_3dsmax`.
-4. Installs a small 3ds Max startup hook that calls
-   `dcc_mcp_3dsmax.main()` when the user opens or restarts 3ds Max.
-5. Writes a reusable MCP JSON snippet, fallback startup script, and smoke prompt under
-   `.dcc-mcp/agent-setup/`.
+The standard CLI:
 
-Use PyPI instead of the local checkout when setting up an end-user machine:
+1. exposes `install`, `status`, `verify`, `upgrade`, and `uninstall`;
+2. records the selected host and interpreter in the plan and receipt;
+3. stages the startup hook and receipt before commit and restores their prior
+   bytes when commit fails;
+4. fails closed on unreceipted or modified state;
+5. captures startup failures before MCP exists and performs bounded typed
+   readiness verification.
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --source pypi
-```
-
-If discovery fails, ask the user for the full `3dsmaxpy.exe` path and re-run:
-
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --maxpy "C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe"
-```
-
-If the machine has a non-standard 3ds Max profile path, pass the startup
-directory explicitly:
+For checkout development only, the legacy setup helper can still generate MCP
+configuration and a smoke prompt. It is not the receipt-owning public CLI:
 
 ```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --startup-dir "C:\Users\<you>\AppData\Local\Autodesk\3dsMax\2025 - 64bit\ENU\scripts\startup"
+python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --source local
 ```
 
-Use `--no-startup-hook` only when the user wants to start the runtime manually.
+If discovery fails, ask for the full host and interpreter paths. For a custom
+profile, also pass the startup directory:
+
+```powershell
+dcc-mcp-3dsmax install --json --dry-run `
+  --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" `
+  --python "C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe" `
+  --startup-dir "C:\Users\<you>\AppData\Local\Autodesk\3dsMax\2025 - 64bit\ENU\scripts\startup"
+```
 
 ## MCP Configuration
 

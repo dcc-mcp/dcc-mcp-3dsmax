@@ -15,7 +15,7 @@
 - **Repository:** https://github.com/dcc-mcp/dcc-mcp-3dsmax
 - **PyPI:** https://pypi.org/project/dcc-mcp-3dsmax/
 - **Python:** >=3.7
-- **Core deps:** `dcc-mcp-core>=0.20.11`, `dcc-mcp-server>=0.20.11`
+- **Core deps:** `dcc-mcp-core>=0.20.20`, `dcc-mcp-server>=0.20.20`
 
 ---
 
@@ -23,7 +23,15 @@
 
 ```bash
 pip install dcc-mcp-3dsmax
+dcc-mcp-3dsmax install --json --dry-run --dcc-path <3ds-max-dir> --python <3dsmax-python>
+dcc-mcp-3dsmax install --json --yes --dcc-path <3ds-max-dir> --python <3dsmax-python>
+dcc-mcp-3dsmax verify --json --dcc-path <3ds-max-dir> --python <3dsmax-python>
 ```
+
+The public Install SOP v1 surface also provides `status`, `upgrade`, and
+`uninstall`. Preserve its receipt and require `verify.directly_usable=true`
+before claiming a running host is callable. CI covers the hermetic lifecycle;
+it does not launch a licensed 3ds Max instance.
 
 ### MZP drag-drop (Windows)
 Download `dcc-mcp-3dsmax-<version>-win64.mzp` and drag onto 3ds Max viewport.
