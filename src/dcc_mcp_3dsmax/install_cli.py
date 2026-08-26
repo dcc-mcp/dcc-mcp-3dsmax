@@ -646,15 +646,23 @@ def _rollback_transaction(
     receipt_before: Optional[bytes],
     restore_files: bool,
 ) -> None:
-    file_restore_failed = False
+    rollback_failed = False
     if restore_files:
-        try:
-            _restore(ctx.hook_path, hook_before)
-            _restore(ctx.receipt_path, receipt_before)
-        except Exception:
-            file_restore_failed = True
-    _restore_package_state(ctx, prior_package_state)
-    if file_restore_failed:
+        for path, content in (
+            (ctx.hook_path, hook_before),
+            (ctx.receipt_path, receipt_before),
+        ):
+            try:
+                _restore(path, content)
+                if not _snapshot_matches(path, content):
+                    rollback_failed = True
+            except Exception:
+                rollback_failed = True
+    try:
+        _restore_package_state(ctx, prior_package_state)
+    except Exception:
+        rollback_failed = True
+    if rollback_failed:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "transaction_rollback_incomplete")
 
 
@@ -664,6 +672,15 @@ def _replace_file(source: Path, destination: Path) -> None:
 
 def _snapshot(path: Path) -> Optional[bytes]:
     return path.read_bytes() if path.is_file() else None
+
+
+def _snapshot_matches(path: Path, expected: Optional[bytes]) -> bool:
+    if expected is None:
+        return not os.path.lexists(str(path))
+    if not path.is_file():
+        return False
+    actual = path.read_bytes()
+    return actual == expected and hashlib.sha256(actual).digest() == hashlib.sha256(expected).digest()
 
 
 def _restore(path: Path, content: Optional[bytes]) -> None:
@@ -793,14 +810,14 @@ def _readiness_verdict(timeout: float) -> Tuple[bool, str]:
             return False, "invalid_readiness_status"
         status = readiness.get("status")
         success = readiness.get("success")
+        if type(status) is not str:
+            return False, "invalid_readiness_status"
+        if success is True and status == "ready":
+            return True, "ready"
+        if success is False and status in READINESS_FAILURE_REASONS:
+            return False, status
     except Exception:
         return False, "readiness_probe_failed"
-    if not isinstance(status, str):
-        return False, "invalid_readiness_status"
-    if success is True and status == "ready":
-        return True, "ready"
-    if success is False and status in READINESS_FAILURE_REASONS:
-        return False, status
     return False, "invalid_readiness_status"
 
 

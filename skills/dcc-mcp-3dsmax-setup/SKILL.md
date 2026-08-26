@@ -72,11 +72,13 @@ The standard CLI:
 
 1. exposes `install`, `status`, `verify`, `upgrade`, and `uninstall`;
 2. records the selected host and interpreter in the plan and receipt;
-3. stages the startup hook and receipt before commit and restores their prior
-   bytes when commit fails;
+3. stages the startup hook and receipt before commit, restores and reads back
+   their exact presence, bytes, and digests when commit fails, and still
+   attempts package reconciliation if either file cannot be verified;
 4. fails closed on unreceipted or modified state;
 5. captures startup failures before MCP exists and performs bounded typed
-   readiness verification;
+   readiness verification with stable public reasons rather than probe values
+   or exception text;
 6. checks host, target Python, and installed Core compatibility before any
    mutation, and verifies exact package provenance plus dependency state after
    rollback instead of assuming that a matching version means recovery.
@@ -159,9 +161,12 @@ Expected behavior:
 - `3dsmaxpy` not found: ask for the exact 3ds Max version and the full
   `3dsmaxpy.exe` path (e.g. `C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe`).
 - Pip bootstrap fails: run `3dsmaxpy -m ensurepip --upgrade`, then repeat install.
-- `package_rollback_incomplete`: stop, preserve the JSON report, and restore the
-  target interpreter from a trusted exact artifact or environment lock before
-  running status and verify again.
+- `package_rollback_incomplete` or `transaction_rollback_incomplete`: stop,
+  preserve the JSON report, and restore the target interpreter and receipted
+  files from trusted exact artifacts or environment locks before running
+  status and verify again. The transaction-level result means at least one
+  file or package readback could not be proven exact after all recovery steps
+  were attempted.
 - MCP connection refused: 3ds Max is not running, the runtime is not started, or
   the host is not pointing at the gateway URL `http://127.0.0.1:9765/mcp`.
 - Tool missing: call `dcc_capability_manifest` or `search_skills`, then
