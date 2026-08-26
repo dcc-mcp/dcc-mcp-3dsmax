@@ -76,7 +76,9 @@ The standard CLI:
    their exact presence, bytes, digests, and independent identity when commit
    fails, rejects symlink/reparse/hardlink or same-bytes identity swaps, and
    still attempts package reconciliation if either file cannot be verified;
-4. fails closed on unreceipted or modified state;
+4. runs compatibility and receipt-ownership preflight during `--dry-run`, and
+   fails closed when a receipt belongs to another hook or when status/verify
+   observes a symlink, reparse point, or hardlink alias;
 5. captures startup failures before MCP exists and performs bounded typed
    readiness verification with stable public reasons rather than probe values
    or exception text;
