@@ -124,10 +124,12 @@ The selected host, target Python, and any already-installed Core are checked
 before pip, hook, or receipt mutation. The hook and receipt are staged before
 commit. Before pip runs, the CLI records the exact frozen package provenance
 and dependency state. If commit fails, it restores the previous files and reads
-back their exact presence, bytes, and digests, and always attempts to reconcile
-the complete package snapshot and verify its digest. Any file or package
-mismatch returns `transaction_rollback_incomplete`; it is never reported as a
-successful recovery. A Windows file lock returns exit 50 with a
+back their exact presence, bytes, digests, and independent file identity. A
+symlink, reparse point, hardlink alias, or same-bytes identity swap fails
+closed. The CLI always attempts to reconcile the complete package snapshot and
+verify its digest. Any file or package mismatch returns
+`transaction_rollback_incomplete`; it is never reported as a successful
+recovery. A Windows file lock returns exit 50 with a
 restart-and-verify next step instead of deleting the live installation.
 
 ## Uninstall
@@ -165,7 +167,9 @@ host is usable until verification sees Core 0.20.20 or newer.
 Stop further lifecycle mutations and preserve the one-object JSON report. The
 previous package provenance, dependency set, hook, or receipt could not be
 verified after recovery. Transaction rollback still attempts both file
-restoration and package reconciliation before reporting an incomplete result.
+restoration and package reconciliation before reporting an incomplete result;
+matching bytes alone do not prove that a restored file has independent
+ownership.
 Repair the selected interpreter from a trusted exact artifact or environment
 lock, then run `status --json` and `verify --json`.
 

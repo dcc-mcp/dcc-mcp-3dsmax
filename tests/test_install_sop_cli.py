@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
+import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -640,9 +644,10 @@ def test_transaction_rollback_detects_post_restore_overwrite_and_still_reconcile
     real_restore = cli._restore
 
     def restore_then_overwrite(path, content):
-        real_restore(path, content)
+        restored_identity = real_restore(path, content)
         if path == ctx.hook_path:
             path.write_bytes(b"foreign-after-restore")
+        return restored_identity
 
     monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
     monkeypatch.setattr(
@@ -667,6 +672,161 @@ def test_transaction_rollback_detects_post_restore_overwrite_and_still_reconcile
     assert ctx.receipt_path.read_bytes() == b"original receipt"
 
 
+def test_transaction_rollback_rejects_same_bytes_hardlink_identity_swap(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "upgrade", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True)
+    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"mutated hook")
+    ctx.receipt_path.write_bytes(b"mutated receipt")
+    foreign = tmp_path / "PRIVATE_FOREIGN_SECRET.ms"
+    prior_package_state = cli._package_state_from_lines([])
+    package_calls = []
+    real_restore = cli._restore
+
+    def restore_then_alias(path, content):
+        restored_identity = real_restore(path, content)
+        if path == ctx.hook_path:
+            foreign.write_bytes(content)
+            path.unlink()
+            os.link(str(foreign), str(path))
+        return restored_identity
+
+    monkeypatch.setattr(cli, "_restore", restore_then_alias)
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("package"),
+    )
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._rollback_transaction(
+            ctx,
+            prior_package_state,
+            b"original hook",
+            b"original receipt",
+            True,
+        )
+
+    assert captured.value.stage == "rollback"
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert os.path.samefile(str(ctx.hook_path), str(foreign))
+    assert package_calls == ["package"]
+
+
+def test_transaction_rollback_rejects_same_bytes_independent_identity_swap(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "upgrade", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True)
+    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"mutated hook")
+    ctx.receipt_path.write_bytes(b"mutated receipt")
+    foreign = tmp_path / "PRIVATE_FOREIGN_SECRET.ms"
+    prior_package_state = cli._package_state_from_lines([])
+    package_calls = []
+    real_restore = cli._restore
+
+    def restore_then_replace(path, content):
+        restored_identity = real_restore(path, content)
+        if path == ctx.hook_path:
+            foreign.write_bytes(content)
+            os.replace(str(foreign), str(path))
+        return restored_identity
+
+    monkeypatch.setattr(cli, "_restore", restore_then_replace)
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("package"),
+    )
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._rollback_transaction(
+            ctx,
+            prior_package_state,
+            b"original hook",
+            b"original receipt",
+            True,
+        )
+
+    assert captured.value.stage == "rollback"
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert ctx.hook_path.read_bytes() == b"original hook"
+    assert not foreign.exists()
+    assert package_calls == ["package"]
+
+
+def test_file_identity_contract_rejects_symlink_reparse_and_hardlink_metadata() -> None:
+    cli = _install_cli()
+    regular = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=1, st_file_attributes=0)
+    symlink = SimpleNamespace(st_mode=stat.S_IFLNK, st_nlink=1, st_file_attributes=0)
+    reparse = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=1, st_file_attributes=0x400)
+    hardlink = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=2, st_file_attributes=0)
+
+    assert cli._is_independent_regular_file(regular) is True
+    assert cli._is_independent_regular_file(symlink) is False
+    assert cli._is_independent_regular_file(reparse) is False
+    assert cli._is_independent_regular_file(hardlink) is False
+
+
+def test_snapshot_rejects_preexisting_hardlink_alias_before_mutation(tmp_path) -> None:
+    cli = _install_cli()
+    foreign = tmp_path / "foreign.ms"
+    alias = tmp_path / "alias.ms"
+    foreign.write_bytes(b"same bytes")
+    os.link(str(foreign), str(alias))
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._snapshot(alias)
+
+    assert captured.value.exit_code == 10
+    assert captured.value.stage == "preflight"
+    assert captured.value.reason == "file_identity_ambiguous"
+
+
+def test_snapshot_captures_stable_independent_identity_and_transaction_restores_it(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "upgrade", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True)
+    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"original hook")
+    ctx.receipt_path.write_bytes(b"original receipt")
+    hook_snapshot = cli._snapshot(ctx.hook_path)
+    receipt_snapshot = cli._snapshot(ctx.receipt_path)
+    ctx.hook_path.write_bytes(b"mutated hook")
+    ctx.receipt_path.write_bytes(b"mutated receipt")
+    package_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("package"),
+    )
+
+    cli._rollback_transaction(
+        ctx,
+        cli._package_state_from_lines([]),
+        hook_snapshot,
+        receipt_snapshot,
+        True,
+    )
+
+    assert hook_snapshot.existed is True
+    assert hook_snapshot.independent is True
+    assert hook_snapshot.identity is not None
+    assert hook_snapshot.sha256 == hashlib.sha256(b"original hook").hexdigest()
+    assert ctx.hook_path.read_bytes() == b"original hook"
+    assert ctx.receipt_path.read_bytes() == b"original receipt"
+    assert os.stat(str(ctx.hook_path)).st_nlink == 1
+    assert os.stat(str(ctx.receipt_path)).st_nlink == 1
+    assert package_calls == ["package"]
+
+
 def test_transaction_rollback_combines_file_and_package_failures(tmp_path, monkeypatch) -> None:
     cli = _install_cli()
     layout = _layout(tmp_path)
@@ -683,9 +843,10 @@ def test_transaction_rollback_combines_file_and_package_failures(tmp_path, monke
 
     def restore_then_overwrite(path, content):
         restore_calls.append(path)
-        real_restore(path, content)
+        restored_identity = real_restore(path, content)
         if path == ctx.hook_path:
             path.write_bytes(b"foreign-after-restore")
+        return restored_identity
 
     def fail_package_restore(_ctx, _prior):
         package_calls.append("package")
@@ -789,13 +950,14 @@ def test_public_mutations_report_post_restore_overwrite_as_incomplete_rollback(
 
     def restore_then_overwrite(path, content):
         nonlocal hook_restore_calls
-        real_restore(path, content)
+        restored_identity = real_restore(path, content)
         if path == hook_path:
             hook_restore_calls += 1
             rollback_call = hook_restore_calls == (2 if verb == "uninstall" else 1)
             if rollback_call:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"foreign-after-restore")
+        return restored_identity
 
     monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
 
@@ -841,6 +1003,89 @@ def test_public_mutations_report_post_restore_overwrite_as_incomplete_rollback(
     }
     assert package_calls == ["package"]
     assert hook_path.read_bytes() == b"foreign-after-restore"
+
+
+@pytest.mark.parametrize("verb", ["install", "upgrade", "uninstall"])
+@pytest.mark.parametrize("identity_swap", ["hardlink", "replace"])
+def test_public_mutations_reject_same_bytes_rollback_identity_swap(
+    tmp_path, capsys, monkeypatch, verb, identity_swap
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    hook_path = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    if verb in {"upgrade", "uninstall"}:
+        _install_for_verify(cli, layout, capsys, monkeypatch)
+    else:
+        _stub_target(monkeypatch, cli)
+        hook_path.parent.mkdir(parents=True)
+        hook_path.write_bytes(b"original install hook")
+
+    foreign = tmp_path / ("PRIVATE_%s_FOREIGN_SECRET.ms" % verb)
+    package_calls = []
+    hook_restore_calls = 0
+    real_restore = cli._restore
+
+    def restore_then_alias(path, content):
+        nonlocal hook_restore_calls
+        restored_identity = real_restore(path, content)
+        if path == hook_path:
+            hook_restore_calls += 1
+            rollback_call = hook_restore_calls == (2 if verb == "uninstall" else 1)
+            if rollback_call:
+                assert content is not None
+                foreign.write_bytes(content)
+                if identity_swap == "hardlink":
+                    path.unlink()
+                    os.link(str(foreign), str(path))
+                else:
+                    os.replace(str(foreign), str(path))
+        return restored_identity
+
+    monkeypatch.setattr(cli, "_restore", restore_then_alias)
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("package"),
+    )
+    if verb in {"install", "upgrade"}:
+        real_replace = cli._replace_file
+
+        def fail_receipt_commit(source, destination):
+            if destination == layout["receipt"]:
+                raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(cli, "_replace_file", fail_receipt_commit)
+    else:
+        real_unlink = Path.unlink
+
+        def fail_receipt_unlink(path, *args, **kwargs):
+            if path == layout["receipt"]:
+                raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_receipt_unlink)
+
+    exit_code = cli.main(_args(layout, verb, "--yes"))
+    captured = capsys.readouterr()
+
+    assert exit_code == 30
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    assert "PRIVATE_" not in captured.out
+    assert "private-uri" not in captured.out
+    report = cli.loads_public_report(captured.out)
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "rollback",
+        "failure_reason": "transaction_rollback_incomplete",
+    }
+    if identity_swap == "hardlink":
+        assert os.path.samefile(str(hook_path), str(foreign))
+    else:
+        assert hook_path.is_file()
+        assert not foreign.exists()
+    assert package_calls == ["package"]
 
 
 @pytest.mark.parametrize("verb", ["install", "upgrade"])

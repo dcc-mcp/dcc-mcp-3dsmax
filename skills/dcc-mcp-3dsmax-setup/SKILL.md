@@ -73,8 +73,9 @@ The standard CLI:
 1. exposes `install`, `status`, `verify`, `upgrade`, and `uninstall`;
 2. records the selected host and interpreter in the plan and receipt;
 3. stages the startup hook and receipt before commit, restores and reads back
-   their exact presence, bytes, and digests when commit fails, and still
-   attempts package reconciliation if either file cannot be verified;
+   their exact presence, bytes, digests, and independent identity when commit
+   fails, rejects symlink/reparse/hardlink or same-bytes identity swaps, and
+   still attempts package reconciliation if either file cannot be verified;
 4. fails closed on unreceipted or modified state;
 5. captures startup failures before MCP exists and performs bounded typed
    readiness verification with stable public reasons rather than probe values
@@ -165,8 +166,8 @@ Expected behavior:
   preserve the JSON report, and restore the target interpreter and receipted
   files from trusted exact artifacts or environment locks before running
   status and verify again. The transaction-level result means at least one
-  file or package readback could not be proven exact after all recovery steps
-  were attempted.
+  independent file identity, file content, or package readback could not be
+  proven exact after all recovery steps were attempted.
 - MCP connection refused: 3ds Max is not running, the runtime is not started, or
   the host is not pointing at the gateway URL `http://127.0.0.1:9765/mcp`.
 - Tool missing: call `dcc_capability_manifest` or `search_skills`, then
