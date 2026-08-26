@@ -47,6 +47,27 @@ INSTALL_EXIT_INSTALL = INSTALL_EXIT_CODES["install"]
 INSTALL_EXIT_VERIFY = INSTALL_EXIT_CODES["verify"]
 INSTALL_EXIT_REQUIRES_RESTART = INSTALL_EXIT_CODES["requires_restart"]
 DEFAULT_RECEIPT_PATH = Path.home() / ".dcc-mcp" / "receipts" / "3dsmax.json"
+READINESS_FAILURE_REASONS = {
+    "ambiguous",
+    "booting",
+    "dead",
+    "missing",
+    "probe_bad_response",
+    "probe_failed",
+    "probe_http_error",
+    "probe_missing_tool",
+    "probe_missing_url",
+    "probe_unreachable",
+    "timeout",
+    "unavailable",
+}
+PUBLIC_OPERATION_FAILURES = {
+    "install": (INSTALL_EXIT_INSTALL, "install", "operation_failed"),
+    "upgrade": (INSTALL_EXIT_INSTALL, "install", "operation_failed"),
+    "uninstall": (INSTALL_EXIT_INSTALL, "uninstall", "operation_failed"),
+    "status": (INSTALL_EXIT_PREFLIGHT, "preflight", "status_failed"),
+    "verify": (INSTALL_EXIT_VERIFY, "verify", "verification_failed"),
+}
 
 
 class LifecycleError(RuntimeError):
@@ -358,11 +379,52 @@ def _probe_target(python: Path) -> Dict[str, Any]:
     return value
 
 
-def _probe_target_optional(python: Path) -> Optional[Dict[str, Any]]:
+def _probe_compatibility(ctx: InstallContext) -> Dict[str, Any]:
+    code = (
+        "import json,sys;"
+        "core_version=None;"
+        "exec(\"try:\\n import dcc_mcp_core\\n core_version=getattr(dcc_mcp_core,'__version__','unknown')"
+        '\\nexcept ImportError:\\n pass");'
+        "print(json.dumps({'python_version':sys.version.split()[0],'core_version':core_version}))"
+    )
     try:
-        return _probe_target(python)
-    except LifecycleError:
-        return None
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", code],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=30,
+        )
+        value = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "compatibility_probe_failed")
+    if not isinstance(value, dict):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "compatibility_probe_failed")
+    value["host_version"] = ctx.host_version
+    return value
+
+
+def _validate_compatibility(compatibility: Dict[str, Any]) -> None:
+    if _version_tuple(str(compatibility.get("python_version", "0"))) < (3, 7, 0):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "python_version_unsupported")
+    host_version = str(compatibility.get("host_version") or "unknown")
+    if not host_version.isdigit() or int(host_version) < 2017:
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "host_version_unsupported")
+    core_version = compatibility.get("core_version")
+    if core_version in (None, "", "unavailable"):
+        return
+    parsed_core = _version_tuple(str(core_version))
+    if parsed_core < _version_tuple(MIN_CORE_VERSION):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_too_old")
+    if parsed_core >= (1, 0, 0):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_unsupported")
+
+
+def _preflight_compatibility(ctx: InstallContext) -> Dict[str, Any]:
+    compatibility = _probe_compatibility(ctx)
+    _validate_compatibility(compatibility)
+    return compatibility
 
 
 def _install_package(ctx: InstallContext, source: str) -> bool:
@@ -400,27 +462,200 @@ def _uninstall_package(ctx: InstallContext) -> None:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "package_uninstall_failed")
 
 
-def _rollback_package(ctx: InstallContext, prior: Optional[Dict[str, Any]]) -> None:
+def _normalized_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def _frozen_requirement_name(requirement: str) -> Optional[str]:
+    match = re.match(r"^([A-Za-z0-9_.-]+)(?:==|\s*@\s*)", requirement)
+    if match:
+        return _normalized_distribution_name(match.group(1))
+    editable = re.match(r"^-e\s+.+[#&]egg=([A-Za-z0-9_.-]+)(?:&.*)?$", requirement)
+    if editable:
+        return _normalized_distribution_name(editable.group(1))
+    return None
+
+
+def _package_state_from_lines(lines: Sequence[str]) -> Dict[str, Any]:
+    requirements: List[str] = []
+    by_name: Dict[str, str] = {}
+    fingerprints: Dict[str, str] = {}
+    for raw_line in lines:
+        requirement = str(raw_line).strip()
+        if not requirement or requirement.startswith("#"):
+            continue
+        name = _frozen_requirement_name(requirement)
+        if name is None or name in by_name:
+            raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+        requirements.append(requirement)
+        by_name[name] = requirement
+        fingerprints[name] = hashlib.sha256(requirement.encode("utf-8")).hexdigest()
+    requirements.sort()
+    canonical = "\n".join(requirements).encode("utf-8")
+    return {
+        "requirements": tuple(requirements),
+        "by_name": by_name,
+        "fingerprints": fingerprints,
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def _snapshot_package_state(ctx: InstallContext) -> Dict[str, Any]:
+    code = (
+        "import hashlib,json,os,sys\n"
+        "try:\n from importlib import metadata\n"
+        "except ImportError:\n"
+        " try:\n  import importlib_metadata as metadata\n"
+        " except ImportError:\n  metadata=None\n"
+        "items=[]\n"
+        "if metadata is not None:\n"
+        " for dist in metadata.distributions():\n"
+        "  name=dist.metadata.get('Name')\n"
+        "  version=dist.version\n"
+        "  if not name or not version:\n   raise RuntimeError('distribution identity unavailable')\n"
+        "  direct_text=dist.read_text('direct_url.json') or ''\n"
+        "  direct=json.loads(direct_text) if direct_text else {}\n"
+        "  url=direct.get('url') if isinstance(direct,dict) else None\n"
+        "  requirement=(str(name)+' @ '+str(url)) if url else (str(name)+'=='+str(version))\n"
+        "  record=dist.read_text('RECORD') or ''\n"
+        "  items.append({'name':str(name),'version':str(version),'requirement':requirement,"
+        "'direct_url':direct,'metadata_location':os.path.abspath(str(getattr(dist,'_path',''))),"
+        "'record_sha256':hashlib.sha256(record.encode('utf-8')).hexdigest()})\n"
+        "else:\n"
+        " from email.parser import Parser\n"
+        " seen_paths=set()\n"
+        " for root in sys.path:\n"
+        "  if not root or not os.path.isdir(root):\n   continue\n"
+        "  root=os.path.abspath(root)\n"
+        "  if root in seen_paths:\n   continue\n"
+        "  seen_paths.add(root)\n"
+        "  for entry in os.listdir(root):\n"
+        "   lower=entry.lower()\n"
+        "   if not (lower.endswith('.dist-info') or lower.endswith('.egg-info')):\n    continue\n"
+        "   location=os.path.join(root,entry)\n"
+        "   if os.path.isdir(location):\n"
+        "    metadata_path=os.path.join(location,'METADATA' if lower.endswith('.dist-info') else 'PKG-INFO')\n"
+        "   else:\n    metadata_path=location\n"
+        "   if not os.path.isfile(metadata_path):\n    raise RuntimeError('distribution metadata unavailable')\n"
+        "   with open(metadata_path,'r',encoding='utf-8',errors='replace') as stream:\n"
+        "    parsed=Parser().parsestr(stream.read())\n"
+        "   name=parsed.get('Name')\n"
+        "   version=parsed.get('Version')\n"
+        "   if not name or not version:\n    raise RuntimeError('distribution identity unavailable')\n"
+        "   direct_path=os.path.join(location,'direct_url.json')\n"
+        "   if os.path.isfile(direct_path):\n"
+        "    with open(direct_path,'r',encoding='utf-8') as stream:\n     direct=json.load(stream)\n"
+        "   else:\n    direct={}\n"
+        "   url=direct.get('url') if isinstance(direct,dict) else None\n"
+        "   requirement=(str(name)+' @ '+str(url)) if url else (str(name)+'=='+str(version))\n"
+        "   record_path=os.path.join(location,'RECORD')\n"
+        "   if os.path.isfile(record_path):\n"
+        "    with open(record_path,'r',encoding='utf-8',errors='replace') as stream:\n     record=stream.read()\n"
+        "   else:\n    record=''\n"
+        "   items.append({'name':str(name),'version':str(version),'requirement':requirement,"
+        "'direct_url':direct,'metadata_location':os.path.abspath(location),"
+        "'record_sha256':hashlib.sha256(record.encode('utf-8')).hexdigest()})\n"
+        "print(json.dumps(items,sort_keys=True,separators=(',',':')))\n"
+    )
     try:
-        if prior and prior.get("adapter_version"):
-            requirement = "dcc-mcp-3dsmax==%s" % prior["adapter_version"]
-            subprocess.run(
-                [str(ctx.python_path), "-m", "pip", "install", requirement],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=300,
-            )
-        else:
-            subprocess.run(
-                [str(ctx.python_path), "-m", "pip", "uninstall", "-y", "dcc-mcp-3dsmax"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=300,
-            )
-    except (OSError, subprocess.SubprocessError):
-        pass
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", code],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=60,
+        )
+        records = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+    if len(completed.stdout.encode("utf-8")) > 1024 * 1024 or not isinstance(records, list):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+    requirements: List[str] = []
+    by_name: Dict[str, str] = {}
+    fingerprints: Dict[str, str] = {}
+    canonical_records: List[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+        name_value = record.get("name")
+        requirement = record.get("requirement")
+        if not isinstance(name_value, str) or not isinstance(requirement, str):
+            raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+        name = _normalized_distribution_name(name_value)
+        if not name or name in by_name:
+            raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
+        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        requirements.append(requirement)
+        by_name[name] = requirement
+        fingerprints[name] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        canonical_records.append(canonical)
+    requirements.sort()
+    canonical_records.sort()
+    return {
+        "requirements": tuple(requirements),
+        "by_name": by_name,
+        "fingerprints": fingerprints,
+        "sha256": hashlib.sha256("\n".join(canonical_records).encode("utf-8")).hexdigest(),
+    }
+
+
+def _run_pip_command(ctx: InstallContext, command: Sequence[str]) -> None:
+    subprocess.run(
+        [str(ctx.python_path), "-m", "pip"] + list(command),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=300,
+    )
+
+
+def _restore_package_state(ctx: InstallContext, prior: Dict[str, Any]) -> None:
+    try:
+        current = _snapshot_package_state(ctx)
+        prior_by_name = prior["by_name"]
+        current_by_name = current["by_name"]
+        prior_fingerprints = prior["fingerprints"]
+        current_fingerprints = current["fingerprints"]
+        remove = sorted(name for name in current_by_name if name not in prior_by_name)
+        restore = sorted(
+            requirement
+            for name, requirement in prior_by_name.items()
+            if current_fingerprints.get(name) != prior_fingerprints.get(name)
+        )
+        if remove:
+            _run_pip_command(ctx, ["uninstall", "-y"] + remove)
+        if restore:
+            _run_pip_command(ctx, ["install", "--no-deps", "--force-reinstall"] + restore)
+        if remove or restore:
+            restored = _snapshot_package_state(ctx)
+            if restored.get("sha256") != prior.get("sha256"):
+                raise RuntimeError("package state mismatch")
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+
+
+def _rollback_package(ctx: InstallContext, prior: Dict[str, Any]) -> None:
+    _restore_package_state(ctx, prior)
+
+
+def _rollback_transaction(
+    ctx: InstallContext,
+    prior_package_state: Dict[str, Any],
+    hook_before: Optional[bytes],
+    receipt_before: Optional[bytes],
+    restore_files: bool,
+) -> None:
+    file_restore_failed = False
+    if restore_files:
+        try:
+            _restore(ctx.hook_path, hook_before)
+            _restore(ctx.receipt_path, receipt_before)
+        except Exception:
+            file_restore_failed = True
+    _restore_package_state(ctx, prior_package_state)
+    if file_restore_failed:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "transaction_rollback_incomplete")
 
 
 def _replace_file(source: Path, destination: Path) -> None:
@@ -485,27 +720,26 @@ def _is_windows_lock(exc: OSError) -> bool:
 
 
 def _install_transaction(ctx: InstallContext, source: str) -> None:
+    _preflight_compatibility(ctx)
     prior_receipt = _read_receipt(ctx.receipt_path)
-    prior_target = _probe_target_optional(ctx.python_path)
+    prior_package_state = _snapshot_package_state(ctx)
     hook_before = _snapshot(ctx.hook_path)
     receipt_before = _snapshot(ctx.receipt_path)
-    package_changed = bool(_install_package(ctx, source))
+    token = uuid.uuid4().hex
+    hook_stage = ctx.hook_path.with_name(".%s.stage-%s" % (ctx.hook_path.name, token))
+    receipt_stage = ctx.receipt_path.with_name(".%s.stage-%s" % (ctx.receipt_path.name, token))
+    package_attempted = False
+    files_changed = False
     try:
+        package_attempted = True
+        _install_package(ctx, source)
         target = _probe_target(ctx.python_path)
         if target.get("adapter_version") != ADAPTER_VERSION:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "adapter_version_mismatch")
         if _version_tuple(str(target.get("core_version", "0"))) < _version_tuple(MIN_CORE_VERSION):
             raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_too_old")
-    except LifecycleError:
-        if package_changed:
-            _rollback_package(ctx, prior_target)
-        raise
-    ctx.startup_dir.mkdir(parents=True, exist_ok=True)
-    ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex
-    hook_stage = ctx.hook_path.with_name(".%s.stage-%s" % (ctx.hook_path.name, token))
-    receipt_stage = ctx.receipt_path.with_name(".%s.stage-%s" % (ctx.receipt_path.name, token))
-    try:
+        ctx.startup_dir.mkdir(parents=True, exist_ok=True)
+        ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
         hook_stage.write_text(
             render_startup_script(ctx.receipt_path.parent / "bootstrap-errors"),
             encoding="utf-8",
@@ -515,14 +749,21 @@ def _install_transaction(ctx: InstallContext, source: str) -> None:
             encoding="utf-8",
         )
         _replace_file(hook_stage, ctx.hook_path)
+        files_changed = True
         _replace_file(receipt_stage, ctx.receipt_path)
+    except LifecycleError:
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+        raise
     except OSError as exc:
-        _restore(ctx.hook_path, hook_before)
-        _restore(ctx.receipt_path, receipt_before)
-        if package_changed:
-            _rollback_package(ctx, prior_target)
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
         if _is_windows_lock(exc):
             raise LifecycleError(INSTALL_EXIT_REQUIRES_RESTART, "install", "windows_file_lock")
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "install", "commit_failed")
+    except Exception:
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
         raise LifecycleError(INSTALL_EXIT_INSTALL, "install", "commit_failed")
     finally:
         for stage in (hook_stage, receipt_stage):
@@ -544,6 +785,39 @@ def _wait_readiness(timeout: float) -> Dict[str, Any]:
     )
 
 
+def _readiness_verdict(timeout: float) -> Tuple[bool, str]:
+    """Return only bounded, public readiness identities from Core's result."""
+    try:
+        readiness = _wait_readiness(timeout)
+        if not isinstance(readiness, dict):
+            return False, "invalid_readiness_status"
+        status = readiness.get("status")
+        success = readiness.get("success")
+    except Exception:
+        return False, "readiness_probe_failed"
+    if not isinstance(status, str):
+        return False, "invalid_readiness_status"
+    if success is True and status == "ready":
+        return True, "ready"
+    if success is False and status in READINESS_FAILURE_REASONS:
+        return False, status
+    return False, "invalid_readiness_status"
+
+
+def _bootstrap_error_state(receipt: Dict[str, Any]) -> Optional[str]:
+    """Inspect bounded host-error receipts without exposing operator paths."""
+    try:
+        error_dir = Path(str(receipt.get("bootstrap_error_dir", "")))
+        installed_at = float(receipt.get("installed_at_epoch", 0.0))
+        if error_dir.is_dir():
+            for error_log in error_dir.glob("*.host-errors.log"):
+                if error_log.stat().st_mtime >= installed_at:
+                    return "bootstrap_error"
+    except Exception:
+        return "bootstrap_log_unavailable"
+    return None
+
+
 def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     state, stage, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
     if state not in {"current", "upgrade"}:
@@ -558,19 +832,16 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
         return {"directly_usable": False, "failure_stage": "import", "failure_reason": "adapter_version_mismatch"}, []
     if _version_tuple(str(target.get("core_version", "0"))) < _version_tuple(MIN_CORE_VERSION):
         return {"directly_usable": False, "failure_stage": "preflight", "failure_reason": "core_version_too_old"}, []
-    error_dir = Path(str(receipt.get("bootstrap_error_dir", "")))
-    installed_at = float(receipt.get("installed_at_epoch", 0.0))
-    if error_dir.is_dir():
-        for error_log in error_dir.glob("*.host-errors.log"):
-            if error_log.stat().st_mtime >= installed_at:
-                return {"directly_usable": False, "failure_stage": "startup", "failure_reason": "bootstrap_error"}, []
-    readiness = _wait_readiness(timeout)
-    if not readiness.get("success"):
+    bootstrap_reason = _bootstrap_error_state(receipt)
+    if bootstrap_reason:
+        return {"directly_usable": False, "failure_stage": "startup", "failure_reason": bootstrap_reason}, []
+    ready, readiness_reason = _readiness_verdict(timeout)
+    if not ready:
         return (
             {
                 "directly_usable": False,
                 "failure_stage": "readiness",
-                "failure_reason": str(readiness.get("status") or "not_ready"),
+                "failure_reason": readiness_reason,
             },
             [_next_command(ctx, "verify", "restart_3dsmax", "Restart 3ds Max, then verify typed sidecar readiness.")],
         )
@@ -665,20 +936,31 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
     if state == "partial":
         return INSTALL_EXIT_INSTALL, _failure_report(ctx, "uninstall", "receipt", reason or "receipt_ownership_invalid")
     previous = _decode_previous_hook(receipt)
+    _preflight_compatibility(ctx)
+    prior_package_state = _snapshot_package_state(ctx)
     hook_before = _snapshot(ctx.hook_path)
     receipt_before = _snapshot(ctx.receipt_path)
+    package_attempted = False
+    files_changed = False
     try:
+        package_attempted = True
         _uninstall_package(ctx)
+        files_changed = True
         _restore(ctx.hook_path, previous)
         ctx.receipt_path.unlink()
     except LifecycleError:
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
         raise
     except OSError as exc:
-        _restore(ctx.hook_path, hook_before)
-        _restore(ctx.receipt_path, receipt_before)
-        _rollback_package(ctx, {"adapter_version": receipt.get("adapter_version")})
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
         if _is_windows_lock(exc):
             raise LifecycleError(INSTALL_EXIT_REQUIRES_RESTART, "uninstall", "windows_file_lock")
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "commit_failed")
+    except Exception:
+        if package_attempted:
+            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "commit_failed")
     report = _base_report(ctx, "ok", "uninstall")
     report["receipt_path"] = None
@@ -755,6 +1037,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 _next_command(ctx, "verify", "restart_3dsmax", "Restart 3ds Max before retrying verification.")
             ]
         exit_code = exc.exit_code
+    except Exception:
+        ctx = locals().get("ctx") or _fallback_context(args)
+        exit_code, stage, reason = PUBLIC_OPERATION_FAILURES[args.command]
+        report = _failure_report(ctx, args.command, stage, reason)
     _emit(report, args.json)
     return exit_code
 

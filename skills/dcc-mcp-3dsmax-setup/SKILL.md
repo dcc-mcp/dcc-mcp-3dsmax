@@ -76,7 +76,10 @@ The standard CLI:
    bytes when commit fails;
 4. fails closed on unreceipted or modified state;
 5. captures startup failures before MCP exists and performs bounded typed
-   readiness verification.
+   readiness verification;
+6. checks host, target Python, and installed Core compatibility before any
+   mutation, and verifies exact package provenance plus dependency state after
+   rollback instead of assuming that a matching version means recovery.
 
 For checkout development only, the legacy setup helper can still generate MCP
 configuration and a smoke prompt. It is not the receipt-owning public CLI:
@@ -156,6 +159,9 @@ Expected behavior:
 - `3dsmaxpy` not found: ask for the exact 3ds Max version and the full
   `3dsmaxpy.exe` path (e.g. `C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe`).
 - Pip bootstrap fails: run `3dsmaxpy -m ensurepip --upgrade`, then repeat install.
+- `package_rollback_incomplete`: stop, preserve the JSON report, and restore the
+  target interpreter from a trusted exact artifact or environment lock before
+  running status and verify again.
 - MCP connection refused: 3ds Max is not running, the runtime is not started, or
   the host is not pointing at the gateway URL `http://127.0.0.1:9765/mcp`.
 - Tool missing: call `dcc_capability_manifest` or `search_skills`, then

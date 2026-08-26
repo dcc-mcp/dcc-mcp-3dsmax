@@ -118,10 +118,14 @@ dcc-mcp-3dsmax upgrade --json --dry-run --dcc-path "C:\Program Files\Autodesk\3d
 dcc-mcp-3dsmax upgrade --json --yes --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-The hook and receipt are staged before commit. If commit fails, their previous
-bytes are restored and the package rollback is attempted. A Windows file lock
-returns exit 50 with a restart-and-verify next step instead of deleting the
-live installation.
+The selected host, target Python, and any already-installed Core are checked
+before pip, hook, or receipt mutation. The hook and receipt are staged before
+commit. Before pip runs, the CLI records the exact frozen package provenance
+and dependency state. If commit fails, it restores the previous files and
+reconciles that complete package snapshot, then verifies its digest. A rollback
+that cannot be proven exact returns `package_rollback_incomplete`; it is never
+reported as a successful recovery. A Windows file lock returns exit 50 with a
+restart-and-verify next step instead of deleting the live installation.
 
 ## Uninstall
 
@@ -153,6 +157,13 @@ Pass the exact `--dcc-path`, `--python`, and, for a custom profile,
 Upgrade `dcc-mcp-3dsmax` in the selected target interpreter. Do not claim the
 host is usable until verification sees Core 0.20.20 or newer.
 
+### `package_rollback_incomplete` or `transaction_rollback_incomplete`
+
+Stop further lifecycle mutations and preserve the one-object JSON report. The
+previous package provenance, dependency set, hook, or receipt could not be
+verified after recovery. Repair the selected interpreter from a trusted exact
+artifact or environment lock, then run `status --json` and `verify --json`.
+
 ### `receipt_missing`, `receipt_invalid`, or `startup_hook_missing_or_modified`
 
 Do not delete files manually. Run `status --json`, preserve the report, and
@@ -165,7 +176,7 @@ Close every 3ds Max process using the payload, restart 3ds Max if the report
 requests it, and run the emitted verify command. Do not delete loaded native
 files or the receipt by hand.
 
-### `bootstrap_error` or readiness timeout
+### `bootstrap_error`, `bootstrap_log_unavailable`, or readiness failure
 
 Inspect the bounded bootstrap-error directory named in the receipt and the
 gateway/sidecar diagnostics. Confirm the host is open and the startup hook ran.
