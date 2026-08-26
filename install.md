@@ -1,97 +1,173 @@
-# dcc-mcp-3dsmax Agent Install
+# Install dcc-mcp-3dsmax
 
-Use this page when an agent is asked to install or configure
-`dcc-mcp/dcc-mcp-3dsmax` for Autodesk 3ds Max.
+This is the authoritative install runbook for the 3ds Max adapter. The
+agent-first CLI emits the shared DCC-MCP Install SOP v1 report and owns only
+the adapter package, startup hook, and receipt. It does not change the shared
+Core catalog.
 
-3ds Max is Windows-only, so all paths and discovery below assume Windows.
+## Requirements
 
-## Agent Instruction
+- **Platform:** Windows only. macOS and Linux are not supported because
+  Autodesk 3ds Max is Windows-only.
+- Autodesk 3ds Max 2017 or later with Python 3 and `pymxs`.
+- The target `3dsmaxpy.exe` or embedded `Python\python.exe`.
+- `dcc-mcp-core>=0.20.20` and `dcc-mcp-server>=0.20.20`. The lifecycle CLI
+  installs these through the adapter dependency set and verifies the Core
+  version in the target interpreter before reporting success.
+- Permission to write the user's 3ds Max `userStartupScripts` directory.
 
-If the user asks an agent to install `dcc-mcp/dcc-mcp-3dsmax`, do this:
+Installing files is not proof that 3ds Max tools are callable. A directly
+usable result requires a running host and a typed sidecar readiness probe.
 
-1. Clone or locate the repository and resolve its absolute path as `REPO_ROOT`.
-2. Read `<REPO_ROOT>\install.md` and
-   `<REPO_ROOT>\skills\dcc-mcp-3dsmax-setup\SKILL.md`.
-3. Run the setup script from `REPO_ROOT`.
-4. Install or verify the generated 3ds Max startup hook.
-5. Configure the MCP host with the generated Streamable HTTP JSON.
-6. Ask the user to open or restart 3ds Max, then run the smoke prompt to prove
-   the connection works.
+## Supported versions
 
-## One Command
+| 3ds Max | Embedded Python | Support |
+| --- | --- | --- |
+| 2022 | 3.7 | Supported through the Python 3.7 compatibility payload |
+| 2023-2026 | 3.9+ | Supported |
+| 2017-2021 | Python 3 with `pymxs` | Best effort; verify on the target host |
 
-From the absolute repository root (`REPO_ROOT`):
+The repository tests lifecycle behavior without launching 3ds Max. A real
+host is still required for final readiness and scene-tool validation.
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py
+## Agent quick path
+
+Install the public package in the environment used to run the lifecycle CLI:
+
+```powershell
+python -m pip install --upgrade dcc-mcp-3dsmax
 ```
 
-For an end-user install from PyPI instead of this checkout:
+Then run the standard lifecycle command with explicit host and interpreter
+paths. `--json` writes exactly one Install SOP v1 object to stdout.
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --source pypi
+```powershell
+dcc-mcp-3dsmax install --json --yes `
+  --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" `
+  --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-If `3dsmaxpy.exe` is not auto-detected:
+Use `--dry-run` first when the target is unfamiliar. It validates discovery
+and emits executable `next_steps[]` without installing a package, hook, or
+receipt.
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --maxpy "C:\Program Files\Autodesk\3ds Max 2025\3dsmaxpy.exe"
+```powershell
+dcc-mcp-3dsmax install --json --dry-run `
+  --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" `
+  --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-The script installs `dcc_mcp_3dsmax_startup.ms` into 3ds Max's
-`userStartupScripts` directory when it can resolve that path. If your studio
-uses a custom profile location, pass it explicitly:
+The standard exit codes are:
 
-```bash
-python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --startup-dir "C:\Users\<you>\AppData\Local\Autodesk\3dsMax\2025 - 64bit\ENU\scripts\startup"
+| Code | Meaning |
+| ---: | --- |
+| 0 | Completed or planned successfully |
+| 10 | Preflight or ownership failure |
+| 20 | Package acquisition failure |
+| 30 | Transactional install or uninstall failure |
+| 40 | Verification did not reach usable |
+| 50 | Restart is required before retrying verification |
+
+The CLI accepts `install`, `status`, `verify`, `uninstall`, and `upgrade`, plus
+the common `--json`, `--yes`, `--dry-run`, `--dcc-path`, and `--python` flags.
+Use `--startup-dir` only for a non-standard profile and `--receipt-path` only
+for an explicitly managed receipt location.
+
+## Manual path
+
+The release MZP remains the 3ds Max drag-and-drop path. Download the immutable
+`dcc-mcp-3dsmax-<version>-win64.mzp` release asset and drag it into the 3ds Max
+viewport. The installer stages a versioned payload, changes `current.txt` only
+after staging succeeds, installs the startup hook, and defers locked cleanup
+until restart.
+
+The MZP and lifecycle CLI are separate ownership domains. Do not use a CLI
+receipt to remove an MZP payload. For repository development only, the legacy
+setup helper remains available:
+
+```powershell
+python skills/dcc-mcp-3dsmax-setup/scripts/setup_dcc_mcp_3dsmax.py --source local
 ```
 
-## 3ds Max Load Step
+## Verify
 
-After the script finishes, open or restart 3ds Max. The installed startup hook
-starts the runtime automatically and installs the `DCC MCP` menu.
+After installation, close and reopen 3ds Max so the startup hook can run, then
+verify from a shell:
 
-If startup hook installation was skipped or the startup directory could not be
-resolved, run the generated startup script from the MAXScript Listener:
-
-```maxscript
-python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\.dcc-mcp\agent-setup\dcc_mcp_3dsmax_startup.ms"
+```powershell
+dcc-mcp-3dsmax status --json --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
+dcc-mcp-3dsmax verify --json --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-Once the runtime has started once, the installed menu can restart it:
+Verification checks receipt ownership and digests, imports the exact adapter
+and Core versions in the selected interpreter, checks bootstrap-error records,
+and waits for the typed `3dsmax_diagnostics__ping` sidecar probe. Only
+`verify.directly_usable=true` proves the runtime is callable. A copied hook or
+a live process alone is insufficient.
 
-```text
-DCC MCP > Start Server
+No automated test in this repository claims to have opened a real 3ds Max
+instance. Run the generated smoke prompt only after the operator starts the
+licensed host.
+
+## Upgrade
+
+Plan and apply upgrades through the same receipt-owned transaction:
+
+```powershell
+dcc-mcp-3dsmax upgrade --json --dry-run --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
+dcc-mcp-3dsmax upgrade --json --yes --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-The runtime registers the 3ds Max instance with the stable gateway. Both the
-startup script and the menu call `dcc_mcp_3dsmax.main()`.
+The hook and receipt are staged before commit. If commit fails, their previous
+bytes are restored and the package rollback is attempted. A Windows file lock
+returns exit 50 with a restart-and-verify next step instead of deleting the
+live installation.
 
-The shared gateway exposes MCP at:
+## Uninstall
 
-```text
-http://127.0.0.1:9765/mcp
+Preview and then consume the owned receipt:
+
+```powershell
+dcc-mcp-3dsmax uninstall --json --dry-run --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
+dcc-mcp-3dsmax uninstall --json --yes --dcc-path "C:\Program Files\Autodesk\3ds Max 2025" --python "C:\Program Files\Autodesk\3ds Max 2025\Python\python.exe"
 ```
 
-Each 3ds Max instance also listens on its own random localhost port. Connect
-MCP hosts to the gateway URL; the direct per-instance port is ephemeral.
+Uninstall verifies the recorded path and digest, restores any startup hook
+that existed before the first receipted install, removes the target package,
+and consumes the receipt. It is idempotent when both the receipt and owned hook
+are absent. It refuses to delete an unreceipted or modified hook.
 
-## MCP Config
+Use the MZP dialog's Uninstall action for MZP-owned payloads. Its existing
+out-of-tree uninstall marker completes locked cleanup on the next 3ds Max
+startup.
 
-Use this JSON for Cursor, Claude Desktop, or any MCP Streamable HTTP host:
+## Troubleshooting
 
-```json
-{
-  "mcpServers": {
-    "3dsmax": {
-      "url": "http://127.0.0.1:9765/mcp"
-    }
-  }
-}
-```
+### `host_not_found`, `python_not_found`, or `startup_dir_not_found`
 
-The setup script also writes a config snippet and a smoke prompt under:
+Pass the exact `--dcc-path`, `--python`, and, for a custom profile,
+`--startup-dir`. The selected paths are recorded in the plan and receipt.
 
-```text
-.dcc-mcp/agent-setup/
-```
+### `core_version_too_old`
+
+Upgrade `dcc-mcp-3dsmax` in the selected target interpreter. Do not claim the
+host is usable until verification sees Core 0.20.20 or newer.
+
+### `receipt_missing`, `receipt_invalid`, or `startup_hook_missing_or_modified`
+
+Do not delete files manually. Run `status --json`, preserve the report, and
+use a receipted repair. Uninstall intentionally fails closed when ownership is
+ambiguous.
+
+### `windows_file_lock`
+
+Close every 3ds Max process using the payload, restart 3ds Max if the report
+requests it, and run the emitted verify command. Do not delete loaded native
+files or the receipt by hand.
+
+### `bootstrap_error` or readiness timeout
+
+Inspect the bounded bootstrap-error directory named in the receipt and the
+gateway/sidecar diagnostics. Confirm the host is open and the startup hook ran.
+The public MCP URL remains `http://127.0.0.1:9765/mcp`; the per-instance port
+is intentionally ephemeral.

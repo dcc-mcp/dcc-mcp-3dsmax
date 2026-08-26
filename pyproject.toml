@@ -27,9 +27,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core/server 0.20.11 own gateway feedback registration and sidecar forwarding.
-    "dcc-mcp-core>=0.20.11,<1.0.0",
-    "dcc-mcp-server>=0.20.11,<1.0.0",
+    # Core 0.20.20 publishes Install SOP v1 and bounded readiness contracts.
+    "dcc-mcp-core>=0.20.20,<1.0.0",
+    "dcc-mcp-server>=0.20.20,<1.0.0",
+    "jsonschema>=4.17,<5",
 ]
 
 [project.optional-dependencies]
@@ -55,6 +56,9 @@ Changelog = "https://github.com/dcc-mcp/dcc-mcp-3dsmax/releases"
 
 [project.entry-points."dcc_mcp.adapters"]
 3dsmax = "dcc_mcp_3dsmax:MaxMcpServer"
+
+[project.scripts]
+dcc-mcp-3dsmax = "dcc_mcp_3dsmax.install_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dcc_mcp_3dsmax"]

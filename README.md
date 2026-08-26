@@ -62,22 +62,21 @@ path as REPO_ROOT. Then read these absolute-path files before making changes:
 - <REPO_ROOT>\install.md
 - <REPO_ROOT>\skills\dcc-mcp-3dsmax-setup\SKILL.md
 
-Follow the setup skill exactly:
+Follow the Install SOP v1 lifecycle exactly:
 
 1. Locate my 3dsmaxpy.exe. If it cannot be found, ask me for the absolute path.
-2. Install dcc-mcp-3dsmax and dependencies. Prefer PyPI for end-user installs;
-   use the local checkout only when I am already working from REPO_ROOT.
-3. Install the 3ds Max startup hook so opening or restarting 3ds Max starts
-   the runtime automatically.
-4. Generate MCP Streamable HTTP config pointing to http://127.0.0.1:9765/mcp.
-5. Ask me to open or restart 3ds Max, then run the generated smoke prompt to
-   prove the agent can discover and call typed 3ds Max tools.
+2. Run `dcc-mcp-3dsmax install --json --dry-run` with explicit `--dcc-path`
+   and `--python`, inspect the machine-readable plan, then rerun with `--yes`.
+3. Preserve the receipt and follow any restart next step.
+4. Run `dcc-mcp-3dsmax verify --json`; only
+   `verify.directly_usable=true` proves typed tools are callable.
+5. Configure the MCP host for http://127.0.0.1:9765/mcp only after verification.
 ```
 
-The agent reads [`install.md`](install.md), runs the setup script against your
-3ds Max `3dsmaxpy.exe`, installs a startup hook, generates the MCP host config,
-asks you to open or restart 3ds Max, and runs a live smoke prompt to confirm
-the connection.
+The agent reads [`install.md`](install.md), uses the standard lifecycle verbs,
+and preserves the structured receipt. The drag-and-drop MZP remains documented
+as the manual release-artifact path. Repository CI is hermetic and does not
+claim that a licensed 3ds Max host was opened.
 
 ## Installation
 
@@ -110,7 +109,7 @@ python.ExecuteFile @"C:\path\to\dcc-mcp-3dsmax\examples\start_sidecar_bridge.py"
 
 This starts the agent-callable embedded MCP runtime, registers bundled 3ds Max
 skills/tools, and routes main-affinity scene edits through the shared
-`dcc-mcp-core` 0.20.11 UI dispatcher, dcc-cua 0.4 UI Control, pump abstractions,
+`dcc-mcp-core` 0.20.20 UI dispatcher, dcc-cua 0.4 UI Control, pump abstractions,
 gateway guardian, dynamic instance ports, and six-state
 readiness probe (process, dispatcher, dcc, skill_catalog, host_execution_bridge,
 main_thread_executor). The legacy
@@ -185,8 +184,8 @@ of disappearing into a generic `PermissionError`.
 
 - 3ds Max 2017 or later (Python 3.x with pymxs support)
 - Python >= 3.7
-- dcc-mcp-core >= 0.20.11
-- dcc-mcp-server >= 0.20.11
+- dcc-mcp-core >= 0.20.20
+- dcc-mcp-server >= 0.20.20
 
 ## License
 
