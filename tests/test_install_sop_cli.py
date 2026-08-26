@@ -17,8 +17,8 @@ def _install_cli():
     return importlib.import_module("dcc_mcp_3dsmax.install_cli")
 
 
-def _layout(tmp_path: Path):
-    host_root = tmp_path / "Autodesk" / "3ds Max 2025"
+def _layout(tmp_path: Path, year: str = "2025"):
+    host_root = tmp_path / "Autodesk" / ("3ds Max %s" % year)
     host_root.mkdir(parents=True)
     (host_root / "3dsmax.exe").write_bytes(b"")
     target_python = host_root / "Python" / "python.exe"
@@ -119,6 +119,11 @@ def test_dry_run_does_not_write_a_hook_receipt_or_install_package(tmp_path, caps
     cli = _install_cli()
     layout = _layout(tmp_path)
     package_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_probe_compatibility",
+        lambda _ctx: {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"},
+    )
     monkeypatch.setattr(cli, "_install_package", lambda *_args: package_calls.append(_args))
 
     exit_code = cli.main(_args(layout, "install", "--dry-run"))
@@ -130,6 +135,141 @@ def test_dry_run_does_not_write_a_hook_receipt_or_install_package(tmp_path, caps
     assert package_calls == []
     assert not layout["startup"].exists()
     assert not layout["receipt"].exists()
+
+
+@pytest.mark.parametrize(
+    ("compatibility", "expected_reason"),
+    [
+        (
+            {"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"},
+            "python_version_unsupported",
+        ),
+        (
+            {"python_version": "3.11.9", "core_version": "0.20.19", "host_version": "2025"},
+            "core_version_too_old",
+        ),
+    ],
+)
+def test_dry_run_reports_read_only_compatibility_failures_without_mutation(
+    tmp_path, capsys, monkeypatch, compatibility, expected_reason
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    mutations = []
+    monkeypatch.setattr(cli, "_probe_compatibility", lambda _ctx: compatibility)
+    monkeypatch.setattr(cli, "_install_package", lambda *_args: mutations.append("package"))
+    monkeypatch.setattr(cli, "_replace_file", lambda *_args: mutations.append("file"))
+
+    exit_code = cli.main(_args(layout, "install", "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["status"] == "failed"
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "preflight",
+        "failure_reason": expected_reason,
+    }
+    assert mutations == []
+    assert not layout["startup"].exists()
+    assert not layout["receipt"].exists()
+
+
+def test_dry_run_rejects_an_unexecutable_interpreter_without_mutation(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    mutations = []
+    monkeypatch.setattr(cli, "_install_package", lambda *_args: mutations.append("package"))
+    monkeypatch.setattr(cli, "_replace_file", lambda *_args: mutations.append("file"))
+
+    exit_code = cli.main(_args(layout, "install", "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "preflight",
+        "failure_reason": "compatibility_probe_failed",
+    }
+    assert mutations == []
+    assert not layout["startup"].exists()
+    assert not layout["receipt"].exists()
+
+
+def test_install_refuses_to_reuse_a_receipt_owned_by_another_target(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    first = _layout(tmp_path / "first", "2024")
+    second = _layout(tmp_path / "second", "2025")
+    second["receipt"] = first["receipt"]
+    _stub_target(monkeypatch, cli)
+    monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": False, "status": "missing"})
+    assert cli.main(_args(first, "install", "--yes")) == 50
+    _report(cli, capsys)
+    first_hook = first["startup"] / cli.STARTUP_SCRIPT_NAME
+    first_receipt_before = first["receipt"].read_bytes()
+    first_hook_before = first_hook.read_bytes()
+    second["startup"].mkdir(parents=True)
+    second_hook = second["startup"] / cli.STARTUP_SCRIPT_NAME
+    second_hook.write_bytes(b"preexisting 2025 hook")
+    package_calls = []
+    monkeypatch.setattr(cli, "_install_package", lambda *_args: package_calls.append("package"))
+
+    exit_code = cli.main(_args(second, "install", "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "receipt",
+        "failure_reason": "receipt_target_mismatch",
+    }
+    assert package_calls == []
+    assert first["receipt"].read_bytes() == first_receipt_before
+    assert first_hook.read_bytes() == first_hook_before
+    assert second_hook.read_bytes() == b"preexisting 2025 hook"
+
+    uninstall_exit = cli.main(_args(second, "uninstall", "--yes"))
+    uninstall_report = _report(cli, capsys)
+
+    assert uninstall_exit == 30
+    assert uninstall_report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "receipt",
+        "failure_reason": "receipt_target_mismatch",
+    }
+    assert package_calls == []
+    assert first["receipt"].read_bytes() == first_receipt_before
+    assert first_hook.read_bytes() == first_hook_before
+    assert second_hook.read_bytes() == b"preexisting 2025 hook"
+
+
+@pytest.mark.parametrize("verb", ["status", "verify"])
+@pytest.mark.parametrize("alias_kind", ["hardlink", "symlink"])
+def test_status_and_verify_reject_a_same_bytes_aliased_hook(tmp_path, capsys, monkeypatch, verb, alias_kind) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    foreign = tmp_path / "foreign-hook.ms"
+    if alias_kind == "hardlink":
+        os.link(str(hook), str(foreign))
+    else:
+        content = hook.read_bytes()
+        hook.unlink()
+        foreign.write_bytes(content)
+        os.symlink(str(foreign), str(hook))
+    monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
+
+    exit_code = cli.main(_args(layout, verb))
+    report = _report(cli, capsys)
+
+    assert exit_code == (10 if verb == "status" else 40)
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "artifact",
+        "failure_reason": "startup_hook_missing_or_modified",
+    }
+    assert os.path.samefile(str(hook), str(foreign))
 
 
 def test_install_receipt_verify_and_uninstall_round_trip(tmp_path, capsys, monkeypatch) -> None:

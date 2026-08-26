@@ -276,7 +276,11 @@ def _inspect_state(receipt_path: Path, hook_path: Path) -> Tuple[str, Optional[s
         return "partial", "receipt", "receipt_ownership_invalid"
     if recorded != hook_path.resolve():
         return "partial", "receipt", "receipt_target_mismatch"
-    if not hook_path.is_file() or _sha256(hook_path) != artifact.get("sha256"):
+    try:
+        hook_content, _ = _read_independent_file(hook_path)
+    except Exception:
+        return "partial", "artifact", "startup_hook_missing_or_modified"
+    if hashlib.sha256(hook_content).hexdigest() != artifact.get("sha256"):
         return "partial", "artifact", "startup_hook_missing_or_modified"
     if receipt.get("adapter_version") != ADAPTER_VERSION:
         return "upgrade", None, None
@@ -690,6 +694,30 @@ def _is_independent_regular_file(file_stat: os.stat_result) -> bool:
     return stat.S_ISREG(file_stat.st_mode) and file_stat.st_nlink == 1 and not reparse_point
 
 
+def _read_independent_file(path: Path) -> Tuple[bytes, Tuple[int, int]]:
+    if not os.path.lexists(str(path)):
+        raise FileNotFoundError(str(path))
+    before = os.lstat(str(path))
+    if not _is_independent_regular_file(before):
+        raise OSError("file is not independent")
+    identity = _file_identity(before)
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not _is_independent_regular_file(opened) or _file_identity(opened) != identity:
+            raise OSError("file identity changed before read")
+        content = stream.read()
+        after_read = os.fstat(stream.fileno())
+    after = os.lstat(str(path))
+    if (
+        not _is_independent_regular_file(after_read)
+        or not _is_independent_regular_file(after)
+        or _file_identity(after_read) != identity
+        or _file_identity(after) != identity
+    ):
+        raise OSError("file identity changed during read")
+    return content, identity
+
+
 def _absent_file_snapshot() -> FileSnapshot:
     return FileSnapshot(False, b"", hashlib.sha256(b"").hexdigest(), None, True)
 
@@ -708,24 +736,7 @@ def _snapshot(path: Path) -> FileSnapshot:
     if not os.path.lexists(str(path)):
         return _absent_file_snapshot()
     try:
-        before = os.lstat(str(path))
-        if not _is_independent_regular_file(before):
-            raise RuntimeError("file is not independent")
-        with path.open("rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if not _is_independent_regular_file(opened) or _file_identity(opened) != _file_identity(before):
-                raise RuntimeError("file identity changed before read")
-            content = stream.read()
-            after_read = os.fstat(stream.fileno())
-        after = os.lstat(str(path))
-        identity = _file_identity(before)
-        if (
-            not _is_independent_regular_file(after_read)
-            or not _is_independent_regular_file(after)
-            or _file_identity(after_read) != identity
-            or _file_identity(after) != identity
-        ):
-            raise RuntimeError("file identity changed during read")
+        content, identity = _read_independent_file(path)
     except Exception:
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "file_identity_ambiguous")
     return FileSnapshot(True, content, hashlib.sha256(content).hexdigest(), identity, True)
@@ -742,28 +753,14 @@ def _snapshot_matches(
     if not snapshot.independent or restored_identity is None or not os.path.lexists(str(path)):
         return False
     try:
-        before = os.lstat(str(path))
-        if not _is_independent_regular_file(before):
-            return False
-        with path.open("rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if not _is_independent_regular_file(opened) or _file_identity(opened) != _file_identity(before):
-                return False
-            actual = stream.read()
-            after_read = os.fstat(stream.fileno())
-        after = os.lstat(str(path))
-        identity = _file_identity(before)
-        if (
-            not _is_independent_regular_file(after_read)
-            or not _is_independent_regular_file(after)
-            or identity != restored_identity
-            or _file_identity(after_read) != identity
-            or _file_identity(after) != identity
-        ):
-            return False
+        actual, identity = _read_independent_file(path)
     except Exception:
         return False
-    return actual == snapshot.content and hashlib.sha256(actual).hexdigest() == snapshot.sha256
+    return (
+        identity == restored_identity
+        and actual == snapshot.content
+        and hashlib.sha256(actual).hexdigest() == snapshot.sha256
+    )
 
 
 def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
@@ -832,7 +829,6 @@ def _is_windows_lock(exc: OSError) -> bool:
 
 
 def _install_transaction(ctx: InstallContext, source: str) -> None:
-    _preflight_compatibility(ctx)
     prior_receipt = _read_receipt(ctx.receipt_path)
     prior_package_state = _snapshot_package_state(ctx)
     hook_before = _snapshot(ctx.hook_path)
@@ -961,6 +957,14 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
 
 
 def _run_install(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
+    if ctx.state == "partial" and ctx.receipt_path.is_file():
+        return INSTALL_EXIT_PREFLIGHT, _failure_report(
+            ctx,
+            args.command,
+            ctx.state_stage or "receipt",
+            ctx.state_reason or "receipt_ownership_invalid",
+        )
+    _preflight_compatibility(ctx)
     if args.dry_run:
         return INSTALL_EXIT_OK, _plan(ctx, args.command)
     if not args.yes:
@@ -1038,10 +1042,6 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
         report = _base_report(ctx, "ok", "uninstall")
         report["steps"] = [{"id": "uninstall", "status": "skipped"}]
         return INSTALL_EXIT_OK, report
-    if args.dry_run:
-        return INSTALL_EXIT_OK, _plan(ctx, "uninstall")
-    if not args.yes:
-        return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "preflight", "confirmation_required")
     receipt = _read_receipt(ctx.receipt_path, required=True)
     assert receipt is not None
     state, _, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
@@ -1049,6 +1049,10 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
         return INSTALL_EXIT_INSTALL, _failure_report(ctx, "uninstall", "receipt", reason or "receipt_ownership_invalid")
     previous = _decode_previous_hook(receipt)
     _preflight_compatibility(ctx)
+    if args.dry_run:
+        return INSTALL_EXIT_OK, _plan(ctx, "uninstall")
+    if not args.yes:
+        return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "preflight", "confirmation_required")
     prior_package_state = _snapshot_package_state(ctx)
     hook_before = _snapshot(ctx.hook_path)
     receipt_before = _snapshot(ctx.receipt_path)
