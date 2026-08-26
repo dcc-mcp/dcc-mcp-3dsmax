@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import uuid
@@ -92,6 +93,15 @@ class InstallContext:
     state: str
     state_stage: Optional[str]
     state_reason: Optional[str]
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    existed: bool
+    content: bytes
+    sha256: str
+    identity: Optional[Tuple[int, int]]
+    independent: bool
 
 
 def _core_version() -> str:
@@ -642,8 +652,8 @@ def _rollback_package(ctx: InstallContext, prior: Dict[str, Any]) -> None:
 def _rollback_transaction(
     ctx: InstallContext,
     prior_package_state: Dict[str, Any],
-    hook_before: Optional[bytes],
-    receipt_before: Optional[bytes],
+    hook_before: Any,
+    receipt_before: Any,
     restore_files: bool,
 ) -> None:
     rollback_failed = False
@@ -653,8 +663,9 @@ def _rollback_transaction(
             (ctx.receipt_path, receipt_before),
         ):
             try:
-                _restore(path, content)
-                if not _snapshot_matches(path, content):
+                snapshot = _coerce_file_snapshot(content)
+                restored_identity = _restore(path, snapshot.content if snapshot.existed else None)
+                if not _snapshot_matches(path, snapshot, restored_identity):
                     rollback_failed = True
             except Exception:
                 rollback_failed = True
@@ -670,38 +681,122 @@ def _replace_file(source: Path, destination: Path) -> None:
     os.replace(str(source), str(destination))
 
 
-def _snapshot(path: Path) -> Optional[bytes]:
-    return path.read_bytes() if path.is_file() else None
+def _file_identity(file_stat: os.stat_result) -> Tuple[int, int]:
+    return int(file_stat.st_dev), int(file_stat.st_ino)
 
 
-def _snapshot_matches(path: Path, expected: Optional[bytes]) -> bool:
-    if expected is None:
+def _is_independent_regular_file(file_stat: os.stat_result) -> bool:
+    reparse_point = bool(getattr(file_stat, "st_file_attributes", 0) & 0x400)
+    return stat.S_ISREG(file_stat.st_mode) and file_stat.st_nlink == 1 and not reparse_point
+
+
+def _absent_file_snapshot() -> FileSnapshot:
+    return FileSnapshot(False, b"", hashlib.sha256(b"").hexdigest(), None, True)
+
+
+def _coerce_file_snapshot(value: Any) -> FileSnapshot:
+    if isinstance(value, FileSnapshot):
+        return value
+    if value is None:
+        return _absent_file_snapshot()
+    if not isinstance(value, bytes):
+        raise TypeError("unsupported file snapshot")
+    return FileSnapshot(True, value, hashlib.sha256(value).hexdigest(), None, True)
+
+
+def _snapshot(path: Path) -> FileSnapshot:
+    if not os.path.lexists(str(path)):
+        return _absent_file_snapshot()
+    try:
+        before = os.lstat(str(path))
+        if not _is_independent_regular_file(before):
+            raise RuntimeError("file is not independent")
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not _is_independent_regular_file(opened) or _file_identity(opened) != _file_identity(before):
+                raise RuntimeError("file identity changed before read")
+            content = stream.read()
+            after_read = os.fstat(stream.fileno())
+        after = os.lstat(str(path))
+        identity = _file_identity(before)
+        if (
+            not _is_independent_regular_file(after_read)
+            or not _is_independent_regular_file(after)
+            or _file_identity(after_read) != identity
+            or _file_identity(after) != identity
+        ):
+            raise RuntimeError("file identity changed during read")
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "file_identity_ambiguous")
+    return FileSnapshot(True, content, hashlib.sha256(content).hexdigest(), identity, True)
+
+
+def _snapshot_matches(
+    path: Path,
+    expected: Any,
+    restored_identity: Optional[Tuple[int, int]],
+) -> bool:
+    snapshot = _coerce_file_snapshot(expected)
+    if not snapshot.existed:
         return not os.path.lexists(str(path))
-    if not path.is_file():
+    if not snapshot.independent or restored_identity is None or not os.path.lexists(str(path)):
         return False
-    actual = path.read_bytes()
-    return actual == expected and hashlib.sha256(actual).digest() == hashlib.sha256(expected).digest()
+    try:
+        before = os.lstat(str(path))
+        if not _is_independent_regular_file(before):
+            return False
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not _is_independent_regular_file(opened) or _file_identity(opened) != _file_identity(before):
+                return False
+            actual = stream.read()
+            after_read = os.fstat(stream.fileno())
+        after = os.lstat(str(path))
+        identity = _file_identity(before)
+        if (
+            not _is_independent_regular_file(after_read)
+            or not _is_independent_regular_file(after)
+            or identity != restored_identity
+            or _file_identity(after_read) != identity
+            or _file_identity(after) != identity
+        ):
+            return False
+    except Exception:
+        return False
+    return actual == snapshot.content and hashlib.sha256(actual).hexdigest() == snapshot.sha256
 
 
-def _restore(path: Path, content: Optional[bytes]) -> None:
+def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
     if content is None:
         try:
             path.unlink()
         except FileNotFoundError:
             pass
-        return
+        return None
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(".%s.restore-%s" % (path.name, uuid.uuid4().hex))
-    temp.write_bytes(content)
-    os.replace(str(temp), str(path))
+    try:
+        temp.write_bytes(content)
+        temp_stat = os.lstat(str(temp))
+        if not _is_independent_regular_file(temp_stat):
+            raise OSError("restore staging file is not independent")
+        restored_identity = _file_identity(temp_stat)
+        os.replace(str(temp), str(path))
+        return restored_identity
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
 
 
-def _previous_hook(prior_receipt: Optional[Dict[str, Any]], current: Optional[bytes]) -> Dict[str, Any]:
+def _previous_hook(prior_receipt: Optional[Dict[str, Any]], current: Any) -> Dict[str, Any]:
     if prior_receipt and isinstance(prior_receipt.get("previous_hook"), dict):
         return dict(prior_receipt["previous_hook"])
-    content = current or b""
+    snapshot = _coerce_file_snapshot(current)
+    content = snapshot.content if snapshot.existed else b""
     return {
-        "existed": current is not None,
+        "existed": snapshot.existed,
         "content_base64": base64.b64encode(content).decode("ascii"),
         "sha256": hashlib.sha256(content).hexdigest(),
     }
@@ -711,7 +806,7 @@ def _receipt(
     ctx: InstallContext,
     staged_hook: Path,
     prior_receipt: Optional[Dict[str, Any]],
-    current: Optional[bytes],
+    current: Any,
     target: Dict[str, Any],
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
