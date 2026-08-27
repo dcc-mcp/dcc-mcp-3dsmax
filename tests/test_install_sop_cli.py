@@ -326,8 +326,8 @@ def test_install_commit_does_not_clobber_identity_created_after_atomic_claim(
     concurrent_identity = []
     original_claim = getattr(cli, "_claim_file_if_snapshot", None)
 
-    def claim_then_drift(path, expected):
-        claimed = original_claim(path, expected) if original_claim is not None else None
+    def claim_then_drift(path, expected, claim_path=None):
+        claimed = original_claim(path, expected, claim_path) if original_claim is not None else None
         if path == target:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(concurrent_content)
@@ -362,8 +362,8 @@ def test_uninstall_commit_does_not_clobber_identity_created_after_atomic_claim(
     concurrent_identity = []
     original_claim = getattr(cli, "_claim_file_if_snapshot", None)
 
-    def claim_then_drift(path, expected):
-        claimed = original_claim(path, expected) if original_claim is not None else None
+    def claim_then_drift(path, expected, claim_path=None):
+        claimed = original_claim(path, expected, claim_path) if original_claim is not None else None
         if path == target:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(concurrent_content)
@@ -406,6 +406,76 @@ def test_replace_records_may_have_committed_before_fallible_postcheck(tmp_path, 
 
     assert destination in committed
     assert committed[destination].content == b"transaction"
+
+
+def test_preflight_recovers_owned_claim_after_keyboard_interrupt(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _stub_target(monkeypatch, cli)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook.parent.mkdir(parents=True)
+    hook.write_bytes(b"original hook")
+    original_identity = cli._file_identity(os.lstat(str(hook)))
+    real_replace = cli._replace_file
+
+    def interrupt_after_claim(_source, _destination):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "_replace_file", interrupt_after_claim)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(_args(layout, "install", "--yes"))
+
+    journals = list(tmp_path.rglob(".*.transaction-*.json"))
+    assert len(journals) == 1
+    journal = json.loads(journals[0].read_text(encoding="utf-8"))
+    assert journal["destination"] == str(hook)
+    assert Path(journal["claim_path"]).is_file()
+    assert not os.path.lexists(str(hook))
+
+    monkeypatch.setattr(cli, "_replace_file", real_replace)
+    exit_code = cli.main(_args(layout, "install", "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 0
+    assert report["status"] == "planned"
+    assert hook.read_bytes() == b"original hook"
+    assert cli._file_identity(os.lstat(str(hook))) == original_identity
+    assert list(tmp_path.rglob(".*.transaction-*.json")) == []
+    assert list(tmp_path.rglob(".*.claim-*")) == []
+
+
+def test_preflight_preserves_contender_and_durable_claim_after_interrupt(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _stub_target(monkeypatch, cli)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook.parent.mkdir(parents=True)
+    hook.write_bytes(b"original hook")
+    real_replace = cli._replace_file
+
+    monkeypatch.setattr(cli, "_replace_file", lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(_args(layout, "install", "--yes"))
+
+    hook.write_bytes(b"concurrent contender")
+    contender_identity = cli._file_identity(os.lstat(str(hook)))
+    monkeypatch.setattr(cli, "_replace_file", real_replace)
+
+    exit_code = cli.main(_args(layout, "install", "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 30
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "recovery",
+        "failure_reason": "transaction_recovery_conflict",
+    }
+    assert hook.read_bytes() == b"concurrent contender"
+    assert cli._file_identity(os.lstat(str(hook))) == contender_identity
+    journals = list(tmp_path.rglob(".*.transaction-*.json"))
+    assert len(journals) == 1
+    journal = json.loads(journals[0].read_text(encoding="utf-8"))
+    assert Path(journal["claim_path"]).read_bytes() == b"original hook"
 
 
 def test_uninstall_rejects_a_dangling_hook_symlink_without_mutation(tmp_path, capsys, monkeypatch) -> None:
@@ -1087,6 +1157,65 @@ def test_package_rollback_fails_closed_when_restore_subprocess_fails(tmp_path, m
     assert "PRIVATE_ROLLBACK_SECRET" not in captured.value.reason
 
 
+def test_package_rollback_removes_only_exact_transaction_owned_distributions(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines([])
+    transaction_owned = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    current = cli._package_state_from_lines(
+        ["dcc-mcp-3dsmax==0.2.2", "concurrent-owner @ file:///concurrent/owner.whl"]
+    )
+    reconciled = cli._package_state_from_lines(["concurrent-owner @ file:///concurrent/owner.whl"])
+    snapshots = iter([current, current, reconciled])
+    commands = []
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: next(snapshots))
+    monkeypatch.setattr(cli, "_run_pip_command", lambda _ctx, command: commands.append(command))
+
+    cli._restore_package_state(ctx, prior, transaction_owned)
+
+    assert commands == [["uninstall", "-y", "dcc-mcp-3dsmax"]]
+
+
+def test_package_rollback_preserves_concurrent_replacement_of_owned_distribution(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines([])
+    transaction_owned = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    concurrent = cli._package_state_from_lines(["dcc-mcp-3dsmax @ file:///concurrent/dcc_mcp_3dsmax-0.2.2.whl"])
+    commands = []
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: concurrent)
+    monkeypatch.setattr(cli, "_run_pip_command", lambda _ctx, command: commands.append(command))
+
+    cli._restore_package_state(ctx, prior, transaction_owned)
+
+    assert commands == []
+
+
+def test_package_rollback_revalidates_exact_owner_immediately_before_pip_mutation(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines([])
+    transaction_owned = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    concurrent = cli._package_state_from_lines(["dcc-mcp-3dsmax @ file:///concurrent/dcc_mcp_3dsmax-0.2.2.whl"])
+    snapshots = iter([transaction_owned, concurrent])
+    commands = []
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: next(snapshots))
+    monkeypatch.setattr(cli, "_run_pip_command", lambda _ctx, command: commands.append(command))
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._restore_package_state(ctx, prior, transaction_owned)
+
+    assert captured.value.stage == "rollback"
+    assert captured.value.reason == "package_rollback_incomplete"
+    assert commands == []
+
+
 def test_transaction_rollback_detects_post_restore_overwrite_and_still_reconciles_packages(
     tmp_path, monkeypatch
 ) -> None:
@@ -1585,7 +1714,7 @@ def test_install_and_upgrade_compatibility_precedes_package_and_file_mutation(
 
     assert cli.main(_args(layout, verb, "--yes")) == 50
     _report(cli, capsys)
-    assert events[:4] == ["compatibility", "snapshot", "pip", "target"]
+    assert events[:5] == ["compatibility", "snapshot", "pip", "snapshot", "target"]
     assert events.index("compatibility") < events.index("pip") < events.index("file")
 
 
