@@ -628,26 +628,58 @@ def _run_pip_command(ctx: InstallContext, command: Sequence[str]) -> None:
     )
 
 
-def _restore_package_state(ctx: InstallContext, prior: Dict[str, Any]) -> None:
+def _restore_package_state(
+    ctx: InstallContext,
+    prior: Dict[str, Any],
+    transaction_owned: Optional[Dict[str, Any]] = None,
+) -> None:
     try:
+        if transaction_owned is None:
+            transaction_owned = prior.get("_transaction_owned")
+        if prior.get("_ownership_required") and transaction_owned is None:
+            raise RuntimeError("package transaction ownership unavailable")
         current = _snapshot_package_state(ctx)
         prior_by_name = prior["by_name"]
         current_by_name = current["by_name"]
         prior_fingerprints = prior["fingerprints"]
         current_fingerprints = current["fingerprints"]
-        remove = sorted(name for name in current_by_name if name not in prior_by_name)
-        restore = sorted(
-            requirement
-            for name, requirement in prior_by_name.items()
-            if current_fingerprints.get(name) != prior_fingerprints.get(name)
-        )
+        if transaction_owned is None:
+            remove = sorted(name for name in current_by_name if name not in prior_by_name)
+            restore = sorted(
+                requirement
+                for name, requirement in prior_by_name.items()
+                if current_fingerprints.get(name) != prior_fingerprints.get(name)
+            )
+            expected_fingerprints = dict(prior_fingerprints)
+        else:
+            owned_fingerprints = transaction_owned["fingerprints"]
+            changed_names = {
+                name
+                for name in set(prior_fingerprints) | set(owned_fingerprints)
+                if prior_fingerprints.get(name) != owned_fingerprints.get(name)
+            }
+            cas_names = {
+                name for name in changed_names if current_fingerprints.get(name) == owned_fingerprints.get(name)
+            }
+            remove = sorted(name for name in cas_names if name not in prior_by_name)
+            restore = sorted(prior_by_name[name] for name in cas_names if name in prior_by_name)
+            expected_fingerprints = dict(current_fingerprints)
+            for name in cas_names:
+                if name in prior_fingerprints:
+                    expected_fingerprints[name] = prior_fingerprints[name]
+                else:
+                    expected_fingerprints.pop(name, None)
+            if remove or restore:
+                confirmed = _snapshot_package_state(ctx)
+                if confirmed.get("fingerprints") != current_fingerprints:
+                    raise RuntimeError("package transaction ownership changed")
         if remove:
             _run_pip_command(ctx, ["uninstall", "-y"] + remove)
         if restore:
             _run_pip_command(ctx, ["install", "--no-deps", "--force-reinstall"] + restore)
         if remove or restore:
             restored = _snapshot_package_state(ctx)
-            if restored.get("sha256") != prior.get("sha256"):
+            if restored.get("fingerprints") != expected_fingerprints:
                 raise RuntimeError("package state mismatch")
     except Exception:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
@@ -871,6 +903,111 @@ def _restore_claim_without_clobber(claim: Path, path: Path) -> None:
     claim.unlink()
 
 
+def _snapshot_record(snapshot: Any) -> Dict[str, Any]:
+    value = _coerce_file_snapshot(snapshot)
+    return {
+        "existed": value.existed,
+        "content_base64": base64.b64encode(value.content).decode("ascii"),
+        "sha256": value.sha256,
+        "identity": _identity_record(value.identity),
+        "independent": value.independent,
+    }
+
+
+def _snapshot_from_record(record: Any) -> FileSnapshot:
+    if not isinstance(record, dict) or type(record.get("existed")) is not bool:
+        raise ValueError("invalid transaction snapshot")
+    encoded = record.get("content_base64")
+    sha256 = record.get("sha256")
+    independent = record.get("independent")
+    identity_record = record.get("identity")
+    if not isinstance(encoded, str) or not isinstance(sha256, str) or type(independent) is not bool:
+        raise ValueError("invalid transaction snapshot")
+    content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    if hashlib.sha256(content).hexdigest() != sha256:
+        raise ValueError("invalid transaction snapshot")
+    if identity_record is None:
+        identity = None
+    elif _is_identity_record(identity_record):
+        identity = (identity_record["device"], identity_record["inode"])
+    else:
+        raise ValueError("invalid transaction snapshot")
+    if (not record["existed"] and (identity is not None or content)) or (
+        record["existed"] and independent and identity is None
+    ):
+        raise ValueError("invalid transaction snapshot")
+    return FileSnapshot(record["existed"], content, sha256, identity, independent)
+
+
+def _write_file_transaction(
+    destination: Path,
+    expected: Any,
+    desired: Any,
+) -> Tuple[Path, FileSnapshot, Path, Path]:
+    token = uuid.uuid4().hex
+    journal_path = destination.with_name(".%s.transaction-%s.json" % (destination.name, token))
+    claim_path = destination.with_name(".%s.claim-%s" % (destination.name, token))
+    recovery_path = destination.with_name(".%s.recovery-%s" % (destination.name, token))
+    stage = destination.with_name(".%s.transaction-stage-%s" % (destination.name, token))
+    record = {
+        "version": 1,
+        "destination": str(destination),
+        "claim_path": str(claim_path),
+        "recovery_path": str(recovery_path),
+        "expected": _snapshot_record(expected),
+        "desired": _snapshot_record(desired),
+    }
+    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    try:
+        with stage.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(str(stage), str(journal_path))
+        stage.unlink()
+        journal_snapshot = _snapshot(journal_path)
+        return journal_path, journal_snapshot, claim_path, recovery_path
+    finally:
+        try:
+            stage.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_file_transaction(journal_path: Path, destination: Path) -> Tuple[FileSnapshot, FileSnapshot, Path, Path]:
+    content, _identity = _read_independent_file(journal_path)
+    if len(content) > 1024 * 1024:
+        raise ValueError("transaction journal too large")
+    record = json.loads(content.decode("utf-8"))
+    token_match = re.fullmatch(
+        r"\.%s\.transaction-([0-9a-f]{32})\.json" % re.escape(destination.name), journal_path.name
+    )
+    if not isinstance(record, dict) or token_match is None:
+        raise ValueError("invalid transaction journal")
+    token = token_match.group(1)
+    claim_path = destination.with_name(".%s.claim-%s" % (destination.name, token))
+    recovery_path = destination.with_name(".%s.recovery-%s" % (destination.name, token))
+    if (
+        _lexical_path_key(record.get("destination")) != _lexical_path_key(destination)
+        or _lexical_path_key(record.get("claim_path")) != _lexical_path_key(claim_path)
+        or _lexical_path_key(record.get("recovery_path")) != _lexical_path_key(recovery_path)
+    ):
+        raise ValueError("invalid transaction journal")
+    return (
+        _snapshot_from_record(record.get("expected")),
+        _snapshot_from_record(record.get("desired")),
+        claim_path,
+        recovery_path,
+    )
+
+
+def _remove_owned_file(path: Path, expected: Any) -> None:
+    delete_claim = path.with_name(".%s.delete-%s" % (path.name, uuid.uuid4().hex))
+    claimed = _claim_file_if_snapshot(path, expected, delete_claim)
+    if claimed is not None:
+        claimed.unlink()
+
+
 def _recover_claim(
     claim: Optional[Path],
     path: Path,
@@ -884,7 +1021,11 @@ def _recover_claim(
         committed.pop(path, None)
 
 
-def _claim_file_if_snapshot(path: Path, expected: Any) -> Optional[Path]:
+def _claim_file_if_snapshot(
+    path: Path,
+    expected: Any,
+    claim_path: Optional[Path] = None,
+) -> Optional[Path]:
     """Atomically remove and return the exact expected identity from *path*.
 
     Renaming to a same-directory private name is the platform CAS claim.  A
@@ -896,7 +1037,7 @@ def _claim_file_if_snapshot(path: Path, expected: Any) -> Optional[Path]:
     if not snapshot.existed:
         _require_snapshot_current(path, snapshot)
         return None
-    claim = path.with_name(".%s.claim-%s" % (path.name, uuid.uuid4().hex))
+    claim = claim_path or path.with_name(".%s.claim-%s" % (path.name, uuid.uuid4().hex))
     try:
         os.replace(str(path), str(claim))
     except FileNotFoundError:
@@ -917,7 +1058,8 @@ def _replace_file_if_snapshot(
     committed: Dict[Path, FileSnapshot],
 ) -> FileSnapshot:
     staged = _snapshot(source)
-    claim = _claim_file_if_snapshot(destination, expected)
+    journal_path, journal_snapshot, claim_path, _recovery_path = _write_file_transaction(destination, expected, staged)
+    claim = _claim_file_if_snapshot(destination, expected, claim_path)
     removed = _absent_file_snapshot()
     committed[destination] = removed
     try:
@@ -929,12 +1071,15 @@ def _replace_file_if_snapshot(
         if claim is not None:
             claim.unlink()
         _require_snapshot_current(destination, staged)
+        _remove_owned_file(journal_path, journal_snapshot)
         return staged
     except FileExistsError:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
     except Exception:
         try:
             _recover_claim(claim, destination, expected, committed)
+            if _snapshot_is_current(destination, expected):
+                _remove_owned_file(journal_path, journal_snapshot)
         except Exception:
             pass
         raise
@@ -948,7 +1093,9 @@ def _restore_if_snapshot(
 ) -> FileSnapshot:
     if content is None:
         return _unlink_if_snapshot(path, expected, committed)
-    claim = _claim_file_if_snapshot(path, expected)
+    desired = FileSnapshot(True, content, hashlib.sha256(content).hexdigest(), None, False)
+    journal_path, journal_snapshot, claim_path, _recovery_path = _write_file_transaction(path, expected, desired)
+    claim = _claim_file_if_snapshot(path, expected, claim_path)
     removed = _absent_file_snapshot()
     committed[path] = removed
     try:
@@ -964,12 +1111,15 @@ def _restore_if_snapshot(
         if claim is not None:
             claim.unlink()
         _require_snapshot_current(path, restored)
+        _remove_owned_file(journal_path, journal_snapshot)
         return restored
     except FileExistsError:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
     except Exception:
         try:
             _recover_claim(claim, path, expected, committed)
+            if _snapshot_is_current(path, expected):
+                _remove_owned_file(journal_path, journal_snapshot)
         except Exception:
             pass
         raise
@@ -980,18 +1130,22 @@ def _unlink_if_snapshot(
     expected: Any,
     committed: Dict[Path, FileSnapshot],
 ) -> FileSnapshot:
-    claim = _claim_file_if_snapshot(path, expected)
     removed = _absent_file_snapshot()
+    journal_path, journal_snapshot, claim_path, _recovery_path = _write_file_transaction(path, expected, removed)
+    claim = _claim_file_if_snapshot(path, expected, claim_path)
     committed[path] = removed
     try:
         _restore(path, None)
         if claim is not None:
             claim.unlink()
         _require_snapshot_current(path, removed)
+        _remove_owned_file(journal_path, journal_snapshot)
         return removed
     except Exception:
         try:
             _recover_claim(claim, path, expected, committed)
+            if _snapshot_is_current(path, expected):
+                _remove_owned_file(journal_path, journal_snapshot)
         except Exception:
             pass
         raise
@@ -1070,7 +1224,8 @@ def _install_transaction(
     _require_snapshot_current(ctx.hook_path, hook_before)
     _require_snapshot_current(ctx.receipt_path, receipt_before)
     prior_receipt = _read_receipt(ctx.receipt_path)
-    prior_package_state = _snapshot_package_state(ctx)
+    prior_package_state = dict(_snapshot_package_state(ctx))
+    prior_package_state["_ownership_required"] = True
     token = uuid.uuid4().hex
     hook_stage = ctx.hook_path.with_name(".%s.stage-%s" % (ctx.hook_path.name, token))
     receipt_stage = ctx.receipt_path.with_name(".%s.stage-%s" % (ctx.receipt_path.name, token))
@@ -1079,6 +1234,7 @@ def _install_transaction(
     try:
         package_attempted = True
         _install_package(ctx, source)
+        prior_package_state["_transaction_owned"] = _snapshot_package_state(ctx)
         target = _probe_target(ctx.python_path)
         if target.get("adapter_version") != ADAPTER_VERSION:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "adapter_version_mismatch")
@@ -1192,7 +1348,61 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
     return {"directly_usable": True, "failure_stage": None, "failure_reason": None}, []
 
 
+def _reconcile_file_transaction(destination: Path) -> None:
+    pattern = ".%s.transaction-*.json" % destination.name
+    journals = sorted(destination.parent.glob(pattern)) if destination.parent.is_dir() else []
+    if len(journals) > 1:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+    if not journals:
+        return
+    journal_path = journals[0]
+    try:
+        journal_snapshot = _snapshot(journal_path)
+        expected, desired, claim_path, recovery_path = _read_file_transaction(journal_path, destination)
+        claim_exists = os.path.lexists(str(claim_path))
+        recovery_exists = os.path.lexists(str(recovery_path))
+        if claim_exists and not _snapshot_is_current(claim_path, expected):
+            raise RuntimeError("transaction claim identity mismatch")
+        if recovery_exists and not _snapshot_is_current(recovery_path, desired):
+            raise RuntimeError("transaction recovery identity mismatch")
+
+        if _snapshot_is_current(destination, expected) and not claim_exists and not recovery_exists:
+            _remove_owned_file(journal_path, journal_snapshot)
+            return
+        if not os.path.lexists(str(destination)):
+            if expected.existed:
+                if not claim_exists:
+                    raise RuntimeError("transaction claim missing")
+                _restore_claim_without_clobber(claim_path, destination)
+            elif claim_exists:
+                raise RuntimeError("unexpected transaction claim")
+            if recovery_exists:
+                recovery_path.unlink()
+            _require_snapshot_current(destination, expected)
+            _remove_owned_file(journal_path, journal_snapshot)
+            return
+        if desired.independent and _snapshot_is_current(destination, desired):
+            if expected.existed and not claim_exists:
+                # The owned commit was already finalized before only the
+                # journal cleanup was interrupted.
+                _remove_owned_file(journal_path, journal_snapshot)
+                return
+            claimed_desired = _claim_file_if_snapshot(destination, desired, recovery_path)
+            if expected.existed:
+                _restore_claim_without_clobber(claim_path, destination)
+            if claimed_desired is not None:
+                claimed_desired.unlink()
+            _require_snapshot_current(destination, expected)
+            _remove_owned_file(journal_path, journal_snapshot)
+            return
+        raise RuntimeError("public path has a concurrent owner")
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+
+
 def _preflight_ownership(ctx: InstallContext) -> Tuple[FileSnapshot, FileSnapshot]:
+    _reconcile_file_transaction(ctx.hook_path)
+    _reconcile_file_transaction(ctx.receipt_path)
     return _snapshot(ctx.hook_path), _snapshot(ctx.receipt_path)
 
 
@@ -1306,7 +1516,8 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
         return INSTALL_EXIT_OK, _plan(ctx, "uninstall")
     if not args.yes:
         return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "preflight", "confirmation_required")
-    prior_package_state = _snapshot_package_state(ctx)
+    prior_package_state = dict(_snapshot_package_state(ctx))
+    prior_package_state["_ownership_required"] = True
     hook_before, receipt_before = ownership
     _require_snapshot_current(ctx.hook_path, hook_before)
     _require_snapshot_current(ctx.receipt_path, receipt_before)
@@ -1315,6 +1526,7 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
     try:
         package_attempted = True
         _uninstall_package(ctx)
+        prior_package_state["_transaction_owned"] = _snapshot_package_state(ctx)
         _require_snapshot_current(ctx.hook_path, hook_before)
         _require_snapshot_current(ctx.receipt_path, receipt_before)
         _restore_if_snapshot(ctx.hook_path, previous, hook_before, committed)
