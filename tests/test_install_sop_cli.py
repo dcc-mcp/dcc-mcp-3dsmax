@@ -435,11 +435,9 @@ def test_preflight_recovers_owned_claim_after_keyboard_interrupt(tmp_path, capsy
     assert not os.path.lexists(str(hook))
 
     monkeypatch.setattr(cli, "_replace_file", real_replace)
-    exit_code = cli.main(_args(layout, "install", "--dry-run"))
-    report = _report(cli, capsys)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    cli._preflight_ownership(cli._context(args))
 
-    assert exit_code == 0
-    assert report["status"] == "planned"
     assert hook.read_bytes() == b"original hook"
     assert cli._file_identity(os.lstat(str(hook))) == original_identity
     assert list(tmp_path.rglob(".*.transaction-*.json")) == []
@@ -470,7 +468,7 @@ def test_preflight_preserves_contender_and_durable_claim_after_interrupt(tmp_pat
     assert report["verify"] == {
         "directly_usable": False,
         "failure_stage": "recovery",
-        "failure_reason": "transaction_recovery_conflict",
+        "failure_reason": "transaction_recovery_required",
     }
     assert hook.read_bytes() == b"concurrent contender"
     assert cli._file_identity(os.lstat(str(hook))) == contender_identity
@@ -1170,7 +1168,7 @@ def test_package_rollback_removes_only_exact_transaction_owned_distributions(tmp
         ["dcc-mcp-3dsmax==0.2.2", "concurrent-owner @ file:///concurrent/owner.whl"]
     )
     reconciled = cli._package_state_from_lines(["concurrent-owner @ file:///concurrent/owner.whl"])
-    snapshots = iter([current, current, current, reconciled])
+    snapshots = iter([current, current, current, current, reconciled])
     commands = []
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: next(snapshots))
     monkeypatch.setattr(cli, "_run_pip_command", lambda _ctx, command: commands.append(command))
@@ -1884,3 +1882,191 @@ def test_package_ownership_mutex_excludes_another_process(tmp_path: Path) -> Non
 
     assert blocked.returncode == 23
     assert acquired.returncode == 0
+
+
+def test_reconcile_recovers_real_exit_during_journal_publication(tmp_path: Path) -> None:
+    script = r"""
+import os, sys
+from pathlib import Path
+from dcc_mcp_3dsmax import install_cli as cli
+root = Path(sys.argv[1])
+destination = root / "startup.py"
+stage = root / ".startup.py.stage"
+destination.write_bytes(b"previous")
+stage.write_bytes(b"transaction")
+expected = cli._snapshot(destination)
+desired = cli._snapshot(stage)
+real_unlink = cli._durable_unlink
+def crash(path):
+    if ".journal-stage-" in path.name:
+        os._exit(91)
+    return real_unlink(path)
+cli._durable_unlink = crash
+cli._write_file_transaction(destination, expected, desired, stage)
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env)
+
+    assert completed.returncode == 91
+    journal = next(tmp_path.glob(".startup.py.transaction-*.json"))
+    journal_stage = next(tmp_path.glob(".startup.py.journal-stage-*"))
+    assert os.path.samefile(journal, journal_stage)
+    assert os.lstat(journal).st_nlink == 2
+
+    cli = _install_cli()
+    cli._reconcile_file_transaction(tmp_path / "startup.py")
+    assert (tmp_path / "startup.py").read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".startup.py.*"))
+
+
+def test_reconcile_recovers_real_exit_during_commit_marker_publication(tmp_path: Path) -> None:
+    script = r"""
+import os, sys
+from pathlib import Path
+from dcc_mcp_3dsmax import install_cli as cli
+root = Path(sys.argv[1])
+destination = root / "startup.py"
+stage = root / ".startup.py.stage"
+destination.write_bytes(b"previous")
+stage.write_bytes(b"transaction")
+expected = cli._snapshot(destination)
+real_unlink = cli._durable_unlink
+def crash(path):
+    if ".committed-" in path.name and path.name.endswith(".stage"):
+        os._exit(92)
+    return real_unlink(path)
+cli._durable_unlink = crash
+cli._replace_file_if_snapshot(stage, destination, expected, {})
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    completed = subprocess.run([sys.executable, "-c", script, str(tmp_path)], env=env)
+
+    assert completed.returncode == 92
+    marker = next(tmp_path.glob(".startup.py.committed-*.json"))
+    marker_stage = next(tmp_path.glob(".startup.py.committed-*.json.stage"))
+    assert os.path.samefile(marker, marker_stage)
+    assert os.lstat(marker).st_nlink == 2
+
+    cli = _install_cli()
+    cli._reconcile_file_transaction(tmp_path / "startup.py")
+    destination = tmp_path / "startup.py"
+    assert destination.read_bytes() == b"transaction"
+    assert os.lstat(destination).st_nlink == 1
+    assert not list(tmp_path.glob(".startup.py.*"))
+
+
+def test_dry_run_reports_recovery_required_without_mutating_transaction_state(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    ctx.hook_path.parent.mkdir(parents=True, exist_ok=True)
+    ctx.hook_path.write_bytes(b"previous")
+    stage = ctx.hook_path.with_name(".%s.stage-red" % ctx.hook_path.name)
+    stage.write_bytes(b"transaction")
+    expected = cli._snapshot(ctx.hook_path)
+    real_replace = cli._replace_file
+
+    def publish_then_interrupt(source: Path, destination: Path) -> None:
+        real_replace(source, destination)
+        raise KeyboardInterrupt("crash before commit marker")
+
+    monkeypatch.setattr(cli, "_replace_file", publish_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cli._replace_file_if_snapshot(stage, ctx.hook_path, expected, {})
+    monkeypatch.setattr(cli, "_replace_file", real_replace)
+    _stub_target(monkeypatch, cli)
+
+    def tree_state():
+        return {
+            path.name: (path.read_bytes(), os.lstat(path).st_ino, os.lstat(path).st_nlink)
+            for path in sorted(ctx.hook_path.parent.iterdir())
+            if path.is_file()
+        }
+
+    before = tree_state()
+    exit_code = cli.main(_args(layout, "install", "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code != 0
+    assert report["status"] == "failed"
+    assert report["verify"]["failure_stage"] == "recovery"
+    assert tree_state() == before
+
+
+def test_package_rollback_rechecks_owner_after_final_snapshot_before_pip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines([])
+    owned = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    concurrent = cli._package_state_from_lines(["dcc-mcp-3dsmax @ file:///concurrent/dcc_mcp_3dsmax-0.2.2.whl"])
+    state = {"package": owned}
+    commands = []
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
+
+    def replace_after_final_snapshot(_ctx, _mutex) -> None:
+        state["package"] = concurrent
+
+    monkeypatch.setattr(cli, "_package_rollback_commit_hook", replace_after_final_snapshot, raising=False)
+
+    def run_pip(_ctx, command):
+        commands.append(command)
+        state["package"] = prior
+
+    monkeypatch.setattr(cli, "_run_pip_command", run_pip)
+    with pytest.raises(cli.LifecycleError):
+        cli._restore_package_state(ctx, prior, owned)
+
+    assert commands == []
+    assert state["package"] == concurrent
+
+
+def test_install_rollback_preserves_external_package_upgrade_not_in_mutation_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines(["unrelated==1.0"])
+    installed = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2", "unrelated==2.0"])
+    external_only = cli._package_state_from_lines(["unrelated==2.0"])
+    state = {"package": prior}
+    commands = []
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
+
+    def install_with_external_upgrade(_ctx, _source):
+        state["package"] = installed
+        return {"dcc-mcp-3dsmax"}
+
+    monkeypatch.setattr(cli, "_install_package", install_with_external_upgrade)
+    monkeypatch.setattr(
+        cli,
+        "_probe_target",
+        lambda _path: (_ for _ in ()).throw(cli.LifecycleError(20, "acquire", "target_probe_failed")),
+    )
+
+    def run_pip(_ctx, command):
+        commands.append(command)
+        if command[:2] == ["uninstall", "-y"]:
+            state["package"] = external_only
+        else:
+            state["package"] = prior
+
+    monkeypatch.setattr(cli, "_run_pip_command", run_pip)
+    ownership = (cli._snapshot(ctx.hook_path), cli._snapshot(ctx.receipt_path))
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._install_transaction(ctx, "pypi", ownership)
+
+    assert captured.value.reason == "target_probe_failed"
+    assert commands == [["uninstall", "-y", "dcc-mcp-3dsmax"]]
+    assert state["package"] == external_only
