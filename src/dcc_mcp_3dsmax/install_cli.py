@@ -562,6 +562,7 @@ def guarded_payload(path):
     if (
         not stat.S_ISREG(before.st_mode)
         or stat.S_ISLNK(before.st_mode)
+        or before.st_nlink != 1
         or getattr(before, "st_file_attributes", 0) & 0x400
     ):
         raise RuntimeError("distribution payload is unsafe")
@@ -578,7 +579,12 @@ def guarded_payload(path):
             size += len(chunk)
     after = os.lstat(path)
     identity = (int(before.st_dev), int(before.st_ino))
-    if identity != (int(opened.st_dev), int(opened.st_ino)) or identity != (int(after.st_dev), int(after.st_ino)):
+    if (
+        opened.st_nlink != 1
+        or after.st_nlink != 1
+        or identity != (int(opened.st_dev), int(opened.st_ino))
+        or identity != (int(after.st_dev), int(after.st_ino))
+    ):
         raise RuntimeError("distribution payload changed")
     physical_after = physical_path_identity(path)
     if physical_after != physical_before:

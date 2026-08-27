@@ -174,6 +174,21 @@ def _replace_installed_adapter():
     os.replace(_replacement, _source)
 
 
+def _add_external_adapter_payload_hardlink():
+    for _dist in metadata.distributions():
+        if normalized_name(str(_dist.metadata.get("Name") or "")) != "dcc-mcp-3dsmax":
+            continue
+        for _declared in _dist.files or ():
+            _payload = os.path.abspath(str(_dist.locate_file(_declared)))
+            if os.path.isfile(_payload) and ".dist-info" not in _payload.replace("\\", "/"):
+                _alias = _payload + ".external-owner"
+                if os.path.lexists(_alias):
+                    os.unlink(_alias)
+                os.link(_payload, _alias)
+                return
+    raise RuntimeError("installed adapter payload unavailable for hardlink contender")
+
+
 def pip_main(_arguments):
     _arguments = list(_arguments)
     if _arguments and _arguments[0] == "install":
@@ -184,8 +199,10 @@ def pip_main(_arguments):
         _result = _original_pip_main(_arguments)
         if _result == 0 and __MODE__ == "install":
             _replace_installed_adapter()
+        if _result == 0 and __MODE__ == "install-hardlink":
+            _add_external_adapter_payload_hardlink()
         return _result
-    if _arguments and _arguments[0] == "uninstall" and __MODE__ == "uninstall":
+    if _arguments and _arguments[0] == "uninstall" and __MODE__ in {"uninstall", "uninstall-hardlink"}:
         _result = _original_pip_main(_arguments)
         if _result == 0:
             _site_packages = site.getsitepackages()[0]
@@ -198,9 +215,15 @@ def pip_main(_arguments):
                         os.unlink(_candidate)
             with zipfile.ZipFile(__WHEEL_PATH__) as _wheel:
                 _wheel.extractall(_site_packages)
-            _source = _adapter_distribution_path()
-            with open(os.path.join(_source, "CONCURRENT_OWNER"), "w", encoding="utf-8") as _stream:
-                _stream.write("external owner\n")
+            if __MODE__ == "uninstall":
+                _source = _adapter_distribution_path()
+                with open(os.path.join(_source, "CONCURRENT_OWNER"), "w", encoding="utf-8") as _stream:
+                    _stream.write("external owner\n")
+        if _result == 0 and __MODE__ == "uninstall-hardlink":
+            _site_packages = site.getsitepackages()[0]
+            with zipfile.ZipFile(__WHEEL_PATH__) as _wheel:
+                _wheel.extractall(_site_packages)
+            _add_external_adapter_payload_hardlink()
         return _result
     return _original_pip_main(_arguments)
 """
@@ -2674,6 +2697,19 @@ def test_package_fingerprint_changes_when_record_payload_is_physically_replaced(
     assert after != before
 
 
+def test_package_snapshot_rejects_record_payload_with_external_hardlink(tmp_path: Path) -> None:
+    cli = _install_cli()
+    ctx, _dist_info, payload = _isolated_distribution(cli, tmp_path)
+    external_alias = tmp_path / "external-owner.py"
+    os.link(str(payload), str(external_alias))
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._snapshot_package_state(ctx)
+
+    assert captured.value.reason == "package_state_unavailable"
+    assert payload.read_bytes() == external_alias.read_bytes()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows physical path alias contract")
 @pytest.mark.parametrize("alias_kind", ["junction", "case"])
 def test_package_fingerprint_is_stable_across_physical_metadata_alias(tmp_path: Path, alias_kind: str) -> None:
@@ -2740,6 +2776,31 @@ def test_package_rollback_preserves_physically_replaced_same_content_contender(
     assert pip_calls == []
     assert payload.read_text(encoding="utf-8") == "VALUE = 1\n"
     assert cli._snapshot_package_state(ctx)["fingerprints"] == contender["fingerprints"]
+
+
+def test_package_rollback_rejects_payload_hardlink_added_after_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    ctx, _dist_info, payload = _isolated_distribution(cli, tmp_path)
+    prior = cli._package_state_from_lines([])
+    prior["_ownership_required"] = True
+    transaction_owned = cli._snapshot_package_state(ctx)
+    external_alias = tmp_path / "external-rollback-owner.py"
+    os.link(str(payload), str(external_alias))
+    pip_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_target_owned_pip_command",
+        lambda _ctx, command, _path, _token: pip_calls.append(command),
+    )
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._restore_package_state(ctx, prior, transaction_owned)
+
+    assert captured.value.reason == "package_rollback_incomplete"
+    assert pip_calls == []
+    assert payload.read_bytes() == external_alias.read_bytes()
 
 
 def test_install_does_not_claim_same_name_contender_after_package_install_returns(
@@ -2826,6 +2887,46 @@ def test_install_worker_does_not_claim_contender_created_after_pip_returns(
     assert claimed != contender
 
 
+@pytest.mark.parametrize("preinstalled", [False, True], ids=["install", "upgrade"])
+def test_install_transaction_rejects_payload_hardlink_at_worker_parent_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preinstalled: bool
+) -> None:
+    cli = _install_cli()
+    worker_ctx, wheel_path = _pip_worker_context(tmp_path)
+    layout = _layout(tmp_path / "layout")
+    layout["python"] = worker_ctx.python_path
+    ctx = cli._context(cli.build_parser().parse_args(_args(layout, "install", "--yes")))
+    operation_worker = cli._PACKAGE_OPERATION_WORKER
+    if preinstalled:
+        monkeypatch.setattr(
+            cli,
+            "_PACKAGE_OPERATION_WORKER",
+            operation_worker + _pip_worker_wrapper("none", wheel_path),
+        )
+        with cli._package_ownership(ctx) as mutex:
+            cli._install_package(ctx, "local", mutex)
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("install-hardlink", wheel_path, force_reinstall=preinstalled),
+    )
+    rollback_pip_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_target_owned_pip_command",
+        lambda _ctx, command, _path, _token: rollback_pip_calls.append(command),
+    )
+    ownership = (cli._snapshot(ctx.hook_path), cli._snapshot(ctx.receipt_path))
+
+    with pytest.raises(cli.LifecycleError) as captured:
+        cli._install_transaction(ctx, "local", ownership)
+
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert rollback_pip_calls == []
+    assert not os.path.lexists(str(ctx.hook_path))
+    assert not os.path.lexists(str(ctx.receipt_path))
+
+
 def test_uninstall_worker_rejects_contender_created_after_pip_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2853,6 +2954,65 @@ def test_uninstall_worker_rejects_contender_created_after_pip_returns(
 
     assert captured.value.reason == "package_mutation_evidence_changed"
     assert "dcc-mcp-3dsmax" in current["fingerprints"]
+
+
+def test_uninstall_transaction_rejects_payload_hardlink_at_worker_parent_boundary(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    worker_ctx, wheel_path = _pip_worker_context(tmp_path)
+    layout = _layout(tmp_path / "layout")
+    layout["python"] = worker_ctx.python_path
+    install_args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(install_args)
+    operation_worker = cli._PACKAGE_OPERATION_WORKER
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("none", wheel_path),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_probe_target",
+        lambda _path: {
+            "python_version": "3.11.9",
+            "adapter_version": cli.ADAPTER_VERSION,
+            "core_version": cli.MIN_CORE_VERSION,
+        },
+    )
+    ownership = (cli._snapshot(ctx.hook_path), cli._snapshot(ctx.receipt_path))
+    cli._install_transaction(ctx, "local", ownership)
+    hook_before = ctx.hook_path.read_bytes()
+    receipt_before = ctx.receipt_path.read_bytes()
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("uninstall-hardlink", wheel_path),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_probe_compatibility",
+        lambda _ctx: {
+            "python_version": "3.11.9",
+            "core_version": cli.MIN_CORE_VERSION,
+            "host_version": "2025",
+        },
+    )
+    rollback_pip_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_target_owned_pip_command",
+        lambda _ctx, command, _path, _token: rollback_pip_calls.append(command),
+    )
+
+    exit_code = cli.main(_args(layout, "uninstall", "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code != cli.INSTALL_EXIT_OK
+    assert report["verify"]["failure_reason"] == "transaction_rollback_incomplete"
+    assert rollback_pip_calls == []
+    assert ctx.hook_path.read_bytes() == hook_before
+    assert ctx.receipt_path.read_bytes() == receipt_before
 
 
 def test_uninstall_does_not_claim_same_name_contender_after_package_worker_returns(
