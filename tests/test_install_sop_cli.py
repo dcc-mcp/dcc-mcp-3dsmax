@@ -125,6 +125,92 @@ def _isolated_distribution(cli, tmp_path: Path):
     return SimpleNamespace(python_path=python_path), dist_info, payload
 
 
+def _pip_worker_context(tmp_path: Path):
+    environment = tmp_path / "pip-worker-environment"
+    venv.EnvBuilder(with_pip=True).create(str(environment))
+    python_path = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    wheel_dir = tmp_path / "wheel"
+    subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", str(wheel_dir)],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    wheel_path = next(wheel_dir.glob("dcc_mcp_3dsmax-*.whl"))
+    return SimpleNamespace(python_path=python_path), wheel_path
+
+
+def _pip_worker_wrapper(mode: str, wheel_path: Path, force_reinstall: bool = False) -> str:
+    template = r"""
+import shutil
+import site
+import zipfile
+
+_original_pip_main = pip_main
+
+
+def _adapter_distribution_path():
+    for _dist in metadata.distributions():
+        _path = os.path.abspath(str(_dist._path))
+        if (
+            normalized_name(str(_dist.metadata.get("Name") or "")) == "dcc-mcp-3dsmax"
+            and not os.path.basename(_path).startswith("~")
+        ):
+            return _path
+    return None
+
+
+def _replace_installed_adapter():
+    _source = _adapter_distribution_path()
+    if not _source:
+        raise RuntimeError("installed adapter unavailable for contender")
+    _replacement = _source + ".concurrent-stage"
+    _retired = _source + ".transaction-retired"
+    shutil.copytree(_source, _replacement)
+    with open(os.path.join(_replacement, "CONCURRENT_OWNER"), "w", encoding="utf-8") as _stream:
+        _stream.write("external owner\n")
+    os.replace(_source, _retired)
+    os.replace(_replacement, _source)
+
+
+def pip_main(_arguments):
+    _arguments = list(_arguments)
+    if _arguments and _arguments[0] == "install":
+        _arguments.insert(1, "--no-deps")
+        if __FORCE_REINSTALL__:
+            _arguments.insert(1, "--force-reinstall")
+        _arguments[-1] = __WHEEL_PATH__
+        _result = _original_pip_main(_arguments)
+        if _result == 0 and __MODE__ == "install":
+            _replace_installed_adapter()
+        return _result
+    if _arguments and _arguments[0] == "uninstall" and __MODE__ == "uninstall":
+        _result = _original_pip_main(_arguments)
+        if _result == 0:
+            _site_packages = site.getsitepackages()[0]
+            for _entry in os.listdir(_site_packages):
+                if _entry.lower().startswith("~cc_mcp_3dsmax"):
+                    _candidate = os.path.join(_site_packages, _entry)
+                    if os.path.isdir(_candidate):
+                        shutil.rmtree(_candidate)
+                    else:
+                        os.unlink(_candidate)
+            with zipfile.ZipFile(__WHEEL_PATH__) as _wheel:
+                _wheel.extractall(_site_packages)
+            _source = _adapter_distribution_path()
+            with open(os.path.join(_source, "CONCURRENT_OWNER"), "w", encoding="utf-8") as _stream:
+                _stream.write("external owner\n")
+        return _result
+    return _original_pip_main(_arguments)
+"""
+    return (
+        template.replace("__FORCE_REINSTALL__", repr(force_reinstall))
+        .replace("__WHEEL_PATH__", repr(str(wheel_path)))
+        .replace("__MODE__", repr(mode))
+    )
+
+
 def _install_for_verify(cli, layout, capsys, monkeypatch) -> None:
     _stub_target(monkeypatch, cli)
     monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": False, "status": "missing"})
@@ -2588,6 +2674,47 @@ def test_package_fingerprint_changes_when_record_payload_is_physically_replaced(
     assert after != before
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows physical path alias contract")
+@pytest.mark.parametrize("alias_kind", ["junction", "case"])
+def test_package_fingerprint_is_stable_across_physical_metadata_alias(tmp_path: Path, alias_kind: str) -> None:
+    cli = _install_cli()
+    ctx, dist_info, _payload = _isolated_distribution(cli, tmp_path)
+    direct_root = dist_info.parent
+    if alias_kind == "junction":
+        alias_root = tmp_path / "metadata-alias"
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias_root), str(direct_root)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert completed.returncode == 0
+    else:
+        alias_root = Path(str(direct_root).swapcase())
+        assert alias_root.exists()
+    code = (
+        cli._PACKAGE_RECORD_WORKER
+        + r"""
+values = list(metadata.distributions(path=[sys.argv[1]]))
+if len(values) != 1:
+    raise RuntimeError("unexpected distribution count")
+print(distribution_record(values[0])[1]["fingerprint"])
+"""
+    )
+
+    def fingerprint(root: Path) -> str:
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", code, str(root)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        return completed.stdout.strip().splitlines()[-1]
+
+    assert fingerprint(direct_root) == fingerprint(alias_root)
+
+
 def test_package_rollback_preserves_physically_replaced_same_content_contender(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2667,6 +2794,65 @@ def test_install_does_not_claim_same_name_contender_after_package_install_return
     assert captured.value.reason in {"package_rollback_incomplete", "target_probe_failed"}
     assert pip_calls == []
     assert state["package"] == contender
+
+
+@pytest.mark.parametrize("preinstalled", [False, True])
+def test_install_worker_does_not_claim_contender_created_after_pip_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preinstalled: bool
+) -> None:
+    cli = _install_cli()
+    ctx, wheel_path = _pip_worker_context(tmp_path)
+    operation_worker = cli._PACKAGE_OPERATION_WORKER
+    if preinstalled:
+        monkeypatch.setattr(
+            cli,
+            "_PACKAGE_OPERATION_WORKER",
+            operation_worker + _pip_worker_wrapper("none", wheel_path),
+        )
+        with cli._package_ownership(ctx) as mutex:
+            cli._install_package(ctx, "local", mutex)
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("install", wheel_path, force_reinstall=preinstalled),
+    )
+
+    with cli._package_ownership(ctx) as mutex:
+        evidence = cli._install_package(ctx, "local", mutex)
+        current = cli._snapshot_package_state(ctx)
+
+    claimed = evidence["dcc-mcp-3dsmax"]["fingerprint"]
+    contender = current["fingerprints"]["dcc-mcp-3dsmax"]
+    assert claimed != contender
+
+
+def test_uninstall_worker_rejects_contender_created_after_pip_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    ctx, wheel_path = _pip_worker_context(tmp_path)
+    operation_worker = cli._PACKAGE_OPERATION_WORKER
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("none", wheel_path),
+    )
+    with cli._package_ownership(ctx) as mutex:
+        cli._install_package(ctx, "local", mutex)
+        installed = cli._snapshot_package_state(ctx)
+
+    monkeypatch.setattr(
+        cli,
+        "_PACKAGE_OPERATION_WORKER",
+        operation_worker + _pip_worker_wrapper("uninstall", wheel_path),
+    )
+    with cli._package_ownership(ctx) as mutex:
+        with pytest.raises(cli.LifecycleError) as captured:
+            cli._uninstall_package(ctx, mutex, installed["fingerprints"])
+        current = cli._snapshot_package_state(ctx)
+
+    assert captured.value.reason == "package_mutation_evidence_changed"
+    assert "dcc-mcp-3dsmax" in current["fingerprints"]
 
 
 def test_uninstall_does_not_claim_same_name_contender_after_package_worker_returns(
