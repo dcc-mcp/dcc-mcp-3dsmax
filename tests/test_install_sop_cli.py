@@ -2301,7 +2301,7 @@ def test_package_mutex_key_uses_physical_interpreter_identity_for_hardlink_alias
     cli = _install_cli()
     layout = _layout(tmp_path)
     alias = layout["python"].with_name("python-alias.exe")
-    alias.hardlink_to(layout["python"])
+    os.link(str(layout["python"]), str(alias))
     first = cli._context(cli.build_parser().parse_args(_args(layout, "install", "--yes")))
     alias_layout = dict(layout)
     alias_layout["python"] = alias
@@ -2360,7 +2360,7 @@ def test_package_mutex_excludes_hardlink_alias_in_second_process(tmp_path: Path)
     cli = _install_cli()
     layout = _layout(tmp_path)
     alias = layout["python"].with_name("python-process-alias.exe")
-    alias.hardlink_to(layout["python"])
+    os.link(str(layout["python"]), str(alias))
     ctx = cli._context(cli.build_parser().parse_args(_args(layout, "install", "--yes")))
     script = r"""
 import sys
