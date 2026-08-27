@@ -642,7 +642,9 @@ def distribution_record(dist):
         "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
         "payloads": payloads,
     }
-    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    canonical_record = dict(record)
+    canonical_record.pop("metadata_location", None)
+    canonical = json.dumps(canonical_record, sort_keys=True, separators=(",", ":"))
     return normalized_name(str(name)), {
         "record": record,
         "requirement": requirement,
@@ -658,6 +660,25 @@ def installed_records():
             raise RuntimeError("duplicate distribution identity")
         values[normalized] = item
     return values
+
+
+def installed_record(expected):
+    matches = []
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        metadata_location = os.path.abspath(str(getattr(dist, "_path", "")))
+        if (
+            name
+            and normalized_name(str(name)) == expected
+            and not os.path.basename(metadata_location).startswith("~")
+        ):
+            normalized, item = distribution_record(dist)
+            if normalized != expected:
+                raise RuntimeError("installed distribution identity changed")
+            matches.append(item)
+    if len(matches) != 1:
+        raise RuntimeError("installed distribution evidence unavailable")
+    return matches[0]
 
 
 def fingerprints():
@@ -719,6 +740,23 @@ import tempfile
 operation, operation_identity = read_operation(sys.argv[1], sys.argv[2], "install")
 report_dir = tempfile.mkdtemp(prefix="dcc-mcp-pip-report-")
 report_path = os.path.join(report_dir, "install.json")
+mutation_records = {}
+from pip._internal.req.req_install import InstallRequirement
+original_install_requirement = InstallRequirement.install
+
+
+def install_requirement_with_evidence(self, *args, **kwargs):
+    original_install_requirement(self, *args, **kwargs)
+    if self.req is None or not self.req.name:
+        raise RuntimeError("installed distribution identity unavailable")
+    normalized = normalized_name(str(self.req.name))
+    installed_item = installed_record(normalized)
+    if normalized in mutation_records:
+        raise RuntimeError("duplicate installed distribution evidence")
+    mutation_records[normalized] = installed_item
+
+
+InstallRequirement.install = install_requirement_with_evidence
 try:
     return_code = pip_main(["install", "--upgrade", "--report", report_path, sys.argv[3]])
     if return_code:
@@ -752,20 +790,22 @@ try:
             "requirement": requirement_value,
             "provenance": json.dumps(download_info, sort_keys=True, separators=(",", ":")),
         }
-    installed = installed_records()
     for normalized, item in evidence.items():
-        installed_item = installed.get(normalized)
+        installed_item = mutation_records.get(normalized)
         if not isinstance(installed_item, dict) or installed_item.get("requirement") != item["requirement"]:
             raise RuntimeError("installed distribution does not match pip report")
         fingerprint = installed_item.get("fingerprint")
         if not isinstance(fingerprint, str) or not fingerprint:
             raise RuntimeError("installed distribution fingerprint unavailable")
         item["fingerprint"] = fingerprint
+    if set(mutation_records) != set(evidence):
+        raise RuntimeError("pip report does not match installed distribution evidence")
     operation_after, operation_identity_after = read_operation(sys.argv[1], sys.argv[2], "install")
     if operation_after != operation or operation_identity_after != operation_identity:
         raise RuntimeError("package operation token changed")
     print("DCC_MCP_INSTALL_EVIDENCE=" + json.dumps({"evidence": evidence}, sort_keys=True, separators=(",", ":")))
 finally:
+    InstallRequirement.install = original_install_requirement
     shutil.rmtree(report_dir, ignore_errors=True)
 """
     )
@@ -823,10 +863,26 @@ operation, operation_identity = read_operation(sys.argv[1], sys.argv[2], "uninst
 before = fingerprints()
 if before != operation.get("before"):
     raise RuntimeError("package operation owner changed")
+mutation_after = None
+from pip._internal.req.req_uninstall import UninstallPathSet
+original_uninstall_remove = UninstallPathSet.remove
+
+
+def uninstall_remove_with_evidence(self, *args, **kwargs):
+    global mutation_after
+    original_uninstall_remove(self, *args, **kwargs)
+    if mutation_after is not None:
+        raise RuntimeError("duplicate uninstall mutation evidence")
+    mutation_after = dict(before)
+    mutation_after.pop("dcc-mcp-3dsmax", None)
+
+
+UninstallPathSet.remove = uninstall_remove_with_evidence
 result = pip_main(["uninstall", "-y", "dcc-mcp-3dsmax"])
-if result:
-    raise SystemExit(int(result))
-after = fingerprints()
+UninstallPathSet.remove = original_uninstall_remove
+if result or mutation_after is None:
+    raise RuntimeError("pip uninstall failed")
+after = mutation_after
 operation_after, operation_identity_after = read_operation(sys.argv[1], sys.argv[2], "uninstall")
 if operation_after != operation or operation_identity_after != operation_identity:
     raise RuntimeError("package operation token changed")
@@ -944,7 +1000,9 @@ def _snapshot_package_state(ctx: InstallContext) -> Dict[str, Any]:
         name = _normalized_distribution_name(name_value)
         if not name or name in by_name:
             raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
-        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        canonical_record = dict(record)
+        canonical_record.pop("metadata_location", None)
+        canonical = json.dumps(canonical_record, sort_keys=True, separators=(",", ":"))
         requirements.append(requirement)
         by_name[name] = requirement
         fingerprints[name] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
