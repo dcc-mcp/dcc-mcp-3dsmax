@@ -33,6 +33,25 @@ def test_startup_script_starts_runtime_from_checkout(tmp_path):
     assert "DCC_MCP_GATEWAY_PORT" not in text
 
 
+def test_startup_script_enforces_the_public_core_and_server_range(tmp_path):
+    setup = _load_setup_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    text = setup.build_startup_script(source="local", repo_root=repo)
+
+    assert "min_core_version = '0.20.22'" in text
+    assert "max_core_version = '1.0.0'" in text
+    assert "min_server_version = '0.20.22'" in text
+    assert "max_server_version = '1.0.0'" in text
+    assert "*.dist-info/METADATA" in text
+    assert "from email.parser import Parser" in text
+    assert "getattr(dcc_mcp_core, '__version__'" not in text
+    assert "re.fullmatch('[0-9]+(?:[.][0-9]+)*', value)" in text
+    assert "unsupported dcc-mcp-core version" in text
+    assert "unsupported dcc-mcp-server version" in text
+
+
 def test_write_startup_hook_installs_and_generates_copy(tmp_path):
     setup = _load_setup_module()
     startup_dir = tmp_path / "startup"
@@ -96,6 +115,4 @@ def test_install_package_uses_uv_for_embedded_python(tmp_path, monkeypatch):
 
     setup.install_package(maxpy, "local", tmp_path, skip_install=False)
 
-    assert commands == [
-        (["C:/tools/uv.exe", "pip", "install", "--python", str(maxpy), "-e", "."], tmp_path)
-    ]
+    assert commands == [(["C:/tools/uv.exe", "pip", "install", "--python", str(maxpy), "-e", "."], tmp_path)]

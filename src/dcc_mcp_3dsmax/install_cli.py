@@ -29,7 +29,10 @@ from .__version__ import __version__ as ADAPTER_VERSION
 DCC_TYPE = "3dsmax"
 COMMAND = "dcc-mcp-3dsmax"
 STARTUP_SCRIPT_NAME = "dcc_mcp_3dsmax_startup.ms"
-MIN_CORE_VERSION = "0.20.20"
+MIN_CORE_VERSION = "0.20.22"
+MAX_CORE_VERSION = "1.0.0"
+MIN_SERVER_VERSION = "0.20.22"
+MAX_SERVER_VERSION = "1.0.0"
 try:
     from dcc_mcp_core.deployment import INSTALL_EXIT_CODES, INSTALL_SOP_SCHEMA_VERSION
 except ImportError:
@@ -143,7 +146,10 @@ def _core_version() -> str:
 
 
 def _version_tuple(value: str) -> Tuple[int, ...]:
-    values = [int(item) for item in re.findall(r"\d+", str(value))[:3]]
+    text = str(value).strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", text):
+        raise ValueError("version must contain only dot-separated release integers")
+    values = [int(item) for item in text.split(".")]
     return tuple(values + [0] * (3 - len(values)))
 
 
@@ -205,17 +211,63 @@ def render_startup_script(log_dir: Path) -> str:
     encoded_log_dir = base64.b64encode(str(log_dir.resolve()).encode("utf-8")).decode("ascii")
     python_code = (
         "import base64\n"
+        "import re\n"
+        "from email.parser import Parser\n"
+        "from pathlib import Path\n"
         "from dcc_mcp_core import capture_bootstrap_errors\n"
         "bootstrap_error_dir = base64.b64decode(%r).decode('utf-8')\n"
+        "min_core_version = %r\n"
+        "max_core_version = %r\n"
+        "min_server_version = %r\n"
+        "max_server_version = %r\n"
+        "def _release_version(value):\n"
+        "    if not isinstance(value, str) or re.fullmatch('[0-9]+(?:[.][0-9]+)*', value) is None:\n"
+        "        raise RuntimeError('invalid DCC MCP runtime version')\n"
+        "    return tuple(int(part) for part in value.split('.'))\n"
+        "def _distribution_version(root, distribution):\n"
+        "    expected = re.sub('[-_.]+', '-', distribution).lower()\n"
+        "    matches = []\n"
+        "    for metadata_path in sorted(root.glob('*.dist-info/METADATA')):\n"
+        "        metadata = Parser().parsestr(metadata_path.read_text(encoding='utf-8'))\n"
+        "        names = metadata.get_all('Name', [])\n"
+        "        matching_names = [name for name in names if re.sub('[-_.]+', '-', name).lower() == expected]\n"
+        "        if not matching_names:\n"
+        "            continue\n"
+        "        versions = metadata.get_all('Version', [])\n"
+        "        if len(names) != 1 or len(matching_names) != 1 or len(versions) != 1:\n"
+        "            raise RuntimeError('ambiguous ' + distribution + ' metadata')\n"
+        "        matches.append(versions[0])\n"
+        "    if len(matches) != 1:\n"
+        "        raise RuntimeError('ambiguous ' + distribution + ' metadata')\n"
+        "    return matches[0]\n"
+        "def _require_runtime_versions():\n"
+        "    import dcc_mcp_core, dcc_mcp_server\n"
+        "    core_root = Path(dcc_mcp_core.__file__).resolve().parent.parent\n"
+        "    server_root = Path(dcc_mcp_server.__file__).resolve().parent.parent\n"
+        "    core = _release_version(_distribution_version(core_root, 'dcc-mcp-core'))\n"
+        "    server = _release_version(_distribution_version(server_root, 'dcc-mcp-server'))\n"
+        "    if not (_release_version(min_core_version) <= core < _release_version(max_core_version)):\n"
+        "        raise RuntimeError('unsupported dcc-mcp-core version')\n"
+        "    if not (_release_version(min_server_version) <= server < _release_version(max_server_version)):\n"
+        "        raise RuntimeError('unsupported dcc-mcp-server version')\n"
         "with capture_bootstrap_errors(\n"
         "    '3dsmax', adapter_version=%r, min_core_version=%r,\n"
         "    phase='startup', log_dir=bootstrap_error_dir):\n"
+        "    _require_runtime_versions()\n"
         "    import dcc_mcp_3dsmax\n"
         "    dcc_mcp_3dsmax.install_menu()\n"
         "    dcc_mcp_3dsmax.install_shutdown_callback()\n"
         "    dcc_mcp_3dsmax.main()\n"
         "    print('dcc-mcp-3dsmax runtime ready from startup hook')\n"
-    ) % (encoded_log_dir, ADAPTER_VERSION, MIN_CORE_VERSION)
+    ) % (
+        encoded_log_dir,
+        MIN_CORE_VERSION,
+        MAX_CORE_VERSION,
+        MIN_SERVER_VERSION,
+        MAX_SERVER_VERSION,
+        ADAPTER_VERSION,
+        MIN_CORE_VERSION,
+    )
     lines = ['    py += "%s\\n"' % _maxscript_string(line) for line in python_code.splitlines()]
     return "\n".join(
         [
@@ -402,12 +454,48 @@ def _plan(ctx: InstallContext, command: str) -> Dict[str, Any]:
     return report
 
 
+def _runtime_metadata_probe_code() -> str:
+    return """import re
+from email.parser import Parser
+from pathlib import Path
+
+def _distribution_version(module, distribution):
+    root = Path(module.__file__).resolve().parent.parent
+    expected = re.sub('[-_.]+', '-', distribution).lower()
+    matches = []
+    for metadata_path in sorted(root.glob('*.dist-info/METADATA')):
+        metadata = Parser().parsestr(metadata_path.read_text(encoding='utf-8'))
+        names = metadata.get_all('Name', [])
+        versions = metadata.get_all('Version', [])
+        matching_names = [name for name in names if re.sub('[-_.]+', '-', name).lower() == expected]
+        if not matching_names:
+            continue
+        if len(names) != 1 or len(matching_names) != 1 or len(versions) != 1:
+            raise RuntimeError('invalid %s metadata' % distribution)
+        matches.append(versions[0])
+    if len(matches) != 1:
+        raise RuntimeError('ambiguous %s metadata' % distribution)
+    return matches[0]
+"""
+
+
 def _probe_target(python: Path) -> Dict[str, Any]:
     code = (
-        "import json,sys,dcc_mcp_core,dcc_mcp_3dsmax;"
-        "print(json.dumps({'python_version':sys.version.split()[0],"
-        "'adapter_version':dcc_mcp_3dsmax.__version__,"
-        "'core_version':getattr(dcc_mcp_core,'__version__','unknown')}))"
+        _runtime_metadata_probe_code()
+        + """
+import json
+import sys
+import dcc_mcp_core
+import dcc_mcp_server
+import dcc_mcp_3dsmax
+
+print(json.dumps({
+    'python_version': sys.version.split()[0],
+    'adapter_version': dcc_mcp_3dsmax.__version__,
+    'core_version': _distribution_version(dcc_mcp_core, 'dcc-mcp-core'),
+    'server_version': _distribution_version(dcc_mcp_server, 'dcc-mcp-server'),
+}))
+"""
     )
     try:
         completed = subprocess.run(
@@ -428,11 +516,29 @@ def _probe_target(python: Path) -> Dict[str, Any]:
 
 def _probe_compatibility(ctx: InstallContext) -> Dict[str, Any]:
     code = (
-        "import json,sys;"
-        "core_version=None;"
-        "exec(\"try:\\n import dcc_mcp_core\\n core_version=getattr(dcc_mcp_core,'__version__','unknown')"
-        '\\nexcept ImportError:\\n pass");'
-        "print(json.dumps({'python_version':sys.version.split()[0],'core_version':core_version}))"
+        _runtime_metadata_probe_code()
+        + """
+import json
+import sys
+
+core_version = None
+server_version = None
+try:
+    import dcc_mcp_core
+    core_version = _distribution_version(dcc_mcp_core, 'dcc-mcp-core')
+except ImportError:
+    pass
+try:
+    import dcc_mcp_server
+    server_version = _distribution_version(dcc_mcp_server, 'dcc-mcp-server')
+except ImportError:
+    pass
+print(json.dumps({
+    'python_version': sys.version.split()[0],
+    'core_version': core_version,
+    'server_version': server_version,
+}))
+"""
     )
     try:
         completed = subprocess.run(
@@ -452,20 +558,49 @@ def _probe_compatibility(ctx: InstallContext) -> Dict[str, Any]:
     return value
 
 
+def _validate_dependency_version(value: Any, name: str, minimum: str, maximum: str, *, allow_missing: bool) -> bool:
+    if value in (None, "", "unavailable"):
+        if allow_missing:
+            return False
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "%s_version_unavailable" % name)
+    try:
+        parsed = _version_tuple(str(value))
+    except ValueError:
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "%s_version_invalid" % name)
+    if parsed < _version_tuple(minimum):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "%s_version_too_old" % name)
+    if parsed >= _version_tuple(maximum):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "%s_version_unsupported" % name)
+    return True
+
+
+def _validate_dependency_versions(versions: Dict[str, Any], *, allow_both_missing: bool) -> None:
+    core_present = _validate_dependency_version(
+        versions.get("core_version"), "core", MIN_CORE_VERSION, MAX_CORE_VERSION, allow_missing=allow_both_missing
+    )
+    server_present = _validate_dependency_version(
+        versions.get("server_version"),
+        "server",
+        MIN_SERVER_VERSION,
+        MAX_SERVER_VERSION,
+        allow_missing=allow_both_missing,
+    )
+    if allow_both_missing and core_present != server_present:
+        missing = "server" if core_present else "core"
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "%s_version_unavailable" % missing)
+
+
 def _validate_compatibility(compatibility: Dict[str, Any]) -> None:
-    if _version_tuple(str(compatibility.get("python_version", "0"))) < (3, 7, 0):
+    try:
+        python_version = _version_tuple(str(compatibility.get("python_version", "0")))
+    except ValueError:
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "python_version_unsupported")
+    if python_version < (3, 7, 0):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "python_version_unsupported")
     host_version = str(compatibility.get("host_version") or "unknown")
     if not host_version.isdigit() or int(host_version) < 2017:
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "host_version_unsupported")
-    core_version = compatibility.get("core_version")
-    if core_version in (None, "", "unavailable"):
-        return
-    parsed_core = _version_tuple(str(core_version))
-    if parsed_core < _version_tuple(MIN_CORE_VERSION):
-        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_too_old")
-    if parsed_core >= (1, 0, 0):
-        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_unsupported")
+    _validate_dependency_versions(compatibility, allow_both_missing=True)
 
 
 def _preflight_compatibility(ctx: InstallContext) -> Dict[str, Any]:
@@ -2696,8 +2831,7 @@ def _install_transaction_locked(
         target = _probe_target(ctx.python_path)
         if target.get("adapter_version") != ADAPTER_VERSION:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "adapter_version_mismatch")
-        if _version_tuple(str(target.get("core_version", "0"))) < _version_tuple(MIN_CORE_VERSION):
-            raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_too_old")
+        _validate_dependency_versions(target, allow_both_missing=False)
         _require_snapshot_current(ctx.hook_path, hook_before)
         _require_snapshot_current(ctx.receipt_path, receipt_before)
         ctx.startup_dir.mkdir(parents=True, exist_ok=True)
@@ -2793,8 +2927,10 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
         return {"directly_usable": False, "failure_stage": exc.stage, "failure_reason": exc.reason}, []
     if target.get("adapter_version") != ADAPTER_VERSION:
         return {"directly_usable": False, "failure_stage": "import", "failure_reason": "adapter_version_mismatch"}, []
-    if _version_tuple(str(target.get("core_version", "0"))) < _version_tuple(MIN_CORE_VERSION):
-        return {"directly_usable": False, "failure_stage": "preflight", "failure_reason": "core_version_too_old"}, []
+    try:
+        _validate_dependency_versions(target, allow_both_missing=False)
+    except LifecycleError as exc:
+        return {"directly_usable": False, "failure_stage": exc.stage, "failure_reason": exc.reason}, []
     bootstrap_reason = _bootstrap_error_state(receipt)
     if bootstrap_reason:
         return {"directly_usable": False, "failure_stage": "startup", "failure_reason": bootstrap_reason}, []
