@@ -663,6 +663,7 @@ def _rollback_transaction(
     hook_before: Any,
     receipt_before: Any,
     restore_files: bool,
+    committed: Optional[Dict[Path, FileSnapshot]] = None,
 ) -> None:
     rollback_failed = False
     if restore_files:
@@ -670,7 +671,12 @@ def _rollback_transaction(
             (ctx.hook_path, hook_before),
             (ctx.receipt_path, receipt_before),
         ):
+            if committed is not None and path not in committed:
+                continue
             try:
+                if committed is not None and not _snapshot_is_current(path, committed[path]):
+                    rollback_failed = True
+                    continue
                 snapshot = _coerce_file_snapshot(content)
                 restored_identity = _restore(path, snapshot.content if snapshot.existed else None)
                 if not _snapshot_matches(path, snapshot, restored_identity):
@@ -683,6 +689,23 @@ def _rollback_transaction(
         rollback_failed = True
     if rollback_failed:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "transaction_rollback_incomplete")
+
+
+def _rollback_committed(
+    ctx: InstallContext,
+    prior_package_state: Dict[str, Any],
+    hook_before: Any,
+    receipt_before: Any,
+    committed: Dict[Path, FileSnapshot],
+) -> None:
+    _rollback_transaction(
+        ctx,
+        prior_package_state,
+        hook_before,
+        receipt_before,
+        bool(committed),
+        committed,
+    )
 
 
 def _replace_file(source: Path, destination: Path) -> None:
@@ -770,6 +793,28 @@ def _snapshot(path: Path) -> FileSnapshot:
     return FileSnapshot(True, content, hashlib.sha256(content).hexdigest(), identity, True)
 
 
+def _snapshot_is_current(path: Path, expected: Any) -> bool:
+    snapshot = _coerce_file_snapshot(expected)
+    if not snapshot.existed:
+        return not os.path.lexists(str(path))
+    if not snapshot.independent or snapshot.identity is None:
+        return False
+    try:
+        content, identity = _read_independent_file(path)
+    except Exception:
+        return False
+    return (
+        identity == snapshot.identity
+        and content == snapshot.content
+        and hashlib.sha256(content).hexdigest() == snapshot.sha256
+    )
+
+
+def _require_snapshot_current(path: Path, expected: Any) -> None:
+    if not _snapshot_is_current(path, expected):
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
+
+
 def _snapshot_matches(
     path: Path,
     expected: Any,
@@ -813,6 +858,39 @@ def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
             temp.unlink()
         except FileNotFoundError:
             pass
+
+
+def _replace_file_if_snapshot(source: Path, destination: Path, expected: Any) -> FileSnapshot:
+    _require_snapshot_current(destination, expected)
+    staged = _snapshot(source)
+    _replace_file(source, destination)
+    _require_snapshot_current(destination, staged)
+    return staged
+
+
+def _restore_if_snapshot(path: Path, content: Optional[bytes], expected: Any) -> FileSnapshot:
+    _require_snapshot_current(path, expected)
+    restored_identity = _restore(path, content)
+    if content is None:
+        restored = _absent_file_snapshot()
+    else:
+        restored = FileSnapshot(
+            True,
+            content,
+            hashlib.sha256(content).hexdigest(),
+            restored_identity,
+            True,
+        )
+    _require_snapshot_current(path, restored)
+    return restored
+
+
+def _unlink_if_snapshot(path: Path, expected: Any) -> FileSnapshot:
+    _require_snapshot_current(path, expected)
+    path.unlink()
+    removed = _absent_file_snapshot()
+    _require_snapshot_current(path, removed)
+    return removed
 
 
 def _previous_hook(prior_receipt: Optional[Dict[str, Any]], current: Any) -> Dict[str, Any]:
@@ -879,16 +957,21 @@ def _is_windows_lock(exc: OSError) -> bool:
     return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32, 33}
 
 
-def _install_transaction(ctx: InstallContext, source: str) -> None:
+def _install_transaction(
+    ctx: InstallContext,
+    source: str,
+    ownership: Optional[Tuple[FileSnapshot, FileSnapshot]] = None,
+) -> None:
+    hook_before, receipt_before = ownership or _preflight_ownership(ctx)
+    _require_snapshot_current(ctx.hook_path, hook_before)
+    _require_snapshot_current(ctx.receipt_path, receipt_before)
     prior_receipt = _read_receipt(ctx.receipt_path)
     prior_package_state = _snapshot_package_state(ctx)
-    hook_before = _snapshot(ctx.hook_path)
-    receipt_before = _snapshot(ctx.receipt_path)
     token = uuid.uuid4().hex
     hook_stage = ctx.hook_path.with_name(".%s.stage-%s" % (ctx.hook_path.name, token))
     receipt_stage = ctx.receipt_path.with_name(".%s.stage-%s" % (ctx.receipt_path.name, token))
     package_attempted = False
-    files_changed = False
+    committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
         _install_package(ctx, source)
@@ -897,6 +980,8 @@ def _install_transaction(ctx: InstallContext, source: str) -> None:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "adapter_version_mismatch")
         if _version_tuple(str(target.get("core_version", "0"))) < _version_tuple(MIN_CORE_VERSION):
             raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "core_version_too_old")
+        _require_snapshot_current(ctx.hook_path, hook_before)
+        _require_snapshot_current(ctx.receipt_path, receipt_before)
         ctx.startup_dir.mkdir(parents=True, exist_ok=True)
         ctx.receipt_path.parent.mkdir(parents=True, exist_ok=True)
         hook_stage.write_text(
@@ -904,22 +989,21 @@ def _install_transaction(ctx: InstallContext, source: str) -> None:
             encoding="utf-8",
         )
         _write_staged_receipt(receipt_stage, _receipt(ctx, hook_stage, prior_receipt, hook_before, target))
-        _replace_file(hook_stage, ctx.hook_path)
-        files_changed = True
-        _replace_file(receipt_stage, ctx.receipt_path)
+        committed[ctx.hook_path] = _replace_file_if_snapshot(hook_stage, ctx.hook_path, hook_before)
+        committed[ctx.receipt_path] = _replace_file_if_snapshot(receipt_stage, ctx.receipt_path, receipt_before)
     except LifecycleError:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         raise
     except OSError as exc:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         if _is_windows_lock(exc):
             raise LifecycleError(INSTALL_EXIT_REQUIRES_RESTART, "install", "windows_file_lock")
         raise LifecycleError(INSTALL_EXIT_INSTALL, "install", "commit_failed")
     except Exception:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         raise LifecycleError(INSTALL_EXIT_INSTALL, "install", "commit_failed")
     finally:
         for stage in (hook_stage, receipt_stage):
@@ -1004,14 +1088,12 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
     return {"directly_usable": True, "failure_stage": None, "failure_reason": None}, []
 
 
-def _preflight_ownership(ctx: InstallContext) -> None:
-    for path in (ctx.hook_path, ctx.receipt_path):
-        if os.path.lexists(str(path)):
-            _snapshot(path)
+def _preflight_ownership(ctx: InstallContext) -> Tuple[FileSnapshot, FileSnapshot]:
+    return _snapshot(ctx.hook_path), _snapshot(ctx.receipt_path)
 
 
 def _run_install(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
-    _preflight_ownership(ctx)
+    ownership = _preflight_ownership(ctx)
     if ctx.state == "partial" and ctx.receipt_path.is_file():
         return INSTALL_EXIT_PREFLIGHT, _failure_report(
             ctx,
@@ -1028,7 +1110,7 @@ def _run_install(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Di
             _next_command(ctx, args.command, "confirm_%s" % args.command, "Explicit consent is required.")
         ]
         return INSTALL_EXIT_PREFLIGHT, report
-    _install_transaction(ctx, args.source)
+    _install_transaction(ctx, args.source, ownership)
     verify, next_steps = _verify(ctx, args.timeout)
     if verify["directly_usable"]:
         status, exit_code = "ok", INSTALL_EXIT_OK
@@ -1097,13 +1179,15 @@ def _decode_previous_hook(receipt: Dict[str, Any]) -> Optional[bytes]:
 
 def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
     if not os.path.lexists(str(ctx.receipt_path)):
-        if ctx.hook_path.exists():
+        ownership = _preflight_ownership(ctx)
+        if os.path.lexists(str(ctx.hook_path)):
             return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "receipt", "receipt_missing")
         report = _base_report(ctx, "ok", "uninstall")
         report["steps"] = [{"id": "uninstall", "status": "skipped"}]
         return INSTALL_EXIT_OK, report
     receipt = _read_receipt(ctx.receipt_path, required=True)
     assert receipt is not None
+    ownership = _preflight_ownership(ctx)
     state, stage, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
     if state == "partial":
         return INSTALL_EXIT_INSTALL, _failure_report(
@@ -1119,29 +1203,31 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
     if not args.yes:
         return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "preflight", "confirmation_required")
     prior_package_state = _snapshot_package_state(ctx)
-    hook_before = _snapshot(ctx.hook_path)
-    receipt_before = _snapshot(ctx.receipt_path)
+    hook_before, receipt_before = ownership
+    _require_snapshot_current(ctx.hook_path, hook_before)
+    _require_snapshot_current(ctx.receipt_path, receipt_before)
     package_attempted = False
-    files_changed = False
+    committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
         _uninstall_package(ctx)
-        files_changed = True
-        _restore(ctx.hook_path, previous)
-        ctx.receipt_path.unlink()
+        _require_snapshot_current(ctx.hook_path, hook_before)
+        _require_snapshot_current(ctx.receipt_path, receipt_before)
+        committed[ctx.hook_path] = _restore_if_snapshot(ctx.hook_path, previous, hook_before)
+        committed[ctx.receipt_path] = _unlink_if_snapshot(ctx.receipt_path, receipt_before)
     except LifecycleError:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         raise
     except OSError as exc:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         if _is_windows_lock(exc):
             raise LifecycleError(INSTALL_EXIT_REQUIRES_RESTART, "uninstall", "windows_file_lock")
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "commit_failed")
     except Exception:
         if package_attempted:
-            _rollback_transaction(ctx, prior_package_state, hook_before, receipt_before, files_changed)
+            _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "commit_failed")
     report = _base_report(ctx, "ok", "uninstall")
     report["receipt_path"] = None

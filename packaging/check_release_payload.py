@@ -8,8 +8,9 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Optional
-from typing import Tuple
+from typing import Optional, Tuple
+
+ASSET_SOURCE_ACTION = "3dsmax_asset_source__search_assets"
 
 
 def payload_root(path: Path) -> Tuple[Path, Optional[tempfile.TemporaryDirectory]]:
@@ -33,6 +34,17 @@ def python_root(payload: Path) -> Path:
     return root
 
 
+def verify_asset_source_handler(server) -> None:
+    loaded = server._server.load_skill("3dsmax-asset-source")
+    registry = server._server.registry
+    if (
+        loaded != [ASSET_SOURCE_ACTION]
+        or registry.get_action(ASSET_SOURCE_ACTION) is None
+        or not server._server.has_handler(ASSET_SOURCE_ACTION)
+    ):
+        raise RuntimeError("release payload asset-source handler registration failed")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("payload", help="Path to an assembled .mzp/.zip or extracted payload directory")
@@ -46,12 +58,16 @@ def main() -> None:
         sys.path.insert(0, str(root))
 
         import dcc_mcp_core._core  # noqa: F401, PLC0415
+
         import dcc_mcp_3dsmax  # noqa: PLC0415
         from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions  # noqa: PLC0415
 
         server = MaxMcpServer(options=MaxServerOptions(port=0, enable_gateway_failover=False, job_storage_path=""))
-        server.register_builtin_actions(include_bundled=True)
-        server.stop()
+        try:
+            server.register_builtin_actions(include_bundled=True)
+            verify_asset_source_handler(server)
+        finally:
+            server.stop()
         print("release payload import-registration OK: root={} adapter={}".format(root, dcc_mcp_3dsmax.__version__))
     finally:
         if cleanup is not None:
