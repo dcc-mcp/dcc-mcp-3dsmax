@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .__version__ import __version__ as ADAPTER_VERSION
 
@@ -473,7 +473,7 @@ def _preflight_compatibility(ctx: InstallContext) -> Dict[str, Any]:
     return compatibility
 
 
-def _install_package(ctx: InstallContext, source: str) -> bool:
+def _install_package(ctx: InstallContext, source: str) -> Set[str]:
     if source == "local":
         root = Path(__file__).resolve().parents[2]
         if not (root / "pyproject.toml").is_file():
@@ -481,18 +481,49 @@ def _install_package(ctx: InstallContext, source: str) -> bool:
         requirement = str(root)
     else:
         requirement = "dcc-mcp-3dsmax==%s" % ADAPTER_VERSION
+    report_dir = Path(tempfile.mkdtemp(prefix="dcc-mcp-pip-report-"))
+    report_path = report_dir / "install.json"
     try:
         subprocess.run(
-            [str(ctx.python_path), "-m", "pip", "install", "--upgrade", requirement],
+            [
+                str(ctx.python_path),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--report",
+                str(report_path),
+                requirement,
+            ],
             cwd=str(root) if source == "local" else None,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=300,
         )
-    except (OSError, subprocess.SubprocessError):
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        installs = report.get("install")
+        if not isinstance(installs, list):
+            raise ValueError("pip report missing install records")
+        names = set()
+        for item in installs:
+            metadata = item.get("metadata") if isinstance(item, dict) else None
+            name = metadata.get("name") if isinstance(metadata, dict) else None
+            if not isinstance(name, str) or not name:
+                raise ValueError("pip report missing distribution name")
+            names.add(_normalized_distribution_name(name))
+        return names
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
-    return True
+    finally:
+        try:
+            report_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            report_dir.rmdir()
+        except OSError:
+            pass
 
 
 def _uninstall_package(ctx: InstallContext) -> None:
@@ -705,6 +736,35 @@ def _package_rollback_before_pip(_ctx: InstallContext, _mutex: PackageMutex) -> 
     """Deterministic test seam at the final ownership-to-pip boundary."""
 
 
+def _package_rollback_commit_hook(_ctx: InstallContext, _mutex: PackageMutex) -> None:
+    """Deterministic test seam immediately before the commit ownership check."""
+
+
+def _package_state_for_mutations(
+    prior: Dict[str, Any], after: Dict[str, Any], mutation_names: Set[str]
+) -> Dict[str, Any]:
+    """Project an observed package state onto the names pip reports mutating."""
+
+    by_name = dict(prior["by_name"])
+    fingerprints = dict(prior["fingerprints"])
+    for raw_name in mutation_names:
+        name = _normalized_distribution_name(raw_name)
+        if name in after["by_name"]:
+            by_name[name] = after["by_name"][name]
+            fingerprints[name] = after["fingerprints"][name]
+        else:
+            by_name.pop(name, None)
+            fingerprints.pop(name, None)
+    requirements = tuple(sorted(by_name.values()))
+    canonical = "\n".join("%s:%s" % item for item in sorted(fingerprints.items()))
+    return {
+        "requirements": requirements,
+        "by_name": by_name,
+        "fingerprints": fingerprints,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
 def _restore_package_state(
     ctx: InstallContext,
     prior: Dict[str, Any],
@@ -767,6 +827,10 @@ def _restore_package_state_locked(
                 _package_rollback_before_pip(ctx, package_mutex)
                 final_owner = _snapshot_package_state(ctx)
                 if final_owner.get("fingerprints") != current_fingerprints:
+                    raise RuntimeError("package transaction ownership changed")
+                _package_rollback_commit_hook(ctx, package_mutex)
+                commit_owner = _snapshot_package_state(ctx)
+                if commit_owner.get("fingerprints") != current_fingerprints:
                     raise RuntimeError("package transaction ownership changed")
         if remove:
             _run_pip_command(ctx, ["uninstall", "-y"] + remove)
@@ -1272,6 +1336,35 @@ def _read_committed_marker(commit_path: Path, destination: Path, desired: Any) -
     return marker
 
 
+def _collapse_private_publication(primary: Path, stage: Path) -> None:
+    """Finish an interrupted same-directory hard-link publication.
+
+    Both names are private, deterministically paired transaction artifacts.
+    Only the exact two-link regular-file state created by our publisher is
+    recoverable; every foreign alias or identity mismatch remains fail closed.
+    """
+
+    if not os.path.lexists(str(stage)):
+        return
+    if not os.path.lexists(str(primary)):
+        raise RuntimeError("published transaction artifact is missing")
+    primary_stat = os.lstat(str(primary))
+    stage_stat = os.lstat(str(stage))
+    primary_reparse = bool(getattr(primary_stat, "st_file_attributes", 0) & 0x400)
+    stage_reparse = bool(getattr(stage_stat, "st_file_attributes", 0) & 0x400)
+    if (
+        not stat.S_ISREG(primary_stat.st_mode)
+        or not stat.S_ISREG(stage_stat.st_mode)
+        or primary_reparse
+        or stage_reparse
+        or _file_identity(primary_stat) != _file_identity(stage_stat)
+        or primary_stat.st_nlink != 2
+        or stage_stat.st_nlink != 2
+    ):
+        raise RuntimeError("transaction publication identity mismatch")
+    _durable_unlink(stage)
+
+
 def _remove_owned_file(path: Path, expected: Any) -> None:
     delete_claim = path.with_name(".%s.delete-%s" % (path.name, uuid.uuid4().hex))
     claimed = _claim_file_if_snapshot(path, expected, delete_claim)
@@ -1548,8 +1641,18 @@ def _install_transaction_locked(
     committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
-        _install_package(ctx, source)
-        prior_package_state["_transaction_owned"] = _snapshot_package_state(ctx)
+        mutation_evidence = _install_package(ctx, source)
+        package_after = _snapshot_package_state(ctx)
+        if isinstance(mutation_evidence, (set, frozenset, list, tuple)):
+            prior_package_state["_transaction_owned"] = _package_state_for_mutations(
+                prior_package_state, package_after, set(mutation_evidence)
+            )
+        elif mutation_evidence is True:
+            # Compatibility for injected legacy test doubles. Production pip
+            # always returns its exact mutation names from --report.
+            prior_package_state["_transaction_owned"] = package_after
+        else:
+            raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_unavailable")
         target = _probe_target(ctx.python_path)
         if target.get("adapter_version") != ADAPTER_VERSION:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "adapter_version_mismatch")
@@ -1676,6 +1779,7 @@ def _reconcile_file_transaction(destination: Path) -> None:
         if markers:
             marker_path = markers[0]
             try:
+                _collapse_private_publication(marker_path, marker_path.with_name(marker_path.name + ".stage"))
                 marker_snapshot = _snapshot(marker_path)
                 content, _identity = _read_independent_file(marker_path)
                 record = json.loads(content.decode("utf-8"))
@@ -1692,6 +1796,14 @@ def _reconcile_file_transaction(destination: Path) -> None:
         return
     journal_path = journals[0]
     try:
+        token_match = re.fullmatch(
+            r"\.%s\.transaction-([0-9a-f]{32})\.json" % re.escape(destination.name),
+            journal_path.name,
+        )
+        if token_match is None:
+            raise RuntimeError("invalid transaction journal name")
+        journal_stage = destination.with_name(".%s.journal-stage-%s" % (destination.name, token_match.group(1)))
+        _collapse_private_publication(journal_path, journal_stage)
         journal_snapshot = _snapshot(journal_path)
         (
             expected,
@@ -1714,6 +1826,7 @@ def _reconcile_file_transaction(destination: Path) -> None:
                 raise RuntimeError("transaction stage identity mismatch")
 
         if commit_exists:
+            _collapse_private_publication(commit_path, commit_path.with_name(commit_path.name + ".stage"))
             commit_snapshot = _read_committed_marker(commit_path, destination, desired)
             if desired.existed:
                 if not _owned_snapshot_matches(destination, desired):
@@ -1773,14 +1886,33 @@ def _reconcile_file_transaction(destination: Path) -> None:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
 
 
-def _preflight_ownership(ctx: InstallContext) -> Tuple[FileSnapshot, FileSnapshot]:
-    _reconcile_file_transaction(ctx.hook_path)
-    _reconcile_file_transaction(ctx.receipt_path)
+def _require_no_pending_transaction(destination: Path) -> None:
+    if not destination.parent.is_dir():
+        return
+    prefixes = (
+        ".%s.transaction-" % destination.name,
+        ".%s.committed-" % destination.name,
+        ".%s.journal-stage-" % destination.name,
+        ".%s.claim-" % destination.name,
+        ".%s.recovery-" % destination.name,
+        ".%s.restore-stage-" % destination.name,
+    )
+    if any(any(path.name.startswith(prefix) for prefix in prefixes) for path in destination.parent.iterdir()):
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_required")
+
+
+def _preflight_ownership(ctx: InstallContext, recover: bool = True) -> Tuple[FileSnapshot, FileSnapshot]:
+    if recover:
+        _reconcile_file_transaction(ctx.hook_path)
+        _reconcile_file_transaction(ctx.receipt_path)
+    else:
+        _require_no_pending_transaction(ctx.hook_path)
+        _require_no_pending_transaction(ctx.receipt_path)
     return _snapshot(ctx.hook_path), _snapshot(ctx.receipt_path)
 
 
 def _run_install(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
-    ownership = _preflight_ownership(ctx)
+    ownership = _preflight_ownership(ctx, recover=not args.dry_run)
     if ctx.state == "partial" and ctx.receipt_path.is_file():
         return INSTALL_EXIT_PREFLIGHT, _failure_report(
             ctx,
@@ -1875,7 +2007,7 @@ def _run_uninstall_locked(
     ctx: InstallContext, args: argparse.Namespace, package_mutex: Optional[PackageMutex]
 ) -> Tuple[int, Dict[str, Any]]:
     if not os.path.lexists(str(ctx.receipt_path)):
-        ownership = _preflight_ownership(ctx)
+        ownership = _preflight_ownership(ctx, recover=not args.dry_run)
         if os.path.lexists(str(ctx.hook_path)):
             return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "receipt", "receipt_missing")
         report = _base_report(ctx, "ok", "uninstall")
@@ -1883,7 +2015,7 @@ def _run_uninstall_locked(
         return INSTALL_EXIT_OK, report
     receipt = _read_receipt(ctx.receipt_path, required=True)
     assert receipt is not None
-    ownership = _preflight_ownership(ctx)
+    ownership = _preflight_ownership(ctx, recover=not args.dry_run)
     state, stage, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
     if state == "partial":
         return INSTALL_EXIT_INSTALL, _failure_report(
@@ -1911,7 +2043,9 @@ def _run_uninstall_locked(
     try:
         package_attempted = True
         _uninstall_package(ctx)
-        prior_package_state["_transaction_owned"] = _snapshot_package_state(ctx)
+        prior_package_state["_transaction_owned"] = _package_state_for_mutations(
+            prior_package_state, _snapshot_package_state(ctx), {"dcc-mcp-3dsmax"}
+        )
         _require_snapshot_current(ctx.hook_path, hook_before)
         _require_snapshot_current(ctx.receipt_path, receipt_before)
         _restore_if_snapshot(ctx.hook_path, previous, hook_before, committed)
