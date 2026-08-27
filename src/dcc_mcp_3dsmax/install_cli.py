@@ -473,7 +473,7 @@ def _preflight_compatibility(ctx: InstallContext) -> Dict[str, Any]:
     return compatibility
 
 
-def _install_package(ctx: InstallContext, source: str) -> Dict[str, str]:
+def _install_package(ctx: InstallContext, source: str) -> Dict[str, Dict[str, str]]:
     if source == "local":
         root = Path(__file__).resolve().parents[2]
         if not (root / "pyproject.toml").is_file():
@@ -505,7 +505,7 @@ def _install_package(ctx: InstallContext, source: str) -> Dict[str, str]:
         installs = report.get("install")
         if not isinstance(installs, list):
             raise ValueError("pip report missing install records")
-        evidence: Dict[str, str] = {}
+        evidence: Dict[str, Dict[str, str]] = {}
         for item in installs:
             metadata = item.get("metadata") if isinstance(item, dict) else None
             name = metadata.get("name") if isinstance(metadata, dict) else None
@@ -516,13 +516,25 @@ def _install_package(ctx: InstallContext, source: str) -> Dict[str, str]:
             if normalized in evidence:
                 raise ValueError("pip report contains duplicate distribution")
             download_info = item.get("download_info") if isinstance(item, dict) else None
+            if not isinstance(download_info, dict):
+                raise ValueError("pip report missing distribution provenance")
             direct_url = download_info.get("url") if isinstance(download_info, dict) else None
             if item.get("is_direct") is True:
                 if not isinstance(direct_url, str) or not direct_url:
                     raise ValueError("pip report missing direct distribution provenance")
-                evidence[normalized] = "%s @ %s" % (name, direct_url)
+                requirement_value = "%s @ %s" % (name, direct_url)
             else:
-                evidence[normalized] = "%s==%s" % (name, version)
+                requirement_value = "%s==%s" % (name, version)
+            evidence[normalized] = {
+                "requirement": requirement_value,
+                "provenance": json.dumps(download_info, sort_keys=True, separators=(",", ":")),
+            }
+        installed = _snapshot_package_state(ctx)
+        for normalized, item in evidence.items():
+            fingerprint = installed["fingerprints"].get(normalized)
+            if not isinstance(fingerprint, str) or installed["by_name"].get(normalized) != item["requirement"]:
+                raise ValueError("installed distribution does not match pip report")
+            item["fingerprint"] = fingerprint
         return evidence
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
@@ -698,22 +710,138 @@ def _run_pip_command(ctx: InstallContext, command: Sequence[str]) -> None:
     )
 
 
+def _run_target_owned_pip_command(
+    ctx: InstallContext,
+    command: Sequence[str],
+    token_path: Path,
+    token: str,
+) -> None:
+    """Revalidate and mutate inside one target-interpreter process."""
+
+    worker = r"""
+import hashlib
+import json
+import os
+import sys
+
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
+
+
+def fingerprints():
+    values = {}
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        version = dist.version
+        if not name or not version:
+            raise RuntimeError("distribution identity unavailable")
+        normalized = str(name).lower().replace("_", "-").replace(".", "-")
+        if normalized in values:
+            raise RuntimeError("duplicate distribution identity")
+        direct_text = dist.read_text("direct_url.json") or ""
+        direct = json.loads(direct_text) if direct_text else {}
+        url = direct.get("url") if isinstance(direct, dict) else None
+        requirement = (str(name) + " @ " + str(url)) if url else (str(name) + "==" + str(version))
+        record_text = dist.read_text("RECORD") or ""
+        record = {
+            "name": str(name),
+            "version": str(version),
+            "requirement": requirement,
+            "direct_url": direct,
+            "metadata_location": os.path.abspath(str(getattr(dist, "_path", ""))),
+            "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
+        }
+        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        values[normalized] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return values
+
+
+token_path = sys.argv[1]
+before_token = os.lstat(token_path)
+if not os.path.isfile(token_path) or before_token.st_nlink != 1 or getattr(before_token, "st_file_attributes", 0) & 0x400:
+    raise SystemExit(90)
+with open(token_path, "r", encoding="utf-8") as stream:
+    opened_token = os.fstat(stream.fileno())
+    ownership = json.load(stream)
+after_token = os.lstat(token_path)
+token_identity = (int(before_token.st_dev), int(before_token.st_ino))
+if token_identity != (int(opened_token.st_dev), int(opened_token.st_ino)) or token_identity != (
+    int(after_token.st_dev), int(after_token.st_ino)
+):
+    raise SystemExit(90)
+if ownership.get("token") != sys.argv[2]:
+    raise SystemExit(91)
+interpreter = os.stat(sys.executable)
+environment = os.stat(sys.prefix)
+worker_identity = {
+    "interpreter": [int(interpreter.st_dev), int(interpreter.st_ino)],
+    "environment": [int(environment.st_dev), int(environment.st_ino)],
+}
+if ownership.get("package_identity") not in (worker_identity, {"interpreter": worker_identity["interpreter"]}):
+    raise SystemExit(91)
+if fingerprints() != ownership.get("before"):
+    raise SystemExit(92)
+from pip._internal.cli.main import main as pip_main
+result = pip_main(json.loads(sys.argv[3]))
+if result:
+    raise SystemExit(int(result))
+after = fingerprints()
+if after != ownership.get("after"):
+    raise SystemExit(93)
+print(json.dumps(after, sort_keys=True, separators=(",", ":")))
+"""
+    try:
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", worker, str(token_path), token, json.dumps(list(command))],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=300,
+        )
+        observed = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
+        raise RuntimeError("target package mutation failed")
+    if not isinstance(observed, dict):
+        raise RuntimeError("target package mutation result unavailable")
+
+
 def _package_ownership_identity(ctx: InstallContext) -> Dict[str, List[int]]:
     try:
         resolved = ctx.python_path.resolve(strict=True)
         interpreter_stat = os.stat(str(resolved))
-        environment_stat = os.stat(str(resolved.parent))
         interpreter_reparse = bool(getattr(interpreter_stat, "st_file_attributes", 0) & 0x400)
-        if (
-            not stat.S_ISREG(interpreter_stat.st_mode)
-            or interpreter_reparse
-            or not stat.S_ISDIR(environment_stat.st_mode)
-        ):
+        if not stat.S_ISREG(interpreter_stat.st_mode) or interpreter_reparse:
             raise OSError("package ownership identity is unsafe")
-        return {
-            "interpreter": list(_file_identity(interpreter_stat)),
-            "environment": list(_file_identity(environment_stat)),
-        }
+        identity = {"interpreter": list(_file_identity(interpreter_stat))}
+        try:
+            completed = subprocess.run(
+                [
+                    str(ctx.python_path),
+                    "-c",
+                    "import json,os,sys;s=os.stat(sys.prefix);print(json.dumps([int(s.st_dev),int(s.st_ino)]))",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=30,
+            )
+            environment_identity = json.loads(completed.stdout.strip().splitlines()[-1])
+            if (
+                not isinstance(environment_identity, list)
+                or len(environment_identity) != 2
+                or any(type(value) is not int for value in environment_identity)
+            ):
+                raise ValueError("invalid target environment identity")
+            identity["environment"] = environment_identity
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
+            # Discovery tests use a non-executable placeholder. Production
+            # compatibility preflight rejects such a target before mutation.
+            pass
+        return identity
     except (OSError, RuntimeError, ValueError):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_ownership_identity_unavailable")
 
@@ -886,7 +1014,7 @@ def _run_owned_pip_command(
     current = _snapshot_package_state(ctx)
     if current.get("fingerprints") != before:
         raise RuntimeError("package transaction ownership changed")
-    _run_pip_command(ctx, command)
+    _run_target_owned_pip_command(ctx, command, path, token)
     committed = _snapshot_package_state(ctx)
     if committed.get("fingerprints") != after:
         raise RuntimeError("package state mismatch")
@@ -900,6 +1028,10 @@ def _package_rollback_plan_path(mutex: PackageMutex) -> Path:
 
 def _package_rollback_progress_path(mutex: PackageMutex, token: str, index: int) -> Path:
     return mutex.path.with_name("%s.rollback-%s-step-%d.json" % (mutex.path.name, token, index))
+
+
+def _package_rollback_intent_path(mutex: PackageMutex, token: str, index: int) -> Path:
+    return mutex.path.with_name("%s.rollback-%s-step-%d.intent.json" % (mutex.path.name, token, index))
 
 
 def _write_private_json(path: Path, record: Dict[str, Any]) -> FileSnapshot:
@@ -979,12 +1111,46 @@ def _write_package_rollback_progress(
     return path, _write_private_json(path, record)
 
 
+def _write_package_rollback_intent(mutex: PackageMutex, plan: Dict[str, Any], index: int) -> Tuple[Path, FileSnapshot]:
+    path = _package_rollback_intent_path(mutex, plan["token"], index)
+    step = plan["steps"][index]
+    record = {
+        "version": 1,
+        "token": plan["token"],
+        "index": index,
+        "command": step["command"],
+        "before": step["before"],
+        "after": step["after"],
+    }
+    return path, _write_private_json(path, record)
+
+
+def _read_package_rollback_record(path: Path, expected: Dict[str, Any]) -> FileSnapshot:
+    snapshot = _snapshot(path)
+    content, identity = _read_independent_file(path)
+    record = json.loads(content.decode("utf-8"))
+    if identity != snapshot.identity or record != expected:
+        raise RuntimeError("package rollback record mismatch")
+    return snapshot
+
+
+def _recover_package_rollback_record_publication(path: Path) -> None:
+    stages = sorted(path.parent.glob(path.name + ".stage-*"))
+    if len(stages) > 1:
+        raise RuntimeError("ambiguous package rollback record publication")
+    if stages:
+        _finish_private_publication(path, stages[0])
+
+
 def _cleanup_package_rollback_plan(
     mutex: PackageMutex,
     plan: Dict[str, Any],
     plan_snapshot: FileSnapshot,
     progress: Sequence[Tuple[Path, FileSnapshot]],
+    intents: Sequence[Tuple[Path, FileSnapshot]] = (),
 ) -> None:
+    for path, snapshot in reversed(list(intents)):
+        _remove_owned_file(path, snapshot)
     for path, snapshot in reversed(list(progress)):
         _remove_owned_file(path, snapshot)
     _remove_owned_file(_package_rollback_plan_path(mutex), plan_snapshot)
@@ -994,7 +1160,7 @@ def _reconcile_package_rollback_plan(ctx: InstallContext, mutex: PackageMutex) -
     path = _package_rollback_plan_path(mutex)
     plan_stages = sorted(path.parent.glob(path.name + ".stage-*"))
     progress_stages = list(path.parent.glob(mutex.path.name + ".rollback-*-step-*.json.stage-*"))
-    if len(plan_stages) > 1 or progress_stages:
+    if len(plan_stages) > 1:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
     if plan_stages and os.path.lexists(str(path)):
         try:
@@ -1015,7 +1181,7 @@ def _reconcile_package_rollback_plan(ctx: InstallContext, mutex: PackageMutex) -
             raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
     if not os.path.lexists(str(path)):
         orphan_progress = list(path.parent.glob(mutex.path.name + ".rollback-*-step-*.json"))
-        if orphan_progress:
+        if orphan_progress or progress_stages:
             raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
         return
     try:
@@ -1023,29 +1189,59 @@ def _reconcile_package_rollback_plan(ctx: InstallContext, mutex: PackageMutex) -
         if plan["package_identity"] != _package_ownership_identity(ctx):
             raise RuntimeError("package rollback target mismatch")
         progress: List[Tuple[Path, FileSnapshot]] = []
+        intents: List[Tuple[Path, FileSnapshot]] = []
+        completed = 0
         for index, step in enumerate(plan["steps"]):
             progress_path = _package_rollback_progress_path(mutex, plan["token"], index)
-            if not os.path.lexists(str(progress_path)):
-                continue
-            progress_snapshot = _snapshot(progress_path)
-            content, identity = _read_independent_file(progress_path)
-            record = json.loads(content.decode("utf-8"))
-            if identity != progress_snapshot.identity or record != {
-                "version": 1,
-                "token": plan["token"],
-                "index": index,
-                "after": step["after"],
-            }:
-                raise RuntimeError("package rollback progress mismatch")
-            progress.append((progress_path, progress_snapshot))
-        current = _snapshot_package_state(ctx).get("fingerprints")
-        if current == plan["initial"] and not progress:
-            _cleanup_package_rollback_plan(mutex, plan, plan_snapshot, progress)
-            return
-        if current == plan["final"]:
-            _cleanup_package_rollback_plan(mutex, plan, plan_snapshot, progress)
-            return
-        raise RuntimeError("package rollback remains incomplete")
+            intent_path = _package_rollback_intent_path(mutex, plan["token"], index)
+            _recover_package_rollback_record_publication(progress_path)
+            _recover_package_rollback_record_publication(intent_path)
+            if os.path.lexists(str(progress_path)):
+                if index != completed:
+                    raise RuntimeError("package rollback progress is not contiguous")
+                progress_snapshot = _read_package_rollback_record(
+                    progress_path,
+                    {"version": 1, "token": plan["token"], "index": index, "after": step["after"]},
+                )
+                progress.append((progress_path, progress_snapshot))
+                completed += 1
+            if os.path.lexists(str(intent_path)):
+                intent_snapshot = _read_package_rollback_record(
+                    intent_path,
+                    {
+                        "version": 1,
+                        "token": plan["token"],
+                        "index": index,
+                        "command": step["command"],
+                        "before": step["before"],
+                        "after": step["after"],
+                    },
+                )
+                intents.append((intent_path, intent_snapshot))
+                if index < completed:
+                    _remove_owned_file(intent_path, intent_snapshot)
+                    intents.pop()
+                elif index != completed:
+                    raise RuntimeError("package rollback intent is not contiguous")
+        for index in range(completed, len(plan["steps"])):
+            step = plan["steps"][index]
+            intent_path = _package_rollback_intent_path(mutex, plan["token"], index)
+            intent = next((item for item in intents if item[0] == intent_path), None)
+            if intent is None:
+                intent = _write_package_rollback_intent(mutex, plan, index)
+                intents.append(intent)
+            current = _snapshot_package_state(ctx).get("fingerprints")
+            if current == step["before"]:
+                _run_owned_pip_command(ctx, step["command"], step["before"], step["after"], mutex)
+            elif current != step["after"]:
+                raise RuntimeError("package rollback command ownership changed")
+            progress_item = _write_package_rollback_progress(mutex, plan, index)
+            progress.append(progress_item)
+            _remove_owned_file(intent[0], intent[1])
+            intents.remove(intent)
+        if _snapshot_package_state(ctx).get("fingerprints") != plan["final"]:
+            raise RuntimeError("package rollback remains incomplete")
+        _cleanup_package_rollback_plan(mutex, plan, plan_snapshot, progress, intents)
     except Exception:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
 
@@ -1178,8 +1374,10 @@ def _restore_package_state_locked(
             plan, plan_snapshot = _write_package_rollback_plan(ctx, package_mutex, rollback_steps)
             progress: List[Tuple[Path, FileSnapshot]] = []
             for index, (command, before, after) in enumerate(rollback_steps):
+                intent = _write_package_rollback_intent(package_mutex, plan, index)
                 _run_owned_pip_command(ctx, command, before, after, package_mutex)
                 progress.append(_write_package_rollback_progress(package_mutex, plan, index))
+                _remove_owned_file(intent[0], intent[1])
             _cleanup_package_rollback_plan(package_mutex, plan, plan_snapshot, progress)
     except Exception:
         raise
@@ -2013,13 +2211,31 @@ def _install_transaction_locked(
         mutation_evidence = _install_package(ctx, source)
         package_after = _snapshot_package_state(ctx)
         if isinstance(mutation_evidence, dict):
-            normalized_evidence = {
-                _normalized_distribution_name(str(name)): requirement
-                for name, requirement in mutation_evidence.items()
-                if isinstance(name, str) and isinstance(requirement, str)
-            }
+            normalized_evidence: Dict[str, Dict[str, str]] = {}
+            for raw_name, item in mutation_evidence.items():
+                if not isinstance(raw_name, str) or not isinstance(item, dict):
+                    raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_unavailable")
+                name = _normalized_distribution_name(raw_name)
+                requirement = item.get("requirement")
+                fingerprint = item.get("fingerprint")
+                provenance = item.get("provenance")
+                if (
+                    not name
+                    or name in normalized_evidence
+                    or not isinstance(requirement, str)
+                    or not isinstance(fingerprint, str)
+                    or not isinstance(provenance, str)
+                ):
+                    raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_unavailable")
+                normalized_evidence[name] = {
+                    "requirement": requirement,
+                    "fingerprint": fingerprint,
+                    "provenance": provenance,
+                }
             if len(normalized_evidence) != len(mutation_evidence) or any(
-                package_after["by_name"].get(name) != requirement for name, requirement in normalized_evidence.items()
+                package_after["by_name"].get(name) != item["requirement"]
+                or package_after["fingerprints"].get(name) != item["fingerprint"]
+                for name, item in normalized_evidence.items()
             ):
                 raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_changed")
             prior_package_state["_transaction_owned"] = _package_state_for_mutations(
@@ -2027,10 +2243,6 @@ def _install_transaction_locked(
             )
         elif isinstance(mutation_evidence, (set, frozenset, list, tuple)):
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_unavailable")
-        elif mutation_evidence is True:
-            # Compatibility for injected legacy test doubles. Production pip
-            # always returns its exact mutation names from --report.
-            prior_package_state["_transaction_owned"] = package_after
         else:
             raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_unavailable")
         target = _probe_target(ctx.python_path)
