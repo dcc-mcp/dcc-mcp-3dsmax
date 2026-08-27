@@ -1004,7 +1004,14 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
     return {"directly_usable": True, "failure_stage": None, "failure_reason": None}, []
 
 
+def _preflight_ownership(ctx: InstallContext) -> None:
+    for path in (ctx.hook_path, ctx.receipt_path):
+        if os.path.lexists(str(path)):
+            _snapshot(path)
+
+
 def _run_install(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
+    _preflight_ownership(ctx)
     if ctx.state == "partial" and ctx.receipt_path.is_file():
         return INSTALL_EXIT_PREFLIGHT, _failure_report(
             ctx,

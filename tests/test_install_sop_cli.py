@@ -196,6 +196,51 @@ def test_dry_run_rejects_an_unexecutable_interpreter_without_mutation(tmp_path, 
     assert not layout["receipt"].exists()
 
 
+@pytest.mark.parametrize("verb", ["install", "upgrade"])
+@pytest.mark.parametrize("alias_kind", ["hardlink", "symlink"])
+def test_dry_run_rejects_an_aliased_preexisting_hook_without_mutation(
+    tmp_path, capsys, monkeypatch, verb, alias_kind
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook.parent.mkdir(parents=True)
+    foreign = tmp_path / "foreign-hook.ms"
+    foreign.write_bytes(b"preexisting hook")
+    if alias_kind == "hardlink":
+        os.link(str(foreign), str(hook))
+    else:
+        os.symlink(str(foreign), str(hook))
+    mutations = []
+    monkeypatch.setattr(
+        cli,
+        "_probe_compatibility",
+        lambda _ctx: {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"},
+    )
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: mutations.append("package_snapshot"))
+    monkeypatch.setattr(cli, "_install_package", lambda *_args: mutations.append("package_install"))
+    monkeypatch.setattr(cli, "_replace_file", lambda *_args: mutations.append("file_replace"))
+    hook_content = hook.read_bytes()
+    hook_identity = cli._file_identity(os.lstat(str(hook)))
+    foreign_identity = cli._file_identity(os.lstat(str(foreign)))
+
+    exit_code = cli.main(_args(layout, verb, "--dry-run"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["status"] == "failed"
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "preflight",
+        "failure_reason": "file_identity_ambiguous",
+    }
+    assert mutations == []
+    assert not layout["receipt"].exists()
+    assert hook.read_bytes() == hook_content
+    assert cli._file_identity(os.lstat(str(hook))) == hook_identity
+    assert cli._file_identity(os.lstat(str(foreign))) == foreign_identity
+
+
 def test_install_refuses_to_reuse_a_receipt_owned_by_another_target(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     first = _layout(tmp_path / "first", "2024")
