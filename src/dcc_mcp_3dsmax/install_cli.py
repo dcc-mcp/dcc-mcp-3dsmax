@@ -110,9 +110,10 @@ class FileSnapshot:
 class PackageMutex:
     """Cross-process ownership lock for one embedded Python environment."""
 
-    def __init__(self, path: Path, stream: Any) -> None:
+    def __init__(self, path: Path, stream: Any, package_identity: Dict[str, List[int]]) -> None:
         self.path = path
         self.stream = stream
+        self.package_identity = package_identity
 
     def release(self) -> None:
         if self.stream is None:
@@ -473,7 +474,233 @@ def _preflight_compatibility(ctx: InstallContext) -> Dict[str, Any]:
     return compatibility
 
 
-def _install_package(ctx: InstallContext, source: str) -> Dict[str, Dict[str, str]]:
+_PACKAGE_IDENTITY_WORKER = r"""
+import os
+
+
+def physical_path_identity(path):
+    if os.name != "nt":
+        value = os.stat(path)
+        return [int(value.st_dev), int(value.st_ino)]
+    import ctypes
+    from ctypes import wintypes
+
+    class BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError()
+    try:
+        information = BY_HANDLE_FILE_INFORMATION()
+        if not ctypes.windll.kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            raise ctypes.WinError()
+        return [
+            int(information.dwVolumeSerialNumber),
+            int(information.nFileIndexHigh),
+            int(information.nFileIndexLow),
+        ]
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+"""
+
+
+_PACKAGE_RECORD_WORKER = (
+    _PACKAGE_IDENTITY_WORKER
+    + r"""
+import csv
+import hashlib
+import io
+import json
+import os
+import re
+import stat
+import sys
+
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
+
+
+def normalized_name(value):
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def guarded_payload(path):
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or getattr(before, "st_file_attributes", 0) & 0x400
+    ):
+        raise RuntimeError("distribution payload is unsafe")
+    physical_before = physical_path_identity(path)
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    after = os.lstat(path)
+    identity = (int(before.st_dev), int(before.st_ino))
+    if identity != (int(opened.st_dev), int(opened.st_ino)) or identity != (int(after.st_dev), int(after.st_ino)):
+        raise RuntimeError("distribution payload changed")
+    physical_after = physical_path_identity(path)
+    if physical_after != physical_before:
+        raise RuntimeError("distribution payload changed")
+    return {
+        "identity": physical_before,
+        "sha256": digest.hexdigest(),
+        "size": size,
+    }
+
+
+def distribution_record(dist):
+    name = dist.metadata.get("Name")
+    version = dist.version
+    if not name or not version:
+        raise RuntimeError("distribution identity unavailable")
+    direct_text = dist.read_text("direct_url.json") or ""
+    direct = json.loads(direct_text) if direct_text else {}
+    url = direct.get("url") if isinstance(direct, dict) else None
+    requirement = (str(name) + " @ " + str(url)) if url else (str(name) + "==" + str(version))
+    record_text = dist.read_text("RECORD") or ""
+    metadata_location = os.path.abspath(str(getattr(dist, "_path", "")))
+    metadata_before = os.lstat(metadata_location)
+    if (
+        not (stat.S_ISDIR(metadata_before.st_mode) or stat.S_ISREG(metadata_before.st_mode))
+        or stat.S_ISLNK(metadata_before.st_mode)
+        or getattr(metadata_before, "st_file_attributes", 0) & 0x400
+    ):
+        raise RuntimeError("distribution metadata is unsafe")
+    metadata_identity = physical_path_identity(metadata_location)
+    rows = list(csv.reader(io.StringIO(record_text)))
+    if len(rows) > 8192:
+        raise RuntimeError("distribution RECORD is too large")
+    payloads = []
+    seen = set()
+    for row in rows:
+        if not row or not row[0]:
+            continue
+        declared = row[0].replace("\\", "/")
+        if declared in seen:
+            raise RuntimeError("duplicate distribution payload")
+        seen.add(declared)
+        located = os.path.abspath(str(dist.locate_file(row[0])))
+        payload = guarded_payload(located)
+        payload["path"] = declared
+        payloads.append(payload)
+    payloads.sort(key=lambda item: item["path"])
+    metadata_after = os.lstat(metadata_location)
+    if (int(metadata_before.st_dev), int(metadata_before.st_ino)) != (
+        int(metadata_after.st_dev),
+        int(metadata_after.st_ino),
+    ) or physical_path_identity(metadata_location) != metadata_identity:
+        raise RuntimeError("distribution metadata changed")
+    record = {
+        "name": str(name),
+        "version": str(version),
+        "requirement": requirement,
+        "direct_url": direct,
+        "metadata_location": metadata_location,
+        "metadata_identity": metadata_identity,
+        "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
+        "payloads": payloads,
+    }
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return normalized_name(str(name)), {
+        "record": record,
+        "requirement": requirement,
+        "fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def installed_records():
+    values = {}
+    for dist in metadata.distributions():
+        normalized, item = distribution_record(dist)
+        if normalized in values:
+            raise RuntimeError("duplicate distribution identity")
+        values[normalized] = item
+    return values
+
+
+def fingerprints():
+    return dict((name, item["fingerprint"]) for name, item in installed_records().items())
+"""
+)
+
+
+_PACKAGE_OPERATION_WORKER = r"""
+import json
+import os
+import sys
+
+from pip._internal.cli.main import main as pip_main
+
+
+def package_identity():
+    return {
+        "interpreter": physical_path_identity(sys.executable),
+        "environment": physical_path_identity(sys.prefix),
+    }
+
+
+def read_operation(path, token, expected_operation):
+    before = os.lstat(path)
+    if not os.path.isfile(path) or before.st_nlink != 1 or getattr(before, "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("package operation token is unsafe")
+    with open(path, "r", encoding="utf-8") as stream:
+        opened = os.fstat(stream.fileno())
+        record = json.load(stream)
+    after = os.lstat(path)
+    identity = (int(before.st_dev), int(before.st_ino))
+    if identity != (int(opened.st_dev), int(opened.st_ino)) or identity != (int(after.st_dev), int(after.st_ino)):
+        raise RuntimeError("package operation token changed")
+    if record.get("token") != token or record.get("operation") != expected_operation:
+        raise RuntimeError("package operation token mismatch")
+    if record.get("package_identity") != package_identity():
+        raise RuntimeError("package operation target changed")
+    return record, identity
+"""
+
+
+def _install_package(ctx: InstallContext, source: str, package_mutex: PackageMutex) -> Dict[str, Dict[str, str]]:
     if source == "local":
         root = Path(__file__).resolve().parents[2]
         if not (root / "pyproject.toml").is_file():
@@ -481,62 +708,19 @@ def _install_package(ctx: InstallContext, source: str) -> Dict[str, Dict[str, st
         requirement = str(root)
     else:
         requirement = "dcc-mcp-3dsmax==%s" % ADAPTER_VERSION
-    worker = r"""
-import hashlib
-import json
-import os
-import re
+    _require_package_mutex_identity(ctx, package_mutex)
+    worker = (
+        _PACKAGE_RECORD_WORKER
+        + _PACKAGE_OPERATION_WORKER
+        + r"""
 import shutil
-import sys
 import tempfile
 
-try:
-    from importlib import metadata
-except ImportError:
-    import importlib_metadata as metadata
-
-from pip._internal.cli.main import main as pip_main
-
-
-def normalized_name(value):
-    return re.sub(r"[-_.]+", "-", value).lower()
-
-
-def installed_records():
-    values = {}
-    for dist in metadata.distributions():
-        name = dist.metadata.get("Name")
-        version = dist.version
-        if not name or not version:
-            raise RuntimeError("distribution identity unavailable")
-        normalized = normalized_name(str(name))
-        if normalized in values:
-            raise RuntimeError("duplicate distribution identity")
-        direct_text = dist.read_text("direct_url.json") or ""
-        direct = json.loads(direct_text) if direct_text else {}
-        url = direct.get("url") if isinstance(direct, dict) else None
-        requirement_value = (str(name) + " @ " + str(url)) if url else (str(name) + "==" + str(version))
-        record_text = dist.read_text("RECORD") or ""
-        record = {
-            "name": str(name),
-            "version": str(version),
-            "requirement": requirement_value,
-            "direct_url": direct,
-            "metadata_location": os.path.abspath(str(getattr(dist, "_path", ""))),
-            "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
-        }
-        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        values[normalized] = {
-            "requirement": requirement_value,
-            "fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-        }
-    return values
-
-
+operation, operation_identity = read_operation(sys.argv[1], sys.argv[2], "install")
 report_dir = tempfile.mkdtemp(prefix="dcc-mcp-pip-report-")
 report_path = os.path.join(report_dir, "install.json")
 try:
-    return_code = pip_main(["install", "--upgrade", "--report", report_path, sys.argv[1]])
+    return_code = pip_main(["install", "--upgrade", "--report", report_path, sys.argv[3]])
     if return_code:
         raise RuntimeError("pip install failed")
     with open(report_path, "r", encoding="utf-8") as stream:
@@ -577,13 +761,19 @@ try:
         if not isinstance(fingerprint, str) or not fingerprint:
             raise RuntimeError("installed distribution fingerprint unavailable")
         item["fingerprint"] = fingerprint
+    operation_after, operation_identity_after = read_operation(sys.argv[1], sys.argv[2], "install")
+    if operation_after != operation or operation_identity_after != operation_identity:
+        raise RuntimeError("package operation token changed")
     print("DCC_MCP_INSTALL_EVIDENCE=" + json.dumps({"evidence": evidence}, sort_keys=True, separators=(",", ":")))
 finally:
     shutil.rmtree(report_dir, ignore_errors=True)
 """
+    )
+    operation_token, operation_snapshot = _write_package_operation_token(package_mutex, "install")
+    operation_path = _package_operation_path(package_mutex)
     try:
         completed = subprocess.run(
-            [str(ctx.python_path), "-c", worker, requirement],
+            [str(ctx.python_path), "-c", worker, str(operation_path), operation_token, requirement],
             cwd=str(root) if source == "local" else None,
             check=True,
             stdout=subprocess.PIPE,
@@ -611,21 +801,49 @@ finally:
                 or not isinstance(item.get("fingerprint"), str)
             ):
                 raise ValueError("pip worker evidence unavailable")
+        _require_package_mutex_identity(ctx, package_mutex)
+        _require_snapshot_current(operation_path, operation_snapshot)
+        _remove_owned_file(operation_path, operation_snapshot)
         return evidence
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
 
 
-def _uninstall_package(ctx: InstallContext) -> None:
+def _uninstall_package(ctx: InstallContext, package_mutex: PackageMutex) -> None:
+    _require_package_mutex_identity(ctx, package_mutex)
+    worker = (
+        _PACKAGE_IDENTITY_WORKER
+        + _PACKAGE_OPERATION_WORKER
+        + r"""
+operation, operation_identity = read_operation(sys.argv[1], sys.argv[2], "uninstall")
+result = pip_main(["uninstall", "-y", "dcc-mcp-3dsmax"])
+if result:
+    raise SystemExit(int(result))
+operation_after, operation_identity_after = read_operation(sys.argv[1], sys.argv[2], "uninstall")
+if operation_after != operation or operation_identity_after != operation_identity:
+    raise RuntimeError("package operation token changed")
+print('DCC_MCP_UNINSTALL_COMPLETE={"success":true}')
+"""
+    )
+    operation_token, operation_snapshot = _write_package_operation_token(package_mutex, "uninstall")
+    operation_path = _package_operation_path(package_mutex)
     try:
-        subprocess.run(
-            [str(ctx.python_path), "-m", "pip", "uninstall", "-y", "dcc-mcp-3dsmax"],
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", worker, str(operation_path), operation_token],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            universal_newlines=True,
             timeout=300,
         )
-    except (OSError, subprocess.SubprocessError):
+        marker = "DCC_MCP_UNINSTALL_COMPLETE="
+        lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
+        if len(lines) != 1 or json.loads(lines[0][len(marker) :]) != {"success": True}:
+            raise ValueError("package uninstall worker result unavailable")
+        _require_package_mutex_identity(ctx, package_mutex)
+        _require_snapshot_current(operation_path, operation_snapshot)
+        _remove_owned_file(operation_path, operation_snapshot)
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "package_uninstall_failed")
 
 
@@ -668,61 +886,9 @@ def _package_state_from_lines(lines: Sequence[str]) -> Dict[str, Any]:
 
 
 def _snapshot_package_state(ctx: InstallContext) -> Dict[str, Any]:
-    code = (
-        "import hashlib,json,os,sys\n"
-        "try:\n from importlib import metadata\n"
-        "except ImportError:\n"
-        " try:\n  import importlib_metadata as metadata\n"
-        " except ImportError:\n  metadata=None\n"
-        "items=[]\n"
-        "if metadata is not None:\n"
-        " for dist in metadata.distributions():\n"
-        "  name=dist.metadata.get('Name')\n"
-        "  version=dist.version\n"
-        "  if not name or not version:\n   raise RuntimeError('distribution identity unavailable')\n"
-        "  direct_text=dist.read_text('direct_url.json') or ''\n"
-        "  direct=json.loads(direct_text) if direct_text else {}\n"
-        "  url=direct.get('url') if isinstance(direct,dict) else None\n"
-        "  requirement=(str(name)+' @ '+str(url)) if url else (str(name)+'=='+str(version))\n"
-        "  record=dist.read_text('RECORD') or ''\n"
-        "  items.append({'name':str(name),'version':str(version),'requirement':requirement,"
-        "'direct_url':direct,'metadata_location':os.path.abspath(str(getattr(dist,'_path',''))),"
-        "'record_sha256':hashlib.sha256(record.encode('utf-8')).hexdigest()})\n"
-        "else:\n"
-        " from email.parser import Parser\n"
-        " seen_paths=set()\n"
-        " for root in sys.path:\n"
-        "  if not root or not os.path.isdir(root):\n   continue\n"
-        "  root=os.path.abspath(root)\n"
-        "  if root in seen_paths:\n   continue\n"
-        "  seen_paths.add(root)\n"
-        "  for entry in os.listdir(root):\n"
-        "   lower=entry.lower()\n"
-        "   if not (lower.endswith('.dist-info') or lower.endswith('.egg-info')):\n    continue\n"
-        "   location=os.path.join(root,entry)\n"
-        "   if os.path.isdir(location):\n"
-        "    metadata_path=os.path.join(location,'METADATA' if lower.endswith('.dist-info') else 'PKG-INFO')\n"
-        "   else:\n    metadata_path=location\n"
-        "   if not os.path.isfile(metadata_path):\n    raise RuntimeError('distribution metadata unavailable')\n"
-        "   with open(metadata_path,'r',encoding='utf-8',errors='replace') as stream:\n"
-        "    parsed=Parser().parsestr(stream.read())\n"
-        "   name=parsed.get('Name')\n"
-        "   version=parsed.get('Version')\n"
-        "   if not name or not version:\n    raise RuntimeError('distribution identity unavailable')\n"
-        "   direct_path=os.path.join(location,'direct_url.json')\n"
-        "   if os.path.isfile(direct_path):\n"
-        "    with open(direct_path,'r',encoding='utf-8') as stream:\n     direct=json.load(stream)\n"
-        "   else:\n    direct={}\n"
-        "   url=direct.get('url') if isinstance(direct,dict) else None\n"
-        "   requirement=(str(name)+' @ '+str(url)) if url else (str(name)+'=='+str(version))\n"
-        "   record_path=os.path.join(location,'RECORD')\n"
-        "   if os.path.isfile(record_path):\n"
-        "    with open(record_path,'r',encoding='utf-8',errors='replace') as stream:\n     record=stream.read()\n"
-        "   else:\n    record=''\n"
-        "   items.append({'name':str(name),'version':str(version),'requirement':requirement,"
-        "'direct_url':direct,'metadata_location':os.path.abspath(location),"
-        "'record_sha256':hashlib.sha256(record.encode('utf-8')).hexdigest()})\n"
-        "print(json.dumps(items,sort_keys=True,separators=(',',':')))\n"
+    code = _PACKAGE_RECORD_WORKER + (
+        "\nprint(json.dumps([item['record'] for item in installed_records().values()],"
+        "sort_keys=True,separators=(',',':')))\n"
     )
     try:
         completed = subprocess.run(
@@ -736,7 +902,7 @@ def _snapshot_package_state(ctx: InstallContext) -> Dict[str, Any]:
         records = json.loads(completed.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
-    if len(completed.stdout.encode("utf-8")) > 1024 * 1024 or not isinstance(records, list):
+    if len(completed.stdout.encode("utf-8")) > 16 * 1024 * 1024 or not isinstance(records, list):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_state_unavailable")
     requirements: List[str] = []
     by_name: Dict[str, str] = {}
@@ -785,46 +951,9 @@ def _run_target_owned_pip_command(
 ) -> None:
     """Revalidate and mutate inside one target-interpreter process."""
 
-    worker = r"""
-import hashlib
-import json
-import os
-import sys
-
-try:
-    from importlib import metadata
-except ImportError:
-    import importlib_metadata as metadata
-
-
-def fingerprints():
-    values = {}
-    for dist in metadata.distributions():
-        name = dist.metadata.get("Name")
-        version = dist.version
-        if not name or not version:
-            raise RuntimeError("distribution identity unavailable")
-        normalized = str(name).lower().replace("_", "-").replace(".", "-")
-        if normalized in values:
-            raise RuntimeError("duplicate distribution identity")
-        direct_text = dist.read_text("direct_url.json") or ""
-        direct = json.loads(direct_text) if direct_text else {}
-        url = direct.get("url") if isinstance(direct, dict) else None
-        requirement = (str(name) + " @ " + str(url)) if url else (str(name) + "==" + str(version))
-        record_text = dist.read_text("RECORD") or ""
-        record = {
-            "name": str(name),
-            "version": str(version),
-            "requirement": requirement,
-            "direct_url": direct,
-            "metadata_location": os.path.abspath(str(getattr(dist, "_path", ""))),
-            "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
-        }
-        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        values[normalized] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return values
-
-
+    worker = (
+        _PACKAGE_RECORD_WORKER
+        + r"""
 token_path = sys.argv[1]
 before_token = os.lstat(token_path)
 if not os.path.isfile(token_path) or before_token.st_nlink != 1 or getattr(before_token, "st_file_attributes", 0) & 0x400:
@@ -840,11 +969,9 @@ if token_identity != (int(opened_token.st_dev), int(opened_token.st_ino)) or tok
     raise SystemExit(90)
 if ownership.get("token") != sys.argv[2]:
     raise SystemExit(91)
-interpreter = os.stat(sys.executable)
-environment = os.stat(sys.prefix)
 worker_identity = {
-    "interpreter": [int(interpreter.st_dev), int(interpreter.st_ino)],
-    "environment": [int(environment.st_dev), int(environment.st_ino)],
+    "interpreter": physical_path_identity(sys.executable),
+    "environment": physical_path_identity(sys.prefix),
 }
 if ownership.get("package_identity") not in (worker_identity, {"interpreter": worker_identity["interpreter"]}):
     raise SystemExit(91)
@@ -859,6 +986,7 @@ if after != ownership.get("after"):
     raise SystemExit(93)
 print(json.dumps(after, sort_keys=True, separators=(",", ":")))
 """
+    )
     try:
         completed = subprocess.run(
             [str(ctx.python_path), "-c", worker, str(token_path), token, json.dumps(list(command))],
@@ -882,13 +1010,16 @@ def _package_ownership_identity(ctx: InstallContext) -> Dict[str, List[int]]:
         interpreter_reparse = bool(getattr(interpreter_stat, "st_file_attributes", 0) & 0x400)
         if not stat.S_ISREG(interpreter_stat.st_mode) or interpreter_reparse:
             raise OSError("package ownership identity is unsafe")
-        identity = {"interpreter": list(_file_identity(interpreter_stat))}
+        interpreter_identity = _physical_path_identity(resolved)
         try:
             completed = subprocess.run(
                 [
                     str(ctx.python_path),
                     "-c",
-                    "import json,os,sys;s=os.stat(sys.prefix);print(json.dumps([int(s.st_dev),int(s.st_ino)]))",
+                    _PACKAGE_IDENTITY_WORKER
+                    + "\nimport json,sys;print(json.dumps({"
+                    + "'interpreter':physical_path_identity(sys.executable),"
+                    + "'environment':physical_path_identity(sys.prefix)},sort_keys=True))",
                 ],
                 check=True,
                 stdout=subprocess.PIPE,
@@ -896,31 +1027,38 @@ def _package_ownership_identity(ctx: InstallContext) -> Dict[str, List[int]]:
                 universal_newlines=True,
                 timeout=30,
             )
-            environment_identity = json.loads(completed.stdout.strip().splitlines()[-1])
-            if (
-                not isinstance(environment_identity, list)
-                or len(environment_identity) != 2
-                or any(type(value) is not int for value in environment_identity)
-            ):
+            identity = json.loads(completed.stdout.strip().splitlines()[-1])
+            if not isinstance(identity, dict) or set(identity) != {"interpreter", "environment"}:
                 raise ValueError("invalid target environment identity")
-            identity["environment"] = environment_identity
+            for value in identity.values():
+                if (
+                    not isinstance(value, list)
+                    or len(value) not in {2, 3}
+                    or any(type(item) is not int for item in value)
+                ):
+                    raise ValueError("invalid target environment identity")
+            if identity["interpreter"] != interpreter_identity:
+                raise ValueError("target interpreter identity changed")
+            if _physical_path_identity(resolved) != interpreter_identity:
+                raise ValueError("target interpreter identity changed")
         except (OSError, subprocess.SubprocessError, ValueError, IndexError, json.JSONDecodeError):
             # Discovery tests use a non-executable placeholder. Production
             # compatibility preflight rejects such a target before mutation.
-            pass
+            return {"interpreter": interpreter_identity}
         return identity
     except (OSError, RuntimeError, ValueError):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_ownership_identity_unavailable")
 
 
-def _package_mutex_path(ctx: InstallContext) -> Path:
-    identity = _package_ownership_identity(ctx)
+def _package_mutex_path(ctx: InstallContext, identity: Optional[Dict[str, List[int]]] = None) -> Path:
+    identity = identity or _package_ownership_identity(ctx)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return Path(tempfile.gettempdir()) / ("dcc-mcp-3dsmax-package-%s.lock" % key)
 
 
 def _acquire_package_mutex(ctx: InstallContext, timeout: float = 10.0) -> PackageMutex:
-    path = _package_mutex_path(ctx)
+    identity = _package_ownership_identity(ctx)
+    path = _package_mutex_path(ctx, identity)
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.open("a+b")
     if stream.tell() == 0:
@@ -939,8 +1077,10 @@ def _acquire_package_mutex(ctx: InstallContext, timeout: float = 10.0) -> Packag
                 import fcntl
 
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            mutex = PackageMutex(path, stream)
+            mutex = PackageMutex(path, stream, identity)
             try:
+                _require_package_mutex_identity(ctx, mutex)
+                _reconcile_package_operation_token(ctx, mutex)
                 _reconcile_package_commit_token(ctx, mutex)
                 _reconcile_package_rollback_plan(ctx, mutex)
             except Exception:
@@ -952,6 +1092,11 @@ def _acquire_package_mutex(ctx: InstallContext, timeout: float = 10.0) -> Packag
                 stream.close()
                 raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "preflight", "package_ownership_locked")
             time.sleep(0.05)
+
+
+def _require_package_mutex_identity(ctx: InstallContext, mutex: PackageMutex) -> None:
+    if _package_ownership_identity(ctx) != mutex.package_identity:
+        raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
 
 
 @contextlib.contextmanager
@@ -980,6 +1125,79 @@ def _package_pip_commit_hook(_ctx: InstallContext, _mutex: PackageMutex, _token:
 
 def _package_commit_path(mutex: PackageMutex) -> Path:
     return mutex.path.with_name(mutex.path.name + ".commit.json")
+
+
+def _package_operation_path(mutex: PackageMutex) -> Path:
+    return mutex.path.with_name(mutex.path.name + ".operation.json")
+
+
+def _read_package_operation(path: Path) -> Dict[str, Any]:
+    content, _identity = _read_independent_file(path)
+    if len(content) > 1024 * 1024:
+        raise RuntimeError("package operation token is too large")
+    record = json.loads(content.decode("utf-8"))
+    if (
+        not isinstance(record, dict)
+        or record.get("version") != 1
+        or record.get("operation") not in {"install", "uninstall"}
+        or not isinstance(record.get("token"), str)
+        or not isinstance(record.get("package_identity"), dict)
+    ):
+        raise RuntimeError("invalid package operation token")
+    return record
+
+
+def _write_package_operation_token(mutex: PackageMutex, operation: str) -> Tuple[str, FileSnapshot]:
+    path = _package_operation_path(mutex)
+    if os.path.lexists(str(path)) or list(path.parent.glob(path.name + ".stage-*")):
+        raise RuntimeError("package operation token already exists")
+    token = uuid.uuid4().hex
+    stage = path.with_name(path.name + ".stage-" + token)
+    payload = (
+        json.dumps(
+            {
+                "version": 1,
+                "operation": operation,
+                "token": token,
+                "package_identity": mutex.package_identity,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    with stage.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.link(str(stage), str(path))
+    _fsync_directory(path.parent)
+    _durable_unlink(stage)
+    return token, _snapshot(path)
+
+
+def _reconcile_package_operation_token(ctx: InstallContext, mutex: PackageMutex) -> None:
+    path = _package_operation_path(mutex)
+    stages = sorted(path.parent.glob(path.name + ".stage-*"))
+    if len(stages) > 1:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+    if stages and os.path.lexists(str(path)):
+        try:
+            _collapse_private_publication(path, stages[0])
+            stages = []
+        except Exception:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+    candidate = stages[0] if stages else path
+    if not os.path.lexists(str(candidate)):
+        return
+    try:
+        record = _read_package_operation(candidate)
+        if record["package_identity"] != mutex.package_identity:
+            raise RuntimeError("package operation target mismatch")
+        _require_package_mutex_identity(ctx, mutex)
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+    raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
 
 
 def _read_package_commit(path: Path) -> Dict[str, Any]:
@@ -1018,7 +1236,7 @@ def _reconcile_package_commit_token(ctx: InstallContext, mutex: PackageMutex) ->
         return
     try:
         record = _read_package_commit(candidate)
-        if record["package_identity"] != _package_ownership_identity(ctx):
+        if record["package_identity"] != mutex.package_identity:
             raise RuntimeError("package commit target mismatch")
         current = _snapshot_package_state(ctx).get("fingerprints")
         if current not in (record["before"], record["after"]):
@@ -1044,7 +1262,7 @@ def _write_package_commit_token(
             {
                 "version": 1,
                 "token": token,
-                "package_identity": _package_ownership_identity(ctx),
+                "package_identity": mutex.package_identity,
                 "before": before,
                 "after": after,
             },
@@ -1070,6 +1288,7 @@ def _run_owned_pip_command(
     after: Dict[str, str],
     mutex: PackageMutex,
 ) -> None:
+    _require_package_mutex_identity(ctx, mutex)
     token, token_snapshot = _write_package_commit_token(ctx, mutex, before, after)
     path = _package_commit_path(mutex)
     _package_pip_commit_hook(ctx, mutex, token)
@@ -1085,6 +1304,7 @@ def _run_owned_pip_command(
     committed = _snapshot_package_state(ctx)
     if committed.get("fingerprints") != after:
         raise RuntimeError("package state mismatch")
+    _require_package_mutex_identity(ctx, mutex)
     _require_snapshot_current(path, token_snapshot)
     _remove_owned_file(path, token_snapshot)
 
@@ -1155,7 +1375,7 @@ def _write_package_rollback_plan(
     record = {
         "version": 1,
         "token": token,
-        "package_identity": _package_ownership_identity(ctx),
+        "package_identity": mutex.package_identity,
         "initial": steps[0][1],
         "final": steps[-1][2],
         "steps": [{"command": list(command), "before": before, "after": after} for command, before, after in steps],
@@ -1238,7 +1458,7 @@ def _reconcile_package_rollback_plan(ctx: InstallContext, mutex: PackageMutex) -
     if plan_stages:
         try:
             staged_plan, staged_snapshot = _read_package_rollback_plan(plan_stages[0])
-            if staged_plan["package_identity"] != _package_ownership_identity(ctx):
+            if staged_plan["package_identity"] != mutex.package_identity:
                 raise RuntimeError("package rollback target mismatch")
             if _snapshot_package_state(ctx).get("fingerprints") != staged_plan["initial"]:
                 raise RuntimeError("unpublished package rollback already mutated state")
@@ -1253,7 +1473,7 @@ def _reconcile_package_rollback_plan(ctx: InstallContext, mutex: PackageMutex) -
         return
     try:
         plan, plan_snapshot = _read_package_rollback_plan(path)
-        if plan["package_identity"] != _package_ownership_identity(ctx):
+        if plan["package_identity"] != mutex.package_identity:
             raise RuntimeError("package rollback target mismatch")
         progress: List[Tuple[Path, FileSnapshot]] = []
         intents: List[Tuple[Path, FileSnapshot]] = []
@@ -1586,6 +1806,64 @@ def _windows_directory_barrier(directory: Path) -> None:
 def _durable_unlink(path: Path) -> None:
     path.unlink()
     _fsync_directory(path.parent)
+
+
+def _physical_path_identity(path: Path) -> List[int]:
+    """Return a path-alias invariant physical identity across Python runtimes."""
+
+    if os.name != "nt":
+        value = os.stat(str(path))
+        return [int(value.st_dev), int(value.st_ino)]
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        ]
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError()
+    try:
+        information = ByHandleFileInformation()
+        if not ctypes.windll.kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+            raise ctypes.WinError()
+        return [
+            int(information.dwVolumeSerialNumber),
+            int(information.nFileIndexHigh),
+            int(information.nFileIndexLow),
+        ]
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def _file_identity(file_stat: os.stat_result) -> Tuple[int, int]:
@@ -2275,7 +2553,7 @@ def _install_transaction_locked(
     committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
-        mutation_evidence = _install_package(ctx, source)
+        mutation_evidence = _install_package(ctx, source, package_mutex)
         package_after = _snapshot_package_state(ctx)
         if isinstance(mutation_evidence, dict):
             normalized_evidence: Dict[str, Dict[str, str]] = {}
@@ -2755,7 +3033,7 @@ def _run_uninstall_locked(
     committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
-        _uninstall_package(ctx)
+        _uninstall_package(ctx, package_mutex)
         prior_package_state["_transaction_owned"] = _package_state_for_mutations(
             prior_package_state, _snapshot_package_state(ctx), {"dcc-mcp-3dsmax"}
         )

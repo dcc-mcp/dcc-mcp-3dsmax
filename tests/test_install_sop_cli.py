@@ -6,9 +6,11 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,8 +75,8 @@ def _stub_target(monkeypatch, cli):
             "core_version": "0.20.20",
         },
     )
-    monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source: {})
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: None)
+    monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source, _mutex: {})
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: None)
     empty_package_state = cli._package_state_from_lines([])
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: empty_package_state)
 
@@ -85,6 +87,38 @@ def _stub_owned_pip(monkeypatch, cli, callback):
         "_run_target_owned_pip_command",
         lambda ctx, command, _token_path, _token: callback(ctx, command),
     )
+
+
+def _isolated_distribution(cli, tmp_path: Path):
+    environment = tmp_path / "target-environment"
+    venv.EnvBuilder(with_pip=False).create(str(environment))
+    python_path = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    site_packages = environment / "Lib/site-packages" if os.name == "nt" else None
+    if site_packages is None:
+        completed = subprocess.run(
+            [str(python_path), "-c", "import site;print(site.getsitepackages()[0])"],
+            check=True,
+            stdout=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        site_packages = Path(completed.stdout.strip())
+    package_dir = site_packages / "review_contender"
+    package_dir.mkdir(parents=True)
+    payload = package_dir / "__init__.py"
+    payload.write_text("VALUE = 1\n", encoding="utf-8")
+    dist_info = site_packages / "review_contender-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: review-contender\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "RECORD").write_text(
+        "review_contender/__init__.py,,\n"
+        "review_contender-1.0.dist-info/METADATA,,\n"
+        "review_contender-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
+    )
+    return SimpleNamespace(python_path=python_path), dist_info, payload
 
 
 def _install_for_verify(cli, layout, capsys, monkeypatch) -> None:
@@ -494,7 +528,7 @@ def test_uninstall_rejects_a_dangling_hook_symlink_without_mutation(tmp_path, ca
     missing_target = tmp_path / "missing-hook-target.ms"
     os.symlink(str(missing_target), str(hook))
     package_calls = []
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: package_calls.append("uninstall"))
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: package_calls.append("uninstall"))
 
     exit_code = cli.main(_args(layout, "uninstall", "--yes"))
     report = _report(cli, capsys)
@@ -633,7 +667,7 @@ def test_public_ownership_verbs_reject_same_bytes_identity_substitution_without_
     hook_content = hook.read_bytes()
     receipt_content = receipt.read_bytes()
     package_calls = []
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: package_calls.append("package"))
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: package_calls.append("package"))
     monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
 
     extra = ("--yes",) if verb == "uninstall" else ()
@@ -1093,7 +1127,7 @@ def test_uninstall_rejects_incompatible_target_before_package_or_file_mutation(t
             or {"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"}
         ),
     )
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: events.append("pip"))
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: events.append("pip"))
     monkeypatch.setattr(cli, "_restore", lambda *_args: events.append("file"))
 
     exit_code = cli.main(_args(layout, "uninstall", "--yes"))
@@ -1684,7 +1718,7 @@ def test_install_and_upgrade_compatibility_precedes_package_and_file_mutation(
         ),
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: events.append("snapshot") or state)
-    monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source: events.append("pip") or {})
+    monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source, _mutex: events.append("pip") or {})
     monkeypatch.setattr(
         cli,
         "_probe_target",
@@ -1722,7 +1756,7 @@ def test_uninstall_compatibility_precedes_package_and_file_mutation(tmp_path, ca
         ),
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: events.append("snapshot") or state)
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: events.append("pip"))
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: events.append("pip"))
     real_restore = cli._restore
     monkeypatch.setattr(
         cli,
@@ -2051,7 +2085,7 @@ def test_install_rollback_preserves_external_package_upgrade_not_in_mutation_evi
     commands = []
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
 
-    def install_with_external_upgrade(_ctx, _source):
+    def install_with_external_upgrade(_ctx, _source, _mutex):
         state["package"] = installed
         return {
             "dcc-mcp-3dsmax": {
@@ -2348,13 +2382,214 @@ def test_install_worker_captures_first_full_fingerprint_before_return(
         )
 
     monkeypatch.setattr(cli.subprocess, "run", run_worker)
+    monkeypatch.setattr(cli, "_require_package_mutex_identity", lambda _ctx, _mutex: None)
     monkeypatch.setattr(
         cli,
         "_snapshot_package_state",
         lambda _ctx: (_ for _ in ()).throw(AssertionError("parent first-capture gap")),
     )
 
-    assert cli._install_package(ctx, "pypi") == evidence
+    with cli._package_ownership(ctx) as mutex:
+        assert cli._install_package(ctx, "pypi", mutex) == evidence
+
+
+def test_install_rejects_target_interpreter_replacement_after_mutex_acquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    ctx = cli._context(cli.build_parser().parse_args(_args(layout, "install", "--yes")))
+    ownership = (cli._snapshot(ctx.hook_path), cli._snapshot(ctx.receipt_path))
+    empty = cli._package_state_from_lines([])
+    pip_worker_calls = []
+
+    with cli._package_ownership(ctx) as mutex:
+        replacement = layout["python"].with_name("replacement-python.exe")
+        replacement.write_bytes(b"independent-interpreter")
+        os.replace(str(replacement), str(layout["python"]))
+
+        def run_worker(command, **_kwargs):
+            if len(command) > 2 and "DCC_MCP_INSTALL_EVIDENCE" in command[2]:
+                pip_worker_calls.append(command)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='DCC_MCP_INSTALL_EVIDENCE={"evidence":{}}\n',
+                stderr="",
+            )
+
+        monkeypatch.setattr(cli.subprocess, "run", run_worker)
+        monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: empty)
+        monkeypatch.setattr(
+            cli,
+            "_probe_target",
+            lambda _path: {
+                "python_version": "3.11.9",
+                "adapter_version": cli.ADAPTER_VERSION,
+                "core_version": cli.MIN_CORE_VERSION,
+            },
+        )
+
+        with pytest.raises(cli.LifecycleError) as captured:
+            cli._install_transaction_locked(ctx, "pypi", ownership, mutex)
+
+    assert captured.value.reason == "transaction_rollback_incomplete"
+    assert pip_worker_calls == []
+
+
+def test_install_worker_receives_mutex_identity_token_through_pip_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    ctx = cli._context(cli.build_parser().parse_args(_args(layout, "install", "--yes")))
+    observed = {}
+
+    with cli._package_ownership(ctx) as mutex:
+
+        def run_worker(command, **_kwargs):
+            code = command[2] if len(command) > 2 else ""
+            if "DCC_MCP_INSTALL_EVIDENCE" not in code:
+                return subprocess.CompletedProcess(command, 0, stdout="not-json\n", stderr="")
+            observed["command"] = command
+            token_path = Path(command[3])
+            record = cli._read_package_operation(token_path)
+            observed["record"] = record
+            observed["snapshot"] = cli._snapshot(token_path)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='DCC_MCP_INSTALL_EVIDENCE={"evidence":{}}\n',
+                stderr="",
+            )
+
+        monkeypatch.setattr(cli.subprocess, "run", run_worker)
+        assert cli._install_package(ctx, "pypi", mutex) == {}
+
+    assert len(observed["command"]) == 6
+    assert observed["record"]["token"] == observed["command"][4]
+    assert observed["record"]["package_identity"] == mutex.package_identity
+    assert observed["snapshot"].independent is True
+
+
+def test_uninstall_worker_receives_mutex_identity_token_through_pip_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    ctx = cli._context(cli.build_parser().parse_args(_args(layout, "uninstall", "--yes")))
+    observed = {}
+
+    with cli._package_ownership(ctx) as mutex:
+
+        def run_worker(command, **_kwargs):
+            code = command[2] if len(command) > 2 and command[1] == "-c" else ""
+            if "DCC_MCP_UNINSTALL_COMPLETE" not in code:
+                return subprocess.CompletedProcess(command, 0, stdout="not-json\n", stderr="")
+            observed["command"] = command
+            token_path = Path(command[3])
+            observed["record"] = cli._read_package_operation(token_path)
+            observed["snapshot"] = cli._snapshot(token_path)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='DCC_MCP_UNINSTALL_COMPLETE={"success":true}\n',
+                stderr="",
+            )
+
+        monkeypatch.setattr(cli.subprocess, "run", run_worker)
+        cli._uninstall_package(ctx, mutex)
+
+    assert len(observed["command"]) == 5
+    assert observed["record"]["token"] == observed["command"][4]
+    assert observed["record"]["package_identity"] == mutex.package_identity
+    assert observed["snapshot"].independent is True
+
+
+def test_uninstall_rejects_target_interpreter_replacement_after_mutex_acquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    ctx = cli._context(cli.build_parser().parse_args(_args(layout, "uninstall", "--yes")))
+    pip_worker_calls = []
+
+    with cli._package_ownership(ctx) as mutex:
+        replacement = layout["python"].with_name("replacement-python.exe")
+        replacement.write_bytes(b"independent-interpreter")
+        os.replace(str(replacement), str(layout["python"]))
+
+        def run_worker(command, **_kwargs):
+            if len(command) > 2 and "DCC_MCP_UNINSTALL_COMPLETE" in command[2]:
+                pip_worker_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="not-json\n", stderr="")
+
+        monkeypatch.setattr(cli.subprocess, "run", run_worker)
+        with pytest.raises(cli.LifecycleError) as captured:
+            cli._uninstall_package(ctx, mutex)
+
+    assert captured.value.reason == "package_install_failed"
+    assert pip_worker_calls == []
+
+
+def test_package_fingerprint_changes_when_dist_info_is_physically_replaced(
+    tmp_path: Path,
+) -> None:
+    cli = _install_cli()
+    ctx, dist_info, _payload = _isolated_distribution(cli, tmp_path)
+
+    before = cli._snapshot_package_state(ctx)["fingerprints"]["review-contender"]
+    replacement = dist_info.parent / "replacement.dist-info"
+    retired = tmp_path / "retired.dist-info"
+    shutil.copytree(str(dist_info), str(replacement))
+    dist_info.rename(retired)
+    replacement.rename(dist_info)
+    after = cli._snapshot_package_state(ctx)["fingerprints"]["review-contender"]
+
+    assert after != before
+
+
+def test_package_fingerprint_changes_when_record_payload_is_physically_replaced(
+    tmp_path: Path,
+) -> None:
+    cli = _install_cli()
+    ctx, _dist_info, payload = _isolated_distribution(cli, tmp_path)
+
+    before = cli._snapshot_package_state(ctx)["fingerprints"]["review-contender"]
+    replacement = payload.with_name("replacement.py")
+    replacement.write_bytes(payload.read_bytes())
+    payload.rename(tmp_path / "retired-payload.py")
+    replacement.rename(payload)
+    after = cli._snapshot_package_state(ctx)["fingerprints"]["review-contender"]
+
+    assert after != before
+
+
+def test_package_rollback_preserves_physically_replaced_same_content_contender(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    ctx, _dist_info, payload = _isolated_distribution(cli, tmp_path)
+    prior = cli._package_state_from_lines([])
+    prior["_ownership_required"] = True
+    transaction_owned = cli._snapshot_package_state(ctx)
+    replacement = payload.with_name("replacement.py")
+    replacement.write_bytes(payload.read_bytes())
+    payload.rename(tmp_path / "transaction-payload.py")
+    replacement.rename(payload)
+    contender = cli._snapshot_package_state(ctx)
+    pip_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_target_owned_pip_command",
+        lambda _ctx, command, _path, _token: pip_calls.append(command),
+    )
+
+    cli._restore_package_state(ctx, prior, transaction_owned)
+
+    assert pip_calls == []
+    assert payload.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert cli._snapshot_package_state(ctx)["fingerprints"] == contender["fingerprints"]
 
 
 def test_install_does_not_claim_same_name_contender_after_package_install_returns(
@@ -2377,7 +2612,7 @@ def test_install_does_not_claim_same_name_contender_after_package_install_return
     pip_calls = []
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
 
-    def install_then_contender_wins(_ctx, _source):
+    def install_then_contender_wins(_ctx, _source, _mutex):
         state["package"] = contender
         return {
             "dcc-mcp-3dsmax": {
