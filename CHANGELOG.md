@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.2...v0.2.3) (2026-08-27)
+
+
+### Features
+
+* add 3ds Max install lifecycle ([adcf333](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/adcf3331abf78856ca975ae286315b1ff4b1122d))
+
+
+### Bug Fixes
+
+* bind install ownership commits ([7f2b296](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7f2b296481e826bb85a6cfd3c1a088754653a0f3))
+* bind install receipt identities ([0566298](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/05662989d641f6e616bf7901b23de8af0064082a))
+* bind install rollback file identity ([580b00f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/580b00fdeb4ecb9c8b30847daea22fbfe8584014))
+* bind package mutations to physical ownership ([b6b85f1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b6b85f1f6a79411ea4830eb6aada9727687a4775))
+* bind package ownership to pip mutation ([2d9d021](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2d9d02139cb851d5e691f68d7857f4958a0bb67d))
+* bind package rollback ownership ([08217c1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/08217c11e08d246a557d5dd85ff22da4cc36a7b2))
+* bind uninstall rollback to worker evidence ([d0d45f8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d0d45f8959107523264ec0522e62b40eed24dd27))
+* capture install ownership in target worker ([b70afd8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b70afd85da0d4777c5506ee8ab6703089ed754b8))
+* close installer recovery ownership gaps ([eee0f10](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/eee0f10503514a3f8b584772281d7f91582793d3))
+* harden install lifecycle recovery ([76e82f3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/76e82f30f60c446b97c3c1c0b7db72d9e3aa6613))
+* harden package ownership recovery ([119ba91](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/119ba913ee6f648f6df879d01905f992d1a9bc24))
+* isolate install receipt ownership ([e9a7c72](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e9a7c7262d93a6a5bfe271d22f003733770dfeed))
+* make install ownership commits atomic ([593470e](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/593470ee4ae9c9cfad7833941ce22fffd9f94e70))
+* make install recovery ownership durable ([7b298ac](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7b298ac52fdcfbe2e59ea9aa58d377d9dc7c919d))
+* preflight dry-run ownership ([dae3c20](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/dae3c20e2e9c6a77127fe963dacc95733b6b581d))
+* recover installer publication boundaries ([d54f827](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d54f827cd624b8d61491f2fd02948dc50fd0c8cb))
+* recover interrupted installer ownership ([2e0f4cd](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2e0f4cd0a31206eef6f8e51a40798534d55097cd))
+* reject aliased package payloads ([00547c1](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/00547c1c3c8975bc1ee013b45153597a8483a982))
+* verify install rollback recovery ([7304ff8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7304ff86bf3ad9fd3030ee67c4096502889882e4))
+
 ## [0.2.2](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.1...v0.2.2) (2026-08-24)
 
 
