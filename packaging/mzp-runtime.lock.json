@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "distributions": [
+    {
+      "name": "typing-extensions",
+      "version": "4.7.1",
+      "license": "PSF-2.0",
+      "payloads": [
+        "python",
+        "python37"
+      ],
+      "artifact": {
+        "filename": "typing_extensions-4.7.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/ec/6b/63cc3df74987c36fe26157ee12e09e8f9db4de771e0f3404263117e75b95/typing_extensions-4.7.1-py3-none-any.whl",
+        "sha256": "440d5dd3af93b060174bf433bccd69b0babc3b15b1a8dca43789fd7f61514b36",
+        "size": 33232
+      },
+      "files": [
+        "typing_extensions-4.7.1.dist-info/LICENSE",
+        "typing_extensions-4.7.1.dist-info/METADATA",
+        "typing_extensions-4.7.1.dist-info/RECORD",
+        "typing_extensions-4.7.1.dist-info/WHEEL",
+        "typing_extensions.py"
+      ]
+    }
+  ]
+}
