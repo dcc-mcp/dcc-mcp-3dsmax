@@ -674,12 +674,16 @@ def _rollback_transaction(
             if committed is not None and path not in committed:
                 continue
             try:
-                if committed is not None and not _snapshot_is_current(path, committed[path]):
-                    rollback_failed = True
-                    continue
                 snapshot = _coerce_file_snapshot(content)
-                restored_identity = _restore(path, snapshot.content if snapshot.existed else None)
-                if not _snapshot_matches(path, snapshot, restored_identity):
+                expected = committed[path] if committed is not None else _snapshot(path)
+                rollback_journal: Dict[Path, FileSnapshot] = {}
+                restored = _restore_if_snapshot(
+                    path,
+                    snapshot.content if snapshot.existed else None,
+                    expected,
+                    rollback_journal,
+                )
+                if not _snapshot_is_current(path, restored):
                     rollback_failed = True
             except Exception:
                 rollback_failed = True
@@ -709,7 +713,9 @@ def _rollback_committed(
 
 
 def _replace_file(source: Path, destination: Path) -> None:
-    os.replace(str(source), str(destination))
+    """Publish *source* without ever overwriting an existing destination."""
+
+    os.link(str(source), str(destination))
 
 
 def _file_identity(file_stat: os.stat_result) -> Tuple[int, int]:
@@ -838,10 +844,8 @@ def _snapshot_matches(
 
 def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
     if content is None:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        if os.path.lexists(str(path)):
+            raise FileExistsError(str(path))
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(".%s.restore-%s" % (path.name, uuid.uuid4().hex))
@@ -851,7 +855,7 @@ def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
         if not _is_independent_regular_file(temp_stat):
             raise OSError("restore staging file is not independent")
         restored_identity = _file_identity(temp_stat)
-        os.replace(str(temp), str(path))
+        _replace_file(temp, path)
         return restored_identity
     finally:
         try:
@@ -860,20 +864,95 @@ def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
             pass
 
 
-def _replace_file_if_snapshot(source: Path, destination: Path, expected: Any) -> FileSnapshot:
-    _require_snapshot_current(destination, expected)
+def _restore_claim_without_clobber(claim: Path, path: Path) -> None:
+    """Put a claimed identity back only while its original name is vacant."""
+
+    os.link(str(claim), str(path))
+    claim.unlink()
+
+
+def _recover_claim(
+    claim: Optional[Path],
+    path: Path,
+    expected: Any,
+    committed: Dict[Path, FileSnapshot],
+) -> None:
+    if claim is None or os.path.lexists(str(path)):
+        return
+    _restore_claim_without_clobber(claim, path)
+    if _snapshot_is_current(path, expected):
+        committed.pop(path, None)
+
+
+def _claim_file_if_snapshot(path: Path, expected: Any) -> Optional[Path]:
+    """Atomically remove and return the exact expected identity from *path*.
+
+    Renaming to a same-directory private name is the platform CAS claim.  A
+    replacement that wins before the rename is detected by identity validation
+    and restored without overwriting any newer path occupant.
+    """
+
+    snapshot = _coerce_file_snapshot(expected)
+    if not snapshot.existed:
+        _require_snapshot_current(path, snapshot)
+        return None
+    claim = path.with_name(".%s.claim-%s" % (path.name, uuid.uuid4().hex))
+    try:
+        os.replace(str(path), str(claim))
+    except FileNotFoundError:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
+    if _snapshot_is_current(claim, snapshot):
+        return claim
+    try:
+        _restore_claim_without_clobber(claim, path)
+    except Exception:
+        pass
+    raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
+
+
+def _replace_file_if_snapshot(
+    source: Path,
+    destination: Path,
+    expected: Any,
+    committed: Dict[Path, FileSnapshot],
+) -> FileSnapshot:
     staged = _snapshot(source)
-    _replace_file(source, destination)
-    _require_snapshot_current(destination, staged)
-    return staged
+    claim = _claim_file_if_snapshot(destination, expected)
+    removed = _absent_file_snapshot()
+    committed[destination] = removed
+    try:
+        # The platform publish is no-clobber and leaves one independent final
+        # identity after removing the same-directory stage.
+        _replace_file(source, destination)
+        committed[destination] = staged
+        source.unlink()
+        if claim is not None:
+            claim.unlink()
+        _require_snapshot_current(destination, staged)
+        return staged
+    except FileExistsError:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
+    except Exception:
+        try:
+            _recover_claim(claim, destination, expected, committed)
+        except Exception:
+            pass
+        raise
 
 
-def _restore_if_snapshot(path: Path, content: Optional[bytes], expected: Any) -> FileSnapshot:
-    _require_snapshot_current(path, expected)
-    restored_identity = _restore(path, content)
+def _restore_if_snapshot(
+    path: Path,
+    content: Optional[bytes],
+    expected: Any,
+    committed: Dict[Path, FileSnapshot],
+) -> FileSnapshot:
     if content is None:
-        restored = _absent_file_snapshot()
-    else:
+        return _unlink_if_snapshot(path, expected, committed)
+    claim = _claim_file_if_snapshot(path, expected)
+    removed = _absent_file_snapshot()
+    committed[path] = removed
+    try:
+        restored_identity = _restore(path, content)
         restored = FileSnapshot(
             True,
             content,
@@ -881,16 +960,41 @@ def _restore_if_snapshot(path: Path, content: Optional[bytes], expected: Any) ->
             restored_identity,
             True,
         )
-    _require_snapshot_current(path, restored)
-    return restored
+        committed[path] = restored
+        if claim is not None:
+            claim.unlink()
+        _require_snapshot_current(path, restored)
+        return restored
+    except FileExistsError:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "commit", "file_identity_changed")
+    except Exception:
+        try:
+            _recover_claim(claim, path, expected, committed)
+        except Exception:
+            pass
+        raise
 
 
-def _unlink_if_snapshot(path: Path, expected: Any) -> FileSnapshot:
-    _require_snapshot_current(path, expected)
-    path.unlink()
+def _unlink_if_snapshot(
+    path: Path,
+    expected: Any,
+    committed: Dict[Path, FileSnapshot],
+) -> FileSnapshot:
+    claim = _claim_file_if_snapshot(path, expected)
     removed = _absent_file_snapshot()
-    _require_snapshot_current(path, removed)
-    return removed
+    committed[path] = removed
+    try:
+        _restore(path, None)
+        if claim is not None:
+            claim.unlink()
+        _require_snapshot_current(path, removed)
+        return removed
+    except Exception:
+        try:
+            _recover_claim(claim, path, expected, committed)
+        except Exception:
+            pass
+        raise
 
 
 def _previous_hook(prior_receipt: Optional[Dict[str, Any]], current: Any) -> Dict[str, Any]:
@@ -989,8 +1093,8 @@ def _install_transaction(
             encoding="utf-8",
         )
         _write_staged_receipt(receipt_stage, _receipt(ctx, hook_stage, prior_receipt, hook_before, target))
-        committed[ctx.hook_path] = _replace_file_if_snapshot(hook_stage, ctx.hook_path, hook_before)
-        committed[ctx.receipt_path] = _replace_file_if_snapshot(receipt_stage, ctx.receipt_path, receipt_before)
+        _replace_file_if_snapshot(hook_stage, ctx.hook_path, hook_before, committed)
+        _replace_file_if_snapshot(receipt_stage, ctx.receipt_path, receipt_before, committed)
     except LifecycleError:
         if package_attempted:
             _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)
@@ -1213,8 +1317,8 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
         _uninstall_package(ctx)
         _require_snapshot_current(ctx.hook_path, hook_before)
         _require_snapshot_current(ctx.receipt_path, receipt_before)
-        committed[ctx.hook_path] = _restore_if_snapshot(ctx.hook_path, previous, hook_before)
-        committed[ctx.receipt_path] = _unlink_if_snapshot(ctx.receipt_path, receipt_before)
+        _restore_if_snapshot(ctx.hook_path, previous, hook_before, committed)
+        _unlink_if_snapshot(ctx.receipt_path, receipt_before, committed)
     except LifecycleError:
         if package_attempted:
             _rollback_committed(ctx, prior_package_state, hook_before, receipt_before, committed)

@@ -308,6 +308,106 @@ def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
             assert cli._file_identity(os.lstat(str(receipt))) == receipt_identity
 
 
+@pytest.mark.parametrize("verb", ["install", "upgrade"])
+@pytest.mark.parametrize("drift_target", ["hook", "receipt"])
+def test_install_commit_does_not_clobber_identity_created_after_atomic_claim(
+    tmp_path, capsys, monkeypatch, verb, drift_target
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    if verb == "upgrade":
+        _install_for_verify(cli, layout, capsys, monkeypatch)
+    else:
+        _stub_target(monkeypatch, cli)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    receipt = layout["receipt"]
+    target = hook if drift_target == "hook" else receipt
+    concurrent_content = ("concurrent-%s-%s" % (verb, drift_target)).encode("ascii")
+    concurrent_identity = []
+    original_claim = getattr(cli, "_claim_file_if_snapshot", None)
+
+    def claim_then_drift(path, expected):
+        claimed = original_claim(path, expected) if original_claim is not None else None
+        if path == target:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(concurrent_content)
+            concurrent_identity.append(cli._file_identity(os.lstat(str(path))))
+        return claimed
+
+    monkeypatch.setattr(cli, "_claim_file_if_snapshot", claim_then_drift, raising=False)
+    monkeypatch.setattr(cli, "_restore_package_state", lambda *_args: None)
+    monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
+
+    exit_code = cli.main(_args(layout, verb, "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 30
+    assert report["status"] == "failed"
+    assert report["verify"]["failure_stage"] in {"commit", "rollback"}
+    assert target.read_bytes() == concurrent_content
+    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+
+
+@pytest.mark.parametrize("mutation", ["restore", "unlink"])
+def test_uninstall_commit_does_not_clobber_identity_created_after_atomic_claim(
+    tmp_path, capsys, monkeypatch, mutation
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    receipt = layout["receipt"]
+    target = hook if mutation == "restore" else receipt
+    concurrent_content = ("concurrent-uninstall-%s" % mutation).encode("ascii")
+    concurrent_identity = []
+    original_claim = getattr(cli, "_claim_file_if_snapshot", None)
+
+    def claim_then_drift(path, expected):
+        claimed = original_claim(path, expected) if original_claim is not None else None
+        if path == target:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(concurrent_content)
+            concurrent_identity.append(cli._file_identity(os.lstat(str(path))))
+        return claimed
+
+    monkeypatch.setattr(cli, "_claim_file_if_snapshot", claim_then_drift, raising=False)
+    monkeypatch.setattr(cli, "_restore_package_state", lambda *_args: None)
+
+    exit_code = cli.main(_args(layout, "uninstall", "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 30
+    assert report["status"] == "failed"
+    assert report["verify"]["failure_stage"] in {"commit", "rollback"}
+    assert target.read_bytes() == concurrent_content
+    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+
+
+def test_replace_records_may_have_committed_before_fallible_postcheck(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    source = tmp_path / "transaction"
+    destination = tmp_path / "owned"
+    source.write_bytes(b"transaction")
+    destination.write_bytes(b"owned")
+    expected = cli._snapshot(destination)
+    committed = {}
+    original_current = cli._snapshot_is_current
+
+    def current_after_commit_fails(path, snapshot):
+        expected_snapshot = cli._coerce_file_snapshot(snapshot)
+        if path == destination and expected_snapshot.content == b"transaction":
+            return False
+        return original_current(path, snapshot)
+
+    monkeypatch.setattr(cli, "_snapshot_is_current", current_after_commit_fails)
+
+    with pytest.raises(cli.LifecycleError):
+        cli._replace_file_if_snapshot(source, destination, expected, committed)
+
+    assert destination in committed
+    assert committed[destination].content == b"transaction"
+
+
 def test_uninstall_rejects_a_dangling_hook_symlink_without_mutation(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     layout = _layout(tmp_path)
@@ -1265,17 +1365,17 @@ def test_uninstall_reports_incomplete_package_rollback(tmp_path, capsys, monkeyp
     cli = _install_cli()
     layout = _layout(tmp_path)
     _install_for_verify(cli, layout, capsys, monkeypatch)
-    real_unlink = Path.unlink
+    real_restore = cli._restore
 
-    def fail_receipt_unlink(path, *args, **kwargs):
-        if path == layout["receipt"]:
+    def fail_receipt_remove(path, content):
+        if path == layout["receipt"] and content is None:
             raise OSError("commit failed")
-        return real_unlink(path, *args, **kwargs)
+        return real_restore(path, content)
 
     def fail_rollback(_ctx, _prior):
         raise cli.LifecycleError(30, "rollback", "package_rollback_incomplete")
 
-    monkeypatch.setattr(Path, "unlink", fail_receipt_unlink)
+    monkeypatch.setattr(cli, "_restore", fail_receipt_remove)
     monkeypatch.setattr(cli, "_restore_package_state", fail_rollback)
 
     exit_code = cli.main(_args(layout, "uninstall", "--yes"))
@@ -1336,14 +1436,14 @@ def test_public_mutations_report_post_restore_overwrite_as_incomplete_rollback(
 
         monkeypatch.setattr(cli, "_replace_file", fail_receipt_commit)
     else:
-        real_unlink = Path.unlink
+        commit_restore = cli._restore
 
-        def fail_receipt_unlink(path, *args, **kwargs):
-            if path == layout["receipt"]:
+        def fail_receipt_remove(path, content):
+            if path == layout["receipt"] and content is None:
                 raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
-            return real_unlink(path, *args, **kwargs)
+            return commit_restore(path, content)
 
-        monkeypatch.setattr(Path, "unlink", fail_receipt_unlink)
+        monkeypatch.setattr(cli, "_restore", fail_receipt_remove)
 
     exit_code = cli.main(_args(layout, verb, "--yes"))
     captured = capsys.readouterr()
@@ -1416,14 +1516,14 @@ def test_public_mutations_reject_same_bytes_rollback_identity_swap(
 
         monkeypatch.setattr(cli, "_replace_file", fail_receipt_commit)
     else:
-        real_unlink = Path.unlink
+        commit_restore = cli._restore
 
-        def fail_receipt_unlink(path, *args, **kwargs):
-            if path == layout["receipt"]:
+        def fail_receipt_remove(path, content):
+            if path == layout["receipt"] and content is None:
                 raise OSError("PRIVATE_COMMIT_SECRET x:private-uri/C:/private/path")
-            return real_unlink(path, *args, **kwargs)
+            return commit_restore(path, content)
 
-        monkeypatch.setattr(Path, "unlink", fail_receipt_unlink)
+        monkeypatch.setattr(cli, "_restore", fail_receipt_remove)
 
     exit_code = cli.main(_args(layout, verb, "--yes"))
     captured = capsys.readouterr()
