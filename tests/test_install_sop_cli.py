@@ -7,6 +7,8 @@ import importlib
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1168,7 +1170,7 @@ def test_package_rollback_removes_only_exact_transaction_owned_distributions(tmp
         ["dcc-mcp-3dsmax==0.2.2", "concurrent-owner @ file:///concurrent/owner.whl"]
     )
     reconciled = cli._package_state_from_lines(["concurrent-owner @ file:///concurrent/owner.whl"])
-    snapshots = iter([current, current, reconciled])
+    snapshots = iter([current, current, current, reconciled])
     commands = []
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: next(snapshots))
     monkeypatch.setattr(cli, "_run_pip_command", lambda _ctx, command: commands.append(command))
@@ -1229,15 +1231,12 @@ def test_transaction_rollback_detects_post_restore_overwrite_and_still_reconcile
     ctx.receipt_path.write_bytes(b"mutated receipt")
     prior_package_state = cli._package_state_from_lines([])
     package_calls = []
-    real_restore = cli._restore
 
-    def restore_then_overwrite(path, content):
-        restored_identity = real_restore(path, content)
+    def restore_then_overwrite(path, _desired):
         if path == ctx.hook_path:
             path.write_bytes(b"foreign-after-restore")
-        return restored_identity
 
-    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_overwrite)
     monkeypatch.setattr(
         cli,
         "_restore_package_state",
@@ -1272,17 +1271,14 @@ def test_transaction_rollback_rejects_same_bytes_hardlink_identity_swap(tmp_path
     foreign = tmp_path / "PRIVATE_FOREIGN_SECRET.ms"
     prior_package_state = cli._package_state_from_lines([])
     package_calls = []
-    real_restore = cli._restore
 
-    def restore_then_alias(path, content):
-        restored_identity = real_restore(path, content)
+    def restore_then_alias(path, desired):
         if path == ctx.hook_path:
-            foreign.write_bytes(content)
+            foreign.write_bytes(desired.content)
             path.unlink()
             os.link(str(foreign), str(path))
-        return restored_identity
 
-    monkeypatch.setattr(cli, "_restore", restore_then_alias)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_alias)
     monkeypatch.setattr(
         cli,
         "_restore_package_state",
@@ -1316,16 +1312,13 @@ def test_transaction_rollback_rejects_same_bytes_independent_identity_swap(tmp_p
     foreign = tmp_path / "PRIVATE_FOREIGN_SECRET.ms"
     prior_package_state = cli._package_state_from_lines([])
     package_calls = []
-    real_restore = cli._restore
 
-    def restore_then_replace(path, content):
-        restored_identity = real_restore(path, content)
+    def restore_then_replace(path, desired):
         if path == ctx.hook_path:
-            foreign.write_bytes(content)
+            foreign.write_bytes(desired.content)
             os.replace(str(foreign), str(path))
-        return restored_identity
 
-    monkeypatch.setattr(cli, "_restore", restore_then_replace)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_replace)
     monkeypatch.setattr(
         cli,
         "_restore_package_state",
@@ -1427,20 +1420,17 @@ def test_transaction_rollback_combines_file_and_package_failures(tmp_path, monke
     prior_package_state = cli._package_state_from_lines([])
     restore_calls = []
     package_calls = []
-    real_restore = cli._restore
 
-    def restore_then_overwrite(path, content):
+    def restore_then_overwrite(path, _desired):
         restore_calls.append(path)
-        restored_identity = real_restore(path, content)
         if path == ctx.hook_path:
             path.write_bytes(b"foreign-after-restore")
-        return restored_identity
 
     def fail_package_restore(_ctx, _prior):
         package_calls.append("package")
         raise cli.LifecycleError(30, "rollback", "package_rollback_incomplete")
 
-    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_overwrite)
     monkeypatch.setattr(cli, "_restore_package_state", fail_package_restore)
 
     with pytest.raises(cli.LifecycleError) as captured:
@@ -1534,20 +1524,17 @@ def test_public_mutations_report_post_restore_overwrite_as_incomplete_rollback(
     hook_path = layout["startup"] / cli.STARTUP_SCRIPT_NAME
     package_calls = []
     hook_restore_calls = 0
-    real_restore = cli._restore
 
-    def restore_then_overwrite(path, content):
+    def restore_then_overwrite(path, _desired):
         nonlocal hook_restore_calls
-        restored_identity = real_restore(path, content)
         if path == hook_path:
             hook_restore_calls += 1
-            rollback_call = hook_restore_calls == (2 if verb == "uninstall" else 1)
+            rollback_call = hook_restore_calls == 1
             if rollback_call:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"foreign-after-restore")
-        return restored_identity
 
-    monkeypatch.setattr(cli, "_restore", restore_then_overwrite)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_overwrite)
 
     def restore_package(_ctx, _prior):
         package_calls.append("package")
@@ -1611,25 +1598,21 @@ def test_public_mutations_reject_same_bytes_rollback_identity_swap(
     foreign = tmp_path / ("PRIVATE_%s_FOREIGN_SECRET.ms" % verb)
     package_calls = []
     hook_restore_calls = 0
-    real_restore = cli._restore
 
-    def restore_then_alias(path, content):
+    def restore_then_alias(path, desired):
         nonlocal hook_restore_calls
-        restored_identity = real_restore(path, content)
         if path == hook_path:
             hook_restore_calls += 1
-            rollback_call = hook_restore_calls == (2 if verb == "uninstall" else 1)
+            rollback_call = hook_restore_calls == 1
             if rollback_call:
-                assert content is not None
-                foreign.write_bytes(content)
+                foreign.write_bytes(desired.content)
                 if identity_swap == "hardlink":
                     path.unlink()
                     os.link(str(foreign), str(path))
                 else:
                     os.replace(str(foreign), str(path))
-        return restored_identity
 
-    monkeypatch.setattr(cli, "_restore", restore_then_alias)
+    monkeypatch.setattr(cli, "_file_transaction_after_publish", restore_then_alias)
     monkeypatch.setattr(
         cli,
         "_restore_package_state",
@@ -1745,3 +1728,159 @@ def test_uninstall_compatibility_precedes_package_and_file_mutation(tmp_path, ca
     _report(cli, capsys)
     assert events[:3] == ["compatibility", "snapshot", "pip"]
     assert events.index("compatibility") < events.index("pip") < events.index("file")
+
+
+def test_reconcile_recovers_publish_interrupted_before_stage_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    destination = tmp_path / "startup.py"
+    stage = tmp_path / ".startup.py.stage"
+    destination.write_bytes(b"previous")
+    stage.write_bytes(b"transaction")
+    expected = cli._snapshot(destination)
+    committed: dict[str, object] = {}
+    real_replace = cli._replace_file
+
+    def publish_then_interrupt(source: Path, target: Path) -> None:
+        real_replace(source, target)
+        raise KeyboardInterrupt("publish completed before stage cleanup")
+
+    monkeypatch.setattr(cli, "_replace_file", publish_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cli._replace_file_if_snapshot(stage, destination, expected, committed)
+
+    assert os.path.samefile(stage, destination)
+    assert os.lstat(destination).st_nlink == 2
+    journal_path = next(tmp_path.glob(".startup.py.transaction-*.json"))
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["stage_path"] == str(stage)
+    assert journal["stage"]["identity"] is not None
+    assert journal["commit_path"]
+    monkeypatch.setattr(cli, "_replace_file", real_replace)
+    cli._reconcile_file_transaction(destination)
+
+    assert destination.read_bytes() == b"previous"
+    assert cli._snapshot(destination).identity == expected.identity
+    assert not os.path.lexists(stage)
+
+
+def test_reconcile_recovers_restore_published_with_unresolved_desired_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    destination = tmp_path / "startup.py"
+    destination.write_bytes(b"transaction")
+    expected = cli._snapshot(destination)
+    committed: dict[str, object] = {}
+    real_commit = cli._write_committed_marker
+
+    def restore_then_interrupt(commit_path: Path, target: Path, desired):
+        real_commit(commit_path, target, desired)
+        raise KeyboardInterrupt("restore published before journal cleanup")
+
+    monkeypatch.setattr(cli, "_write_committed_marker", restore_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        cli._restore_if_snapshot(destination, b"previous", expected, committed)
+
+    assert destination.read_bytes() == b"previous"
+    journal_path = next(tmp_path.glob(".startup.py.transaction-*.json"))
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["desired"]["identity"] is not None
+    assert journal["desired"]["independent"] is True
+    assert Path(journal["commit_path"]).is_file()
+    monkeypatch.setattr(cli, "_write_committed_marker", real_commit)
+    cli._reconcile_file_transaction(destination)
+
+    assert destination.read_bytes() == b"previous"
+    assert cli._snapshot(destination).identity != expected.identity
+
+
+def test_reconcile_accepts_committed_absence_before_journal_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    destination = tmp_path / "startup.py"
+    destination.write_bytes(b"transaction")
+    expected = cli._snapshot(destination)
+    committed: dict[str, object] = {}
+    real_remove = cli._remove_owned_file
+
+    def interrupt_journal_cleanup(path: Path, snapshot) -> None:
+        if ".transaction-" in path.name:
+            raise KeyboardInterrupt("absence committed before journal cleanup")
+        real_remove(path, snapshot)
+
+    monkeypatch.setattr(cli, "_remove_owned_file", interrupt_journal_cleanup)
+    with pytest.raises(KeyboardInterrupt):
+        cli._unlink_if_snapshot(destination, expected, committed)
+
+    assert not os.path.lexists(destination)
+    journal_path = next(tmp_path.glob(".startup.py.transaction-*.json"))
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert Path(journal["commit_path"]).is_file()
+    monkeypatch.setattr(cli, "_remove_owned_file", real_remove)
+    cli._reconcile_file_transaction(destination)
+    assert not os.path.lexists(destination)
+
+
+def test_package_rollback_rechecks_ownership_in_final_pre_pip_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    prior = cli._package_state_from_lines([])
+    owned = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    concurrent = cli._package_state_from_lines(["dcc-mcp-3dsmax @ file:///concurrent/dcc_mcp_3dsmax-0.2.2.whl"])
+    absent = cli._package_state_from_lines([])
+    state = {"package": owned}
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
+
+    def replace_in_final_window(_ctx, _mutex) -> None:
+        state["package"] = concurrent
+
+    monkeypatch.setattr(cli, "_package_rollback_before_pip", replace_in_final_window, raising=False)
+
+    def run_pip(_ctx, command: list[str]) -> None:
+        commands.append(command)
+        state["package"] = absent
+
+    monkeypatch.setattr(cli, "_run_pip_command", run_pip)
+
+    with pytest.raises(cli.LifecycleError):
+        cli._restore_package_state(ctx, prior, owned)
+
+    assert commands == []
+    assert state["package"] == concurrent
+
+
+def test_package_ownership_mutex_excludes_another_process(tmp_path: Path) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    args = cli.build_parser().parse_args(_args(layout, "install", "--yes"))
+    ctx = cli._context(args)
+    probe = (
+        "import os,sys\n"
+        "stream=open(sys.argv[1],'a+b')\n"
+        "stream.seek(0)\n"
+        "try:\n"
+        " if os.name=='nt':\n"
+        "  import msvcrt\n"
+        "  msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)\n"
+        " else:\n"
+        "  import fcntl\n"
+        "  fcntl.flock(stream.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)\n"
+        "except (OSError,IOError):\n"
+        " sys.exit(23)\n"
+    )
+
+    with cli._package_ownership(ctx):
+        blocked = subprocess.run([sys.executable, "-c", probe, str(cli._package_mutex_path(ctx))])
+    acquired = subprocess.run([sys.executable, "-c", probe, str(cli._package_mutex_path(ctx))])
+
+    assert blocked.returncode == 23
+    assert acquired.returncode == 0
