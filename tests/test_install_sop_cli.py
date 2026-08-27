@@ -2306,6 +2306,57 @@ def test_target_worker_keeps_owner_token_through_actual_pip_boundary(tmp_path: P
             cli._remove_owned_file(token_path, token_snapshot)
 
 
+def test_install_worker_captures_first_full_fingerprint_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _install_cli()
+    ctx = SimpleNamespace(python_path=Path(sys.executable))
+    evidence = {
+        "dcc-mcp-3dsmax": {
+            "requirement": "dcc-mcp-3dsmax==0.2.2",
+            "provenance": '{"archive_info":{},"url":"https://example.invalid/adapter.whl"}',
+            "fingerprint": "worker-captured-distribution-fingerprint",
+        }
+    }
+
+    def run_worker(command, **_kwargs):
+        if "--report" in command:
+            report_path = Path(command[command.index("--report") + 1])
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "install": [
+                            {
+                                "metadata": {"name": "dcc-mcp-3dsmax", "version": "0.2.2"},
+                                "download_info": {
+                                    "url": "https://example.invalid/adapter.whl",
+                                    "archive_info": {},
+                                },
+                                "is_direct": False,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="DCC_MCP_INSTALL_EVIDENCE=" + json.dumps({"evidence": evidence}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", run_worker)
+    monkeypatch.setattr(
+        cli,
+        "_snapshot_package_state",
+        lambda _ctx: (_ for _ in ()).throw(AssertionError("parent first-capture gap")),
+    )
+
+    assert cli._install_package(ctx, "pypi") == evidence
+
+
 def test_install_does_not_claim_same_name_contender_after_package_install_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2328,7 +2379,13 @@ def test_install_does_not_claim_same_name_contender_after_package_install_return
 
     def install_then_contender_wins(_ctx, _source):
         state["package"] = contender
-        return {"dcc-mcp-3dsmax": "dcc-mcp-3dsmax==0.2.2"}
+        return {
+            "dcc-mcp-3dsmax": {
+                "requirement": installed["by_name"]["dcc-mcp-3dsmax"],
+                "fingerprint": installed["fingerprints"]["dcc-mcp-3dsmax"],
+                "provenance": '{"archive_info":{},"url":"https://example.invalid/adapter.whl"}',
+            }
+        }
 
     monkeypatch.setattr(cli, "_install_package", install_then_contender_wins)
     monkeypatch.setattr(
