@@ -712,7 +712,13 @@ def _acquire_package_mutex(ctx: InstallContext, timeout: float = 10.0) -> Packag
                 import fcntl
 
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return PackageMutex(path, stream)
+            mutex = PackageMutex(path, stream)
+            try:
+                _reconcile_package_commit_token(ctx, mutex)
+            except Exception:
+                mutex.release()
+                raise
+            return mutex
         except (OSError, IOError):
             if time.monotonic() >= deadline:
                 stream.close()
@@ -738,6 +744,120 @@ def _package_rollback_before_pip(_ctx: InstallContext, _mutex: PackageMutex) -> 
 
 def _package_rollback_commit_hook(_ctx: InstallContext, _mutex: PackageMutex) -> None:
     """Deterministic test seam immediately before the commit ownership check."""
+
+
+def _package_pip_commit_hook(_ctx: InstallContext, _mutex: PackageMutex, _token: str) -> None:
+    """Deterministic seam inside the durable pip mutation boundary."""
+
+
+def _package_commit_path(mutex: PackageMutex) -> Path:
+    return mutex.path.with_name(mutex.path.name + ".commit.json")
+
+
+def _read_package_commit(path: Path) -> Dict[str, Any]:
+    content, _identity = _read_independent_file(path)
+    if len(content) > 1024 * 1024:
+        raise RuntimeError("package commit token is too large")
+    record = json.loads(content.decode("utf-8"))
+    if (
+        not isinstance(record, dict)
+        or record.get("version") != 1
+        or not isinstance(record.get("token"), str)
+        or not isinstance(record.get("python_path"), str)
+        or not isinstance(record.get("before"), dict)
+        or not isinstance(record.get("after"), dict)
+    ):
+        raise RuntimeError("invalid package commit token")
+    for fingerprints in (record["before"], record["after"]):
+        if any(not isinstance(name, str) or not isinstance(value, str) for name, value in fingerprints.items()):
+            raise RuntimeError("invalid package commit fingerprints")
+    return record
+
+
+def _reconcile_package_commit_token(ctx: InstallContext, mutex: PackageMutex) -> None:
+    path = _package_commit_path(mutex)
+    stages = sorted(path.parent.glob(path.name + ".stage-*"))
+    if len(stages) > 1:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+    if stages and os.path.lexists(str(path)):
+        try:
+            _collapse_private_publication(path, stages[0])
+            stages = []
+        except Exception:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+    candidate = stages[0] if stages else path
+    if not os.path.lexists(str(candidate)):
+        return
+    try:
+        record = _read_package_commit(candidate)
+        if record["python_path"] != _lexical_path_key(ctx.python_path):
+            raise RuntimeError("package commit target mismatch")
+        current = _snapshot_package_state(ctx).get("fingerprints")
+        if current not in (record["before"], record["after"]):
+            raise RuntimeError("package commit ownership changed")
+        _durable_unlink(candidate)
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "rollback", "package_rollback_incomplete")
+
+
+def _write_package_commit_token(
+    ctx: InstallContext,
+    mutex: PackageMutex,
+    before: Dict[str, str],
+    after: Dict[str, str],
+) -> Tuple[str, FileSnapshot]:
+    path = _package_commit_path(mutex)
+    if os.path.lexists(str(path)) or list(path.parent.glob(path.name + ".stage-*")):
+        raise RuntimeError("package commit token already exists")
+    token = uuid.uuid4().hex
+    stage = path.with_name(path.name + ".stage-" + token)
+    payload = (
+        json.dumps(
+            {
+                "version": 1,
+                "token": token,
+                "python_path": _lexical_path_key(ctx.python_path),
+                "before": before,
+                "after": after,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    with stage.open("xb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.link(str(stage), str(path))
+    _fsync_directory(path.parent)
+    _durable_unlink(stage)
+    return token, _snapshot(path)
+
+
+def _run_owned_pip_command(
+    ctx: InstallContext,
+    command: Sequence[str],
+    before: Dict[str, str],
+    after: Dict[str, str],
+    mutex: PackageMutex,
+) -> None:
+    token, token_snapshot = _write_package_commit_token(ctx, mutex, before, after)
+    path = _package_commit_path(mutex)
+    _package_pip_commit_hook(ctx, mutex, token)
+    _require_snapshot_current(path, token_snapshot)
+    current = _snapshot_package_state(ctx)
+    if current.get("fingerprints") != before:
+        raise RuntimeError("package transaction ownership changed")
+    record = _read_package_commit(path)
+    if record.get("token") != token or record.get("before") != before or record.get("after") != after:
+        raise RuntimeError("package commit token changed")
+    _run_pip_command(ctx, command)
+    committed = _snapshot_package_state(ctx)
+    if committed.get("fingerprints") != after:
+        raise RuntimeError("package state mismatch")
+    _require_snapshot_current(path, token_snapshot)
+    _remove_owned_file(path, token_snapshot)
 
 
 def _package_state_for_mutations(
@@ -787,6 +907,7 @@ def _restore_package_state_locked(
     try:
         if transaction_owned is None:
             transaction_owned = prior.get("_transaction_owned")
+        legacy_unowned = transaction_owned is None and not prior.get("_ownership_required")
         if prior.get("_ownership_required") and transaction_owned is None:
             raise RuntimeError("package transaction ownership unavailable")
         current = _snapshot_package_state(ctx)
@@ -829,17 +950,45 @@ def _restore_package_state_locked(
                 if final_owner.get("fingerprints") != current_fingerprints:
                     raise RuntimeError("package transaction ownership changed")
                 _package_rollback_commit_hook(ctx, package_mutex)
-                commit_owner = _snapshot_package_state(ctx)
-                if commit_owner.get("fingerprints") != current_fingerprints:
-                    raise RuntimeError("package transaction ownership changed")
-        if remove:
-            _run_pip_command(ctx, ["uninstall", "-y"] + remove)
-        if restore:
-            _run_pip_command(ctx, ["install", "--no-deps", "--force-reinstall"] + restore)
-        if remove or restore:
+        if legacy_unowned:
+            if remove:
+                _run_pip_command(ctx, ["uninstall", "-y"] + remove)
+            if restore:
+                _run_pip_command(ctx, ["install", "--no-deps", "--force-reinstall"] + restore)
             restored = _snapshot_package_state(ctx)
             if restored.get("fingerprints") != expected_fingerprints:
                 raise RuntimeError("package state mismatch")
+            return
+        command_state = dict(current_fingerprints)
+        if remove:
+            after_remove = dict(command_state)
+            for name in remove:
+                after_remove.pop(name, None)
+            _run_owned_pip_command(
+                ctx,
+                ["uninstall", "-y"] + remove,
+                command_state,
+                after_remove,
+                package_mutex,
+            )
+            command_state = after_remove
+        if restore:
+            after_restore = dict(command_state)
+            for requirement in restore:
+                name = _frozen_requirement_name(requirement)
+                if name is None or name not in prior_fingerprints:
+                    raise RuntimeError("package restore identity unavailable")
+                after_restore[name] = prior_fingerprints[name]
+            _run_owned_pip_command(
+                ctx,
+                ["install", "--no-deps", "--force-reinstall"] + restore,
+                command_state,
+                after_restore,
+                package_mutex,
+            )
+            command_state = after_restore
+        if command_state != expected_fingerprints:
+            raise RuntimeError("package state mismatch")
     except Exception:
         raise
 
@@ -1224,19 +1373,14 @@ def _file_transaction_after_publish(_path: Path, _desired: FileSnapshot) -> None
     """Deterministic test seam after publish and before identity post-check."""
 
 
-def _read_file_transaction(
-    journal_path: Path, destination: Path
+def _decode_file_transaction(
+    content: bytes, destination: Path, token: str
 ) -> Tuple[FileSnapshot, FileSnapshot, Path, Path, Path, Optional[Path], Optional[FileSnapshot]]:
-    content, _identity = _read_independent_file(journal_path)
     if len(content) > 1024 * 1024:
         raise ValueError("transaction journal too large")
     record = json.loads(content.decode("utf-8"))
-    token_match = re.fullmatch(
-        r"\.%s\.transaction-([0-9a-f]{32})\.json" % re.escape(destination.name), journal_path.name
-    )
-    if not isinstance(record, dict) or record.get("version") != 2 or token_match is None:
+    if not isinstance(record, dict) or record.get("version") != 2:
         raise ValueError("invalid transaction journal")
-    token = token_match.group(1)
     claim_path = destination.with_name(".%s.claim-%s" % (destination.name, token))
     recovery_path = destination.with_name(".%s.recovery-%s" % (destination.name, token))
     commit_path = destination.with_name(".%s.committed-%s.json" % (destination.name, token))
@@ -1260,6 +1404,18 @@ def _read_file_transaction(
         stage_path,
         _snapshot_from_record(stage_record) if stage_record is not None else None,
     )
+
+
+def _read_file_transaction(
+    journal_path: Path, destination: Path
+) -> Tuple[FileSnapshot, FileSnapshot, Path, Path, Path, Optional[Path], Optional[FileSnapshot]]:
+    token_match = re.fullmatch(
+        r"\.%s\.transaction-([0-9a-f]{32})\.json" % re.escape(destination.name), journal_path.name
+    )
+    if token_match is None:
+        raise ValueError("invalid transaction journal")
+    content, _identity = _read_independent_file(journal_path)
+    return _decode_file_transaction(content, destination, token_match.group(1))
 
 
 def _owned_snapshot_matches(path: Path, expected: Any) -> bool:
@@ -1322,17 +1478,24 @@ def _write_committed_marker(commit_path: Path, destination: Path, desired: Any) 
             pass
 
 
+def _decode_committed_marker(content: bytes, destination: Path, desired: Optional[Any] = None) -> FileSnapshot:
+    record = json.loads(content.decode("utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("invalid transaction commit marker")
+    recorded_desired = _snapshot_from_record(record.get("desired"))
+    if (
+        record.get("version") != 1
+        or _lexical_path_key(record.get("destination")) != _lexical_path_key(destination)
+        or (desired is not None and _snapshot_record(recorded_desired) != _snapshot_record(desired))
+    ):
+        raise ValueError("invalid transaction commit marker")
+    return recorded_desired
+
+
 def _read_committed_marker(commit_path: Path, destination: Path, desired: Any) -> FileSnapshot:
     marker = _snapshot(commit_path)
     content, _identity = _read_independent_file(commit_path)
-    record = json.loads(content.decode("utf-8"))
-    if (
-        not isinstance(record, dict)
-        or record.get("version") != 1
-        or _lexical_path_key(record.get("destination")) != _lexical_path_key(destination)
-        or _snapshot_record(_snapshot_from_record(record.get("desired"))) != _snapshot_record(desired)
-    ):
-        raise ValueError("invalid transaction commit marker")
+    _decode_committed_marker(content, destination, desired)
     return marker
 
 
@@ -1362,6 +1525,20 @@ def _collapse_private_publication(primary: Path, stage: Path) -> None:
         or stage_stat.st_nlink != 2
     ):
         raise RuntimeError("transaction publication identity mismatch")
+    _durable_unlink(stage)
+
+
+def _finish_private_publication(primary: Path, stage: Path) -> None:
+    """Durably finish a validated private stage publication without clobbering."""
+
+    if os.path.lexists(str(primary)):
+        _collapse_private_publication(primary, stage)
+        return
+    if not os.path.lexists(str(stage)):
+        raise RuntimeError("transaction publication stage is missing")
+    _snapshot(stage)
+    os.link(str(stage), str(primary))
+    _fsync_directory(primary.parent)
     _durable_unlink(stage)
 
 
@@ -1769,10 +1946,57 @@ def _verify(ctx: InstallContext, timeout: float) -> Tuple[Dict[str, Any], List[D
 def _reconcile_file_transaction(destination: Path) -> None:
     pattern = ".%s.transaction-*.json" % destination.name
     journals = sorted(destination.parent.glob(pattern)) if destination.parent.is_dir() else []
+    journal_stage_pattern = ".%s.journal-stage-*" % destination.name
+    journal_stages = sorted(destination.parent.glob(journal_stage_pattern)) if destination.parent.is_dir() else []
     commit_pattern = ".%s.committed-*.json" % destination.name
     markers = sorted(destination.parent.glob(commit_pattern)) if destination.parent.is_dir() else []
-    if len(journals) > 1:
+    marker_stage_pattern = ".%s.committed-*.json.stage" % destination.name
+    marker_stages = sorted(destination.parent.glob(marker_stage_pattern)) if destination.parent.is_dir() else []
+    if len(journals) > 1 or len(journal_stages) > 1 or len(markers) > 1 or len(marker_stages) > 1:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+    if journal_stages:
+        private_stage = journal_stages[0]
+        stage_match = re.fullmatch(
+            r"\.%s\.journal-stage-([0-9a-f]{32})" % re.escape(destination.name),
+            private_stage.name,
+        )
+        if stage_match is None:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+        token = stage_match.group(1)
+        expected_journal = destination.with_name(".%s.transaction-%s.json" % (destination.name, token))
+        if journals and journals[0] != expected_journal:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+        try:
+            if os.path.lexists(str(expected_journal)):
+                _collapse_private_publication(expected_journal, private_stage)
+            else:
+                content, _identity = _read_independent_file(private_stage)
+                _decode_file_transaction(content, destination, token)
+                _finish_private_publication(expected_journal, private_stage)
+            journals = [expected_journal]
+        except Exception:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+    if marker_stages:
+        private_marker = marker_stages[0]
+        marker_match = re.fullmatch(
+            r"\.%s\.committed-([0-9a-f]{32})\.json\.stage" % re.escape(destination.name),
+            private_marker.name,
+        )
+        if marker_match is None:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+        expected_marker = destination.with_name(".%s.committed-%s.json" % (destination.name, marker_match.group(1)))
+        if markers and markers[0] != expected_marker:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
+        try:
+            if os.path.lexists(str(expected_marker)):
+                _collapse_private_publication(expected_marker, private_marker)
+            else:
+                content, _identity = _read_independent_file(private_marker)
+                _decode_committed_marker(content, destination)
+                _finish_private_publication(expected_marker, private_marker)
+            markers = [expected_marker]
+        except Exception:
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
     if not journals:
         if len(markers) > 1:
             raise LifecycleError(INSTALL_EXIT_INSTALL, "recovery", "transaction_recovery_conflict")
@@ -1816,6 +2040,8 @@ def _reconcile_file_transaction(destination: Path) -> None:
         ) = _read_file_transaction(journal_path, destination)
         claim_exists = os.path.lexists(str(claim_path))
         recovery_exists = os.path.lexists(str(recovery_path))
+        if markers and markers[0] != commit_path:
+            raise RuntimeError("transaction commit marker token mismatch")
         commit_exists = os.path.lexists(str(commit_path))
         if claim_exists and not _snapshot_is_current(claim_path, expected):
             raise RuntimeError("transaction claim identity mismatch")
