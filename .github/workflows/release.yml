@@ -35,12 +35,63 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  build:
+  resolve-release-ref:
     needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
+    runs-on: ubuntu-latest
+    outputs:
+      release_commit: ${{ steps.lock.outputs.release_commit }}
+      release_tag: ${{ steps.select.outputs.release_tag }}
+      release_version: ${{ steps.select.outputs.release_version }}
+    steps:
+      - name: Select release tag and version
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag_name }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$INPUT_TAG"
+            version="${INPUT_TAG#v}"
+          else
+            tag="$RELEASE_TAG"
+            version="$RELEASE_VERSION"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${tag#v}" = "$version"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.select.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Lock immutable release commit
+        id: lock
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.select.outputs.release_tag }}
+        run: |
+          commit="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$commit" = "$tag_commit"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "release_commit=$commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [release-please, resolve-release-ref]
     if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release-ref.outputs.release_commit }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -90,30 +141,46 @@ jobs:
           print-hash: true
 
   build-mzp:
-    needs: [release-please]
+    needs: [release-please, resolve-release-ref]
     if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release-ref.outputs.release_commit }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Assemble drag-and-drop MZP
+      - name: Install MZP build dependencies
+        run: python -m pip install "packaging>=21.3"
+
+      - name: Resolve MZP version
         run: |
-          $VERSION = "${{ needs.release-please.outputs.version }}"
-          if (-not $VERSION) {
-            $VERSION = "${{ inputs.tag_name }}"
-            $VERSION = $VERSION -replace '^v', ''
-          }
-          python packaging/assemble_mzp.py --version $VERSION --output dist/mzp --project-root .
+          $VERSION = "${{ needs.resolve-release-ref.outputs.release_version }}"
+          Add-Content -Path $env:GITHUB_ENV -Value "MZP_VERSION=$VERSION"
+
+      - name: Assemble drag-and-drop MZP
+        run: python packaging/assemble_mzp.py --version $env:MZP_VERSION --output dist/mzp --project-root .
 
       - name: Smoke-check MZP payload imports
         run: |
           $mzp = Get-ChildItem dist/mzp/*.mzp | Select-Object -First 1
-          python packaging/check_release_payload.py $mzp.FullName
+          python -I -S packaging/check_release_payload.py $mzp.FullName --expected-version $env:MZP_VERSION
+
+      - name: Set up Python 3.7 for payload verification
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.7"
+          architecture: "x64"
+
+      - name: Smoke-check MZP payload with Python 3.7
+        run: |
+          $mzp = Get-ChildItem dist/mzp/*.mzp | Select-Object -First 1
+          python -I -S packaging/check_release_payload.py $mzp.FullName --expected-version $env:MZP_VERSION
 
       - name: Upload MZP artifact
         uses: actions/upload-artifact@v4
@@ -122,12 +189,17 @@ jobs:
           path: dist/mzp/*.mzp
 
   attach-release-assets:
-    needs: [release-please, publish, build-mzp]
+    needs: [release-please, resolve-release-ref, publish, build-mzp]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release-ref.outputs.release_commit }}
+          fetch-depth: 0
+
       - name: Download dist artifacts
         uses: actions/download-artifact@v4
         with:
@@ -141,20 +213,29 @@ jobs:
           path: dist/mzp/
 
       - name: Attach assets to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: |
-            dist/*
-            dist/mzp/*.mzp
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python packaging/upload_release_assets.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "${{ needs.resolve-release-ref.outputs.release_tag }}" \
+            --commit "${{ needs.resolve-release-ref.outputs.release_commit }}" \
+            --asset-glob 'dist/*.whl' \
+            --asset-glob 'dist/*.tar.gz' \
+            --asset-glob 'dist/mzp/*.mzp'
 
   attach-manual-mzp:
-    needs: [release-please, build-mzp]
+    needs: [release-please, resolve-release-ref, build-mzp]
     if: github.event_name == 'workflow_dispatch' && inputs.tag_name != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release-ref.outputs.release_commit }}
+          fetch-depth: 0
+
       - name: Download MZP artifacts
         uses: actions/download-artifact@v4
         with:
@@ -162,7 +243,11 @@ jobs:
           path: dist/mzp/
 
       - name: Attach MZP to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag_name }}
-          files: dist/mzp/*.mzp
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python packaging/upload_release_assets.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "${{ needs.resolve-release-ref.outputs.release_tag }}" \
+            --commit "${{ needs.resolve-release-ref.outputs.release_commit }}" \
+            --asset-glob 'dist/mzp/*.mzp'

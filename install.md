@@ -11,7 +11,7 @@ Core catalog.
   Autodesk 3ds Max is Windows-only.
 - Autodesk 3ds Max 2017 or later with Python 3 and `pymxs`.
 - The target `3dsmaxpy.exe` or embedded `Python\python.exe`.
-- `dcc-mcp-core>=0.20.20` and `dcc-mcp-server>=0.20.20`. The lifecycle CLI
+- `dcc-mcp-core>=0.20.22` and `dcc-mcp-server>=0.20.22`. The lifecycle CLI
   installs these through the adapter dependency set and verifies the Core
   version in the target interpreter before reporting success.
 - Permission to write the user's 3ds Max `userStartupScripts` directory.
@@ -168,7 +168,7 @@ Pass the exact `--dcc-path`, `--python`, and, for a custom profile,
 ### `core_version_too_old`
 
 Upgrade `dcc-mcp-3dsmax` in the selected target interpreter. Do not claim the
-host is usable until verification sees Core 0.20.20 or newer.
+host is usable until verification sees Core 0.20.22 or newer.
 
 ### `package_rollback_incomplete` or `transaction_rollback_incomplete`
 

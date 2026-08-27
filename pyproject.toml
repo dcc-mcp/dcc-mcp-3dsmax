@@ -27,9 +27,9 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core 0.20.20 publishes Install SOP v1 and bounded readiness contracts.
-    "dcc-mcp-core>=0.20.20,<1.0.0",
-    "dcc-mcp-server>=0.20.20,<1.0.0",
+    # Core 0.20.22 restores the zero-backport Python 3.7 runtime contract.
+    "dcc-mcp-core>=0.20.22,<1.0.0",
+    "dcc-mcp-server>=0.20.22,<1.0.0",
     "jsonschema>=4.17,<5",
 ]
 
