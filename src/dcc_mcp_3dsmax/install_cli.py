@@ -481,72 +481,139 @@ def _install_package(ctx: InstallContext, source: str) -> Dict[str, Dict[str, st
         requirement = str(root)
     else:
         requirement = "dcc-mcp-3dsmax==%s" % ADAPTER_VERSION
-    report_dir = Path(tempfile.mkdtemp(prefix="dcc-mcp-pip-report-"))
-    report_path = report_dir / "install.json"
+    worker = r"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
+
+from pip._internal.cli.main import main as pip_main
+
+
+def normalized_name(value):
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def installed_records():
+    values = {}
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        version = dist.version
+        if not name or not version:
+            raise RuntimeError("distribution identity unavailable")
+        normalized = normalized_name(str(name))
+        if normalized in values:
+            raise RuntimeError("duplicate distribution identity")
+        direct_text = dist.read_text("direct_url.json") or ""
+        direct = json.loads(direct_text) if direct_text else {}
+        url = direct.get("url") if isinstance(direct, dict) else None
+        requirement_value = (str(name) + " @ " + str(url)) if url else (str(name) + "==" + str(version))
+        record_text = dist.read_text("RECORD") or ""
+        record = {
+            "name": str(name),
+            "version": str(version),
+            "requirement": requirement_value,
+            "direct_url": direct,
+            "metadata_location": os.path.abspath(str(getattr(dist, "_path", ""))),
+            "record_sha256": hashlib.sha256(record_text.encode("utf-8")).hexdigest(),
+        }
+        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        values[normalized] = {
+            "requirement": requirement_value,
+            "fingerprint": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        }
+    return values
+
+
+report_dir = tempfile.mkdtemp(prefix="dcc-mcp-pip-report-")
+report_path = os.path.join(report_dir, "install.json")
+try:
+    return_code = pip_main(["install", "--upgrade", "--report", report_path, sys.argv[1]])
+    if return_code:
+        raise RuntimeError("pip install failed")
+    with open(report_path, "r", encoding="utf-8") as stream:
+        report = json.load(stream)
+    installs = report.get("install")
+    if not isinstance(installs, list):
+        raise RuntimeError("pip report missing install records")
+    evidence = {}
+    for item in installs:
+        metadata_item = item.get("metadata") if isinstance(item, dict) else None
+        name = metadata_item.get("name") if isinstance(metadata_item, dict) else None
+        version = metadata_item.get("version") if isinstance(metadata_item, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
+            raise RuntimeError("pip report missing distribution identity")
+        normalized = normalized_name(name)
+        if normalized in evidence:
+            raise RuntimeError("pip report contains duplicate distribution")
+        download_info = item.get("download_info") if isinstance(item, dict) else None
+        if not isinstance(download_info, dict):
+            raise RuntimeError("pip report missing distribution provenance")
+        direct_url = download_info.get("url")
+        if item.get("is_direct") is True:
+            if not isinstance(direct_url, str) or not direct_url:
+                raise RuntimeError("pip report missing direct distribution provenance")
+            requirement_value = "%s @ %s" % (name, direct_url)
+        else:
+            requirement_value = "%s==%s" % (name, version)
+        evidence[normalized] = {
+            "requirement": requirement_value,
+            "provenance": json.dumps(download_info, sort_keys=True, separators=(",", ":")),
+        }
+    installed = installed_records()
+    for normalized, item in evidence.items():
+        installed_item = installed.get(normalized)
+        if not isinstance(installed_item, dict) or installed_item.get("requirement") != item["requirement"]:
+            raise RuntimeError("installed distribution does not match pip report")
+        fingerprint = installed_item.get("fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            raise RuntimeError("installed distribution fingerprint unavailable")
+        item["fingerprint"] = fingerprint
+    print("DCC_MCP_INSTALL_EVIDENCE=" + json.dumps({"evidence": evidence}, sort_keys=True, separators=(",", ":")))
+finally:
+    shutil.rmtree(report_dir, ignore_errors=True)
+"""
     try:
-        subprocess.run(
-            [
-                str(ctx.python_path),
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "--report",
-                str(report_path),
-                requirement,
-            ],
+        completed = subprocess.run(
+            [str(ctx.python_path), "-c", worker, requirement],
             cwd=str(root) if source == "local" else None,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            universal_newlines=True,
             timeout=300,
         )
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        installs = report.get("install")
-        if not isinstance(installs, list):
-            raise ValueError("pip report missing install records")
-        evidence: Dict[str, Dict[str, str]] = {}
-        for item in installs:
-            metadata = item.get("metadata") if isinstance(item, dict) else None
-            name = metadata.get("name") if isinstance(metadata, dict) else None
-            version = metadata.get("version") if isinstance(metadata, dict) else None
-            if not isinstance(name, str) or not name or not isinstance(version, str) or not version:
-                raise ValueError("pip report missing distribution identity")
-            normalized = _normalized_distribution_name(name)
-            if normalized in evidence:
-                raise ValueError("pip report contains duplicate distribution")
-            download_info = item.get("download_info") if isinstance(item, dict) else None
-            if not isinstance(download_info, dict):
-                raise ValueError("pip report missing distribution provenance")
-            direct_url = download_info.get("url") if isinstance(download_info, dict) else None
-            if item.get("is_direct") is True:
-                if not isinstance(direct_url, str) or not direct_url:
-                    raise ValueError("pip report missing direct distribution provenance")
-                requirement_value = "%s @ %s" % (name, direct_url)
-            else:
-                requirement_value = "%s==%s" % (name, version)
-            evidence[normalized] = {
-                "requirement": requirement_value,
-                "provenance": json.dumps(download_info, sort_keys=True, separators=(",", ":")),
-            }
-        installed = _snapshot_package_state(ctx)
-        for normalized, item in evidence.items():
-            fingerprint = installed["fingerprints"].get(normalized)
-            if not isinstance(fingerprint, str) or installed["by_name"].get(normalized) != item["requirement"]:
-                raise ValueError("installed distribution does not match pip report")
-            item["fingerprint"] = fingerprint
+        if len(completed.stdout.encode("utf-8")) > 4 * 1024 * 1024:
+            raise ValueError("pip worker output too large")
+        marker = "DCC_MCP_INSTALL_EVIDENCE="
+        lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
+        if len(lines) != 1:
+            raise ValueError("pip worker evidence unavailable")
+        payload = json.loads(lines[0][len(marker) :])
+        evidence = payload.get("evidence") if isinstance(payload, dict) else None
+        if not isinstance(evidence, dict):
+            raise ValueError("pip worker evidence unavailable")
+        for name, item in evidence.items():
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(item, dict)
+                or not isinstance(item.get("requirement"), str)
+                or not isinstance(item.get("provenance"), str)
+                or not isinstance(item.get("fingerprint"), str)
+            ):
+                raise ValueError("pip worker evidence unavailable")
         return evidence
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
-    finally:
-        try:
-            report_path.unlink()
-        except FileNotFoundError:
-            pass
-        try:
-            report_dir.rmdir()
-        except OSError:
-            pass
 
 
 def _uninstall_package(ctx: InstallContext) -> None:
