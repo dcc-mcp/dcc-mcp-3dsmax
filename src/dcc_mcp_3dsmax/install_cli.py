@@ -809,23 +809,35 @@ finally:
         raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_install_failed")
 
 
-def _uninstall_package(ctx: InstallContext, package_mutex: PackageMutex) -> None:
+def _uninstall_package(
+    ctx: InstallContext,
+    package_mutex: PackageMutex,
+    expected_before: Dict[str, str],
+) -> Dict[str, Dict[str, str]]:
     _require_package_mutex_identity(ctx, package_mutex)
     worker = (
-        _PACKAGE_IDENTITY_WORKER
+        _PACKAGE_RECORD_WORKER
         + _PACKAGE_OPERATION_WORKER
         + r"""
 operation, operation_identity = read_operation(sys.argv[1], sys.argv[2], "uninstall")
+before = fingerprints()
+if before != operation.get("before"):
+    raise RuntimeError("package operation owner changed")
 result = pip_main(["uninstall", "-y", "dcc-mcp-3dsmax"])
 if result:
     raise SystemExit(int(result))
+after = fingerprints()
 operation_after, operation_identity_after = read_operation(sys.argv[1], sys.argv[2], "uninstall")
 if operation_after != operation or operation_identity_after != operation_identity:
     raise RuntimeError("package operation token changed")
-print('DCC_MCP_UNINSTALL_COMPLETE={"success":true}')
+print("DCC_MCP_UNINSTALL_EVIDENCE=" + json.dumps({"before": before, "after": after}, sort_keys=True, separators=(",", ":")))
 """
     )
-    operation_token, operation_snapshot = _write_package_operation_token(package_mutex, "uninstall")
+    operation_token, operation_snapshot = _write_package_operation_token(
+        package_mutex,
+        "uninstall",
+        expected_before,
+    )
     operation_path = _package_operation_path(package_mutex)
     try:
         completed = subprocess.run(
@@ -836,13 +848,27 @@ print('DCC_MCP_UNINSTALL_COMPLETE={"success":true}')
             universal_newlines=True,
             timeout=300,
         )
-        marker = "DCC_MCP_UNINSTALL_COMPLETE="
+        marker = "DCC_MCP_UNINSTALL_EVIDENCE="
         lines = [line for line in completed.stdout.splitlines() if line.startswith(marker)]
-        if len(lines) != 1 or json.loads(lines[0][len(marker) :]) != {"success": True}:
+        if len(lines) != 1:
+            raise ValueError("package uninstall worker result unavailable")
+        evidence = json.loads(lines[0][len(marker) :])
+        if not isinstance(evidence, dict) or set(evidence) != {"before", "after"}:
+            raise ValueError("package uninstall worker result unavailable")
+        for fingerprints_value in evidence.values():
+            if not isinstance(fingerprints_value, dict) or any(
+                not isinstance(name, str) or not isinstance(fingerprint, str)
+                for name, fingerprint in fingerprints_value.items()
+            ):
+                raise ValueError("package uninstall worker result unavailable")
+        if evidence["before"] != expected_before:
             raise ValueError("package uninstall worker result unavailable")
         _require_package_mutex_identity(ctx, package_mutex)
         _require_snapshot_current(operation_path, operation_snapshot)
+        if _snapshot_package_state(ctx).get("fingerprints") != evidence["after"]:
+            raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_changed")
         _remove_owned_file(operation_path, operation_snapshot)
+        return evidence
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         raise LifecycleError(INSTALL_EXIT_INSTALL, "uninstall", "package_uninstall_failed")
 
@@ -1144,23 +1170,36 @@ def _read_package_operation(path: Path) -> Dict[str, Any]:
         or not isinstance(record.get("package_identity"), dict)
     ):
         raise RuntimeError("invalid package operation token")
+    before = record.get("before")
+    if record["operation"] == "uninstall" and (
+        not isinstance(before, dict)
+        or any(not isinstance(name, str) or not isinstance(value, str) for name, value in before.items())
+    ):
+        raise RuntimeError("invalid package operation token")
     return record
 
 
-def _write_package_operation_token(mutex: PackageMutex, operation: str) -> Tuple[str, FileSnapshot]:
+def _write_package_operation_token(
+    mutex: PackageMutex,
+    operation: str,
+    before: Optional[Dict[str, str]] = None,
+) -> Tuple[str, FileSnapshot]:
     path = _package_operation_path(mutex)
     if os.path.lexists(str(path)) or list(path.parent.glob(path.name + ".stage-*")):
         raise RuntimeError("package operation token already exists")
     token = uuid.uuid4().hex
     stage = path.with_name(path.name + ".stage-" + token)
+    record: Dict[str, Any] = {
+        "version": 1,
+        "operation": operation,
+        "token": token,
+        "package_identity": mutex.package_identity,
+    }
+    if before is not None:
+        record["before"] = before
     payload = (
         json.dumps(
-            {
-                "version": 1,
-                "operation": operation,
-                "token": token,
-                "package_identity": mutex.package_identity,
-            },
+            record,
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -3033,9 +3072,25 @@ def _run_uninstall_locked(
     committed: Dict[Path, FileSnapshot] = {}
     try:
         package_attempted = True
-        _uninstall_package(ctx, package_mutex)
+        mutation_evidence = _uninstall_package(
+            ctx,
+            package_mutex,
+            prior_package_state["fingerprints"],
+        )
+        if mutation_evidence.get("before") != prior_package_state["fingerprints"]:
+            raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_changed")
+        after_fingerprints = mutation_evidence["after"]
+        if _snapshot_package_state(ctx).get("fingerprints") != after_fingerprints:
+            raise LifecycleError(INSTALL_EXIT_ACQUIRE, "acquire", "package_mutation_evidence_changed")
+        after_by_name = {
+            name: requirement
+            for name, requirement in prior_package_state["by_name"].items()
+            if name in after_fingerprints
+        }
         prior_package_state["_transaction_owned"] = _package_state_for_mutations(
-            prior_package_state, _snapshot_package_state(ctx), {"dcc-mcp-3dsmax"}
+            prior_package_state,
+            {"by_name": after_by_name, "fingerprints": after_fingerprints},
+            {"dcc-mcp-3dsmax"},
         )
         _require_snapshot_current(ctx.hook_path, hook_before)
         _require_snapshot_current(ctx.receipt_path, receipt_before)

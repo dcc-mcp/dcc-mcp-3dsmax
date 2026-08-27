@@ -76,7 +76,11 @@ def _stub_target(monkeypatch, cli):
         },
     )
     monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source, _mutex: {})
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: None)
+    monkeypatch.setattr(
+        cli,
+        "_uninstall_package",
+        lambda _ctx, _mutex, before: {"before": before, "after": before},
+    )
     empty_package_state = cli._package_state_from_lines([])
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: empty_package_state)
 
@@ -309,13 +313,14 @@ def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
     concurrent_identity = []
     package_calls = []
 
-    def swap_owned_identity(*_args):
+    def swap_owned_identity(*args):
         package_calls.append("apply")
         replacement = tmp_path / ("concurrent-%s-%s" % (verb, drift_target))
         replacement.write_bytes(concurrent_content)
         os.replace(str(replacement), str(target))
         concurrent_identity.append(cli._file_identity(os.lstat(str(target))))
-        return {}
+        before = args[-1] if isinstance(args[-1], dict) else None
+        return {"before": before, "after": before} if before is not None else {}
 
     if verb in {"install", "upgrade"}:
         monkeypatch.setattr(cli, "_install_package", swap_owned_identity)
@@ -528,7 +533,11 @@ def test_uninstall_rejects_a_dangling_hook_symlink_without_mutation(tmp_path, ca
     missing_target = tmp_path / "missing-hook-target.ms"
     os.symlink(str(missing_target), str(hook))
     package_calls = []
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: package_calls.append("uninstall"))
+    monkeypatch.setattr(
+        cli,
+        "_uninstall_package",
+        lambda _ctx, _mutex, before: package_calls.append("uninstall") or {"before": before, "after": before},
+    )
 
     exit_code = cli.main(_args(layout, "uninstall", "--yes"))
     report = _report(cli, capsys)
@@ -667,7 +676,11 @@ def test_public_ownership_verbs_reject_same_bytes_identity_substitution_without_
     hook_content = hook.read_bytes()
     receipt_content = receipt.read_bytes()
     package_calls = []
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: package_calls.append("package"))
+    monkeypatch.setattr(
+        cli,
+        "_uninstall_package",
+        lambda _ctx, _mutex, before: package_calls.append("package") or {"before": before, "after": before},
+    )
     monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
 
     extra = ("--yes",) if verb == "uninstall" else ()
@@ -1127,7 +1140,11 @@ def test_uninstall_rejects_incompatible_target_before_package_or_file_mutation(t
             or {"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"}
         ),
     )
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: events.append("pip"))
+    monkeypatch.setattr(
+        cli,
+        "_uninstall_package",
+        lambda _ctx, _mutex, before: events.append("pip") or {"before": before, "after": before},
+    )
     monkeypatch.setattr(cli, "_restore", lambda *_args: events.append("file"))
 
     exit_code = cli.main(_args(layout, "uninstall", "--yes"))
@@ -1756,7 +1773,11 @@ def test_uninstall_compatibility_precedes_package_and_file_mutation(tmp_path, ca
         ),
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: events.append("snapshot") or state)
-    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx, _mutex: events.append("pip"))
+    monkeypatch.setattr(
+        cli,
+        "_uninstall_package",
+        lambda _ctx, _mutex, before: events.append("pip") or {"before": before, "after": before},
+    )
     real_restore = cli._restore
     monkeypatch.setattr(
         cli,
@@ -2484,7 +2505,7 @@ def test_uninstall_worker_receives_mutex_identity_token_through_pip_boundary(
 
         def run_worker(command, **_kwargs):
             code = command[2] if len(command) > 2 and command[1] == "-c" else ""
-            if "DCC_MCP_UNINSTALL_COMPLETE" not in code:
+            if "DCC_MCP_UNINSTALL_EVIDENCE" not in code:
                 return subprocess.CompletedProcess(command, 0, stdout="not-json\n", stderr="")
             observed["command"] = command
             token_path = Path(command[3])
@@ -2493,16 +2514,18 @@ def test_uninstall_worker_receives_mutex_identity_token_through_pip_boundary(
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout='DCC_MCP_UNINSTALL_COMPLETE={"success":true}\n',
+                stdout='DCC_MCP_UNINSTALL_EVIDENCE={"before":{},"after":{}}\n',
                 stderr="",
             )
 
         monkeypatch.setattr(cli.subprocess, "run", run_worker)
-        cli._uninstall_package(ctx, mutex)
+        monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: cli._package_state_from_lines([]))
+        assert cli._uninstall_package(ctx, mutex, {}) == {"before": {}, "after": {}}
 
     assert len(observed["command"]) == 5
     assert observed["record"]["token"] == observed["command"][4]
     assert observed["record"]["package_identity"] == mutex.package_identity
+    assert observed["record"]["before"] == {}
     assert observed["snapshot"].independent is True
 
 
@@ -2520,13 +2543,13 @@ def test_uninstall_rejects_target_interpreter_replacement_after_mutex_acquire(
         os.replace(str(replacement), str(layout["python"]))
 
         def run_worker(command, **_kwargs):
-            if len(command) > 2 and "DCC_MCP_UNINSTALL_COMPLETE" in command[2]:
+            if len(command) > 2 and "DCC_MCP_UNINSTALL_EVIDENCE" in command[2]:
                 pip_worker_calls.append(command)
             return subprocess.CompletedProcess(command, 0, stdout="not-json\n", stderr="")
 
         monkeypatch.setattr(cli.subprocess, "run", run_worker)
         with pytest.raises(cli.LifecycleError) as captured:
-            cli._uninstall_package(ctx, mutex)
+            cli._uninstall_package(ctx, mutex, {})
 
     assert captured.value.reason == "package_install_failed"
     assert pip_worker_calls == []
@@ -2644,6 +2667,57 @@ def test_install_does_not_claim_same_name_contender_after_package_install_return
     assert captured.value.reason in {"package_rollback_incomplete", "target_probe_failed"}
     assert pip_calls == []
     assert state["package"] == contender
+
+
+def test_uninstall_does_not_claim_same_name_contender_after_package_worker_returns(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+    installed = cli._package_state_from_lines(["dcc-mcp-3dsmax==0.2.2"])
+    removed = cli._package_state_from_lines([])
+    contender = {
+        "requirements": installed["requirements"],
+        "by_name": dict(installed["by_name"]),
+        "fingerprints": dict(installed["fingerprints"]),
+        "sha256": installed["sha256"],
+    }
+    contender["fingerprints"]["dcc-mcp-3dsmax"] = "concurrent-physical-distribution-fingerprint"
+    contender["sha256"] = "concurrent-state-fingerprint"
+    state = {"package": installed}
+    pip_calls = []
+    hook_path = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook_before = hook_path.read_bytes()
+    receipt_before = layout["receipt"].read_bytes()
+    monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: state["package"])
+
+    def uninstall_then_contender_wins(_ctx, _mutex, expected_before):
+        assert expected_before == installed["fingerprints"]
+        state["package"] = contender
+        return {"before": installed["fingerprints"], "after": removed["fingerprints"]}
+
+    monkeypatch.setattr(cli, "_uninstall_package", uninstall_then_contender_wins)
+    monkeypatch.setattr(
+        cli,
+        "_restore_if_snapshot",
+        lambda *_args: (_ for _ in ()).throw(OSError("force rollback after package mutation")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_target_owned_pip_command",
+        lambda _ctx, command, _path, _token: pip_calls.append(command),
+    )
+
+    exit_code = cli.main(_args(layout, "uninstall", "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code != cli.INSTALL_EXIT_OK
+    assert report["verify"]["failure_reason"] == "transaction_rollback_incomplete"
+    assert pip_calls == []
+    assert state["package"] == contender
+    assert hook_path.read_bytes() == hook_before
+    assert layout["receipt"].read_bytes() == receipt_before
 
 
 def test_package_mutex_key_uses_physical_interpreter_identity_for_hardlink_alias(tmp_path: Path) -> None:
