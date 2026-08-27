@@ -241,6 +241,99 @@ def test_dry_run_rejects_an_aliased_preexisting_hook_without_mutation(
     assert cli._file_identity(os.lstat(str(foreign))) == foreign_identity
 
 
+@pytest.mark.parametrize("verb", ["install", "upgrade", "uninstall"])
+@pytest.mark.parametrize("drift_target", ["hook", "receipt"])
+def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
+    tmp_path, capsys, monkeypatch, verb, drift_target
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    if verb == "install":
+        _stub_target(monkeypatch, cli)
+        hook.parent.mkdir(parents=True)
+        hook.write_bytes(b"preexisting hook")
+    else:
+        _install_for_verify(cli, layout, capsys, monkeypatch)
+    receipt = layout["receipt"]
+    hook_before = hook.read_bytes()
+    hook_identity = cli._file_identity(os.lstat(str(hook)))
+    receipt_before = receipt.read_bytes() if receipt.exists() else None
+    receipt_identity = cli._file_identity(os.lstat(str(receipt))) if receipt.exists() else None
+    target = hook if drift_target == "hook" else receipt
+    concurrent_content = target.read_bytes() if target.exists() else b"concurrent receipt"
+    concurrent_identity = []
+    package_calls = []
+
+    def swap_owned_identity(*_args):
+        package_calls.append("apply")
+        replacement = tmp_path / ("concurrent-%s-%s" % (verb, drift_target))
+        replacement.write_bytes(concurrent_content)
+        os.replace(str(replacement), str(target))
+        concurrent_identity.append(cli._file_identity(os.lstat(str(target))))
+        return True
+
+    if verb in {"install", "upgrade"}:
+        monkeypatch.setattr(cli, "_install_package", swap_owned_identity)
+    else:
+        monkeypatch.setattr(cli, "_uninstall_package", swap_owned_identity)
+    monkeypatch.setattr(
+        cli,
+        "_restore_package_state",
+        lambda _ctx, _prior: package_calls.append("restore"),
+    )
+    monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
+
+    exit_code = cli.main(_args(layout, verb, "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 30
+    assert report["status"] == "failed"
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "commit",
+        "failure_reason": "file_identity_changed",
+    }
+    assert package_calls == ["apply", "restore"]
+    assert target.read_bytes() == concurrent_content
+    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+    if drift_target == "receipt":
+        assert hook.read_bytes() == hook_before
+        assert cli._file_identity(os.lstat(str(hook))) == hook_identity
+    else:
+        if receipt_before is None:
+            assert not os.path.lexists(str(receipt))
+        else:
+            assert receipt.read_bytes() == receipt_before
+            assert cli._file_identity(os.lstat(str(receipt))) == receipt_identity
+
+
+def test_uninstall_rejects_a_dangling_hook_symlink_without_mutation(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook.parent.mkdir(parents=True)
+    missing_target = tmp_path / "missing-hook-target.ms"
+    os.symlink(str(missing_target), str(hook))
+    package_calls = []
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: package_calls.append("uninstall"))
+
+    exit_code = cli.main(_args(layout, "uninstall", "--yes"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["status"] == "failed"
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": "preflight",
+        "failure_reason": "file_identity_ambiguous",
+    }
+    assert package_calls == []
+    assert not layout["receipt"].exists()
+    assert os.path.lexists(str(hook))
+    assert hook.is_symlink()
+
+
 def test_install_refuses_to_reuse_a_receipt_owned_by_another_target(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     first = _layout(tmp_path / "first", "2024")

@@ -43,7 +43,7 @@ tools:
       idempotent_hint: true
       open_world_hint: true
     intent: "Search the asset catalog and return matching AssetDescriptor entries."
-    tool_role: query
+    tool_role: read_only
     risk: low
     search_aliases: ["search_assets", "search assets", "find asset", "asset catalog", "asset source"]
     side_effects:

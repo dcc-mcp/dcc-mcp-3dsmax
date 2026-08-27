@@ -102,6 +102,31 @@ def test_bundled_skill_metadata_and_tools_are_ci_validatable():
             assert isinstance(annotations["open_world_hint"], bool), tool_name
 
 
+def test_asset_source_loads_one_registered_handler_through_the_real_core_loader():
+    """The minimum supported Core must accept the shipped asset-source manifest."""
+    from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
+
+    server = MaxMcpServer(
+        options=MaxServerOptions(
+            port=0,
+            enable_gateway_failover=False,
+            job_storage_path="",
+        )
+    )
+    try:
+        server.register_builtin_actions(include_bundled=False)
+        before = server._server.registry.count_actions()
+        loaded = server._server.load_skill("3dsmax-asset-source")
+        action_name = "3dsmax_asset_source__search_assets"
+
+        assert loaded == [action_name]
+        assert server._server.registry.count_actions() == before + 1
+        assert server._server.registry.get_action(action_name) is not None
+        assert server._server.has_handler(action_name) is True
+    finally:
+        server.stop()
+
+
 def test_public_bundled_skill_index_lists_every_exported_tool():
     """The public index should stay in sync with bundled tool metadata."""
     index = INDEX_DOC.read_text(encoding="utf-8")
