@@ -102,7 +102,9 @@ dcc-mcp-3dsmax verify --json --dcc-path "C:\Program Files\Autodesk\3ds Max 2025"
 
 Verification checks receipt ownership, independent regular-file identity, and
 digests; symlink, reparse-point, and hardlink aliases fail closed even when the
-bytes match. It imports the exact adapter and Core versions in the selected
+bytes match. The receipt persists both its own file identity and the installed
+hook identity, so replacing either with an independent same-bytes file also
+fails closed. It imports the exact adapter and Core versions in the selected
 interpreter, checks bootstrap-error records, and waits for the typed
 `3dsmax_diagnostics__ping` sidecar probe. Only
 `verify.directly_usable=true` proves the runtime is callable. A copied hook or
@@ -127,7 +129,8 @@ The selected host, target Python, and any already-installed Core are checked
 before pip, hook, or receipt mutation. The hook and receipt are staged before
 commit. Before pip runs, the CLI records the exact frozen package provenance
 and dependency state. A receipt owned by a different startup hook fails closed
-and cannot supply `previous_hook` state for the selected target. If commit
+and cannot supply `previous_hook` state for the selected target; the preserved
+hook state records the identity from which it was captured. If commit
 fails, it restores the previous files and reads
 back their exact presence, bytes, digests, and independent file identity. A
 symlink, reparse point, hardlink alias, or same-bytes identity swap fails

@@ -243,21 +243,27 @@ def _startup_dir(host: Path, explicit: Optional[str]) -> Path:
 
 
 def _read_receipt(path: Path, required: bool = False) -> Optional[Dict[str, Any]]:
-    if not path.is_file():
+    if not os.path.lexists(str(path)):
         if required:
             raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "receipt", "receipt_missing")
         return None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        content, identity = _read_independent_file(path)
+    except Exception:
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "receipt", "receipt_ownership_invalid")
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeError, ValueError):
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "receipt", "receipt_invalid")
     if not isinstance(value, dict) or value.get("receipt_version") != 1 or value.get("dcc_type") != DCC_TYPE:
         raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "receipt", "receipt_invalid")
+    if not _identity_record_matches(value.get("receipt_identity"), identity):
+        raise LifecycleError(INSTALL_EXIT_PREFLIGHT, "receipt", "receipt_ownership_invalid")
     return value
 
 
 def _inspect_state(receipt_path: Path, hook_path: Path) -> Tuple[str, Optional[str], Optional[str]]:
-    if not receipt_path.is_file():
+    if not os.path.lexists(str(receipt_path)):
         if hook_path.exists():
             return "partial", "receipt", "receipt_missing"
         return "fresh", "preflight", "not_installed"
@@ -270,17 +276,15 @@ def _inspect_state(receipt_path: Path, hook_path: Path) -> Tuple[str, Optional[s
     if not isinstance(artifacts, list) or len(artifacts) != 1 or not isinstance(artifacts[0], dict):
         return "partial", "receipt", "receipt_ownership_invalid"
     artifact = artifacts[0]
-    try:
-        recorded = Path(str(artifact.get("path", ""))).expanduser().resolve()
-    except OSError:
-        return "partial", "receipt", "receipt_ownership_invalid"
-    if recorded != hook_path.resolve():
+    if _lexical_path_key(artifact.get("path")) != _lexical_path_key(hook_path):
         return "partial", "receipt", "receipt_target_mismatch"
     try:
-        hook_content, _ = _read_independent_file(hook_path)
+        hook_content, hook_identity = _read_independent_file(hook_path)
     except Exception:
         return "partial", "artifact", "startup_hook_missing_or_modified"
-    if hashlib.sha256(hook_content).hexdigest() != artifact.get("sha256"):
+    if hashlib.sha256(hook_content).hexdigest() != artifact.get("sha256") or not _identity_record_matches(
+        artifact.get("identity"), hook_identity
+    ):
         return "partial", "artifact", "startup_hook_missing_or_modified"
     if receipt.get("adapter_version") != ADAPTER_VERSION:
         return "upgrade", None, None
@@ -291,7 +295,7 @@ def _context(args: argparse.Namespace) -> InstallContext:
     host = _find_host(args.dcc_path)
     python = _find_python(host, args.python)
     startup = _startup_dir(host, args.startup_dir)
-    receipt = Path(args.receipt_path or DEFAULT_RECEIPT_PATH).expanduser().resolve()
+    receipt = _lexical_absolute_path(args.receipt_path or DEFAULT_RECEIPT_PATH)
     hook = startup / STARTUP_SCRIPT_NAME
     state, stage, reason = _inspect_state(receipt, hook)
     return InstallContext(
@@ -689,6 +693,30 @@ def _file_identity(file_stat: os.stat_result) -> Tuple[int, int]:
     return int(file_stat.st_dev), int(file_stat.st_ino)
 
 
+def _identity_record(identity: Optional[Tuple[int, int]]) -> Optional[Dict[str, int]]:
+    if identity is None:
+        return None
+    return {"device": identity[0], "inode": identity[1]}
+
+
+def _is_identity_record(value: Any) -> bool:
+    return isinstance(value, dict) and type(value.get("device")) is int and type(value.get("inode")) is int
+
+
+def _identity_record_matches(value: Any, identity: Tuple[int, int]) -> bool:
+    return _is_identity_record(value) and (value["device"], value["inode"]) == identity
+
+
+def _lexical_absolute_path(value: Any) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(value))))
+
+
+def _lexical_path_key(value: Any) -> str:
+    if value is None:
+        return ""
+    return os.path.normcase(str(_lexical_absolute_path(value)))
+
+
 def _is_independent_regular_file(file_stat: os.stat_result) -> bool:
     reparse_point = bool(getattr(file_stat, "st_file_attributes", 0) & 0x400)
     return stat.S_ISREG(file_stat.st_mode) and file_stat.st_nlink == 1 and not reparse_point
@@ -796,6 +824,7 @@ def _previous_hook(prior_receipt: Optional[Dict[str, Any]], current: Any) -> Dic
         "existed": snapshot.existed,
         "content_base64": base64.b64encode(content).decode("ascii"),
         "sha256": hashlib.sha256(content).hexdigest(),
+        "identity": _identity_record(snapshot.identity),
     }
 
 
@@ -807,6 +836,7 @@ def _receipt(
     target: Dict[str, Any],
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
+    hook_content, hook_identity = _read_independent_file(staged_hook)
     return {
         "receipt_version": 1,
         "schema_version": INSTALL_SOP_SCHEMA_VERSION,
@@ -815,13 +845,34 @@ def _receipt(
         "core_version": str(target.get("core_version", ctx.core_version)),
         "host": {"path": str(ctx.host_path), "version": ctx.host_version},
         "python": {"path": str(ctx.python_path), "version": str(target.get("python_version", "unknown"))},
-        "artifacts": [{"kind": "startup_hook", "path": str(ctx.hook_path), "sha256": _sha256(staged_hook)}],
+        "artifacts": [
+            {
+                "kind": "startup_hook",
+                "path": str(ctx.hook_path),
+                "sha256": hashlib.sha256(hook_content).hexdigest(),
+                "identity": _identity_record(hook_identity),
+            }
+        ],
         "previous_hook": _previous_hook(prior_receipt, current),
         "bootstrap_error_dir": str(ctx.receipt_path.parent / "bootstrap-errors"),
         "installed_at": now.isoformat(),
         "installed_at_epoch": now.timestamp(),
         "transaction": {"strategy": "staged_replace", "rollback": "previous_state"},
     }
+
+
+def _write_staged_receipt(path: Path, receipt: Dict[str, Any]) -> None:
+    receipt.pop("receipt_identity", None)
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    staged = os.lstat(str(path))
+    if not _is_independent_regular_file(staged):
+        raise OSError("receipt staging file is not independent")
+    identity = _file_identity(staged)
+    receipt["receipt_identity"] = _identity_record(identity)
+    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _, verified_identity = _read_independent_file(path)
+    if verified_identity != identity:
+        raise OSError("receipt staging identity changed")
 
 
 def _is_windows_lock(exc: OSError) -> bool:
@@ -852,10 +903,7 @@ def _install_transaction(ctx: InstallContext, source: str) -> None:
             render_startup_script(ctx.receipt_path.parent / "bootstrap-errors"),
             encoding="utf-8",
         )
-        receipt_stage.write_text(
-            json.dumps(_receipt(ctx, hook_stage, prior_receipt, hook_before, target), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        _write_staged_receipt(receipt_stage, _receipt(ctx, hook_stage, prior_receipt, hook_before, target))
         _replace_file(hook_stage, ctx.hook_path)
         files_changed = True
         _replace_file(receipt_stage, ctx.receipt_path)
@@ -1032,11 +1080,16 @@ def _decode_previous_hook(receipt: Dict[str, Any]) -> Optional[bytes]:
         raise LifecycleError(INSTALL_EXIT_INSTALL, "receipt", "receipt_ownership_invalid")
     if hashlib.sha256(content).hexdigest() != previous.get("sha256"):
         raise LifecycleError(INSTALL_EXIT_INSTALL, "receipt", "receipt_ownership_invalid")
+    if previous["existed"]:
+        if not _is_identity_record(previous.get("identity")):
+            raise LifecycleError(INSTALL_EXIT_INSTALL, "receipt", "receipt_ownership_invalid")
+    elif previous.get("identity") is not None:
+        raise LifecycleError(INSTALL_EXIT_INSTALL, "receipt", "receipt_ownership_invalid")
     return content if previous["existed"] else None
 
 
 def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, Dict[str, Any]]:
-    if not ctx.receipt_path.is_file():
+    if not os.path.lexists(str(ctx.receipt_path)):
         if ctx.hook_path.exists():
             return INSTALL_EXIT_PREFLIGHT, _failure_report(ctx, "uninstall", "receipt", "receipt_missing")
         report = _base_report(ctx, "ok", "uninstall")
@@ -1044,9 +1097,14 @@ def _run_uninstall(ctx: InstallContext, args: argparse.Namespace) -> Tuple[int, 
         return INSTALL_EXIT_OK, report
     receipt = _read_receipt(ctx.receipt_path, required=True)
     assert receipt is not None
-    state, _, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
+    state, stage, reason = _inspect_state(ctx.receipt_path, ctx.hook_path)
     if state == "partial":
-        return INSTALL_EXIT_INSTALL, _failure_report(ctx, "uninstall", "receipt", reason or "receipt_ownership_invalid")
+        return INSTALL_EXIT_INSTALL, _failure_report(
+            ctx,
+            "uninstall",
+            stage or "receipt",
+            reason or "receipt_ownership_invalid",
+        )
     previous = _decode_previous_hook(receipt)
     _preflight_compatibility(ctx)
     if args.dry_run:

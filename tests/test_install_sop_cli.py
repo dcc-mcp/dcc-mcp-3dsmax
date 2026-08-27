@@ -272,6 +272,87 @@ def test_status_and_verify_reject_a_same_bytes_aliased_hook(tmp_path, capsys, mo
     assert os.path.samefile(str(hook), str(foreign))
 
 
+@pytest.mark.parametrize("verb", ["status", "verify", "uninstall"])
+@pytest.mark.parametrize(
+    ("substitution", "failure_stage", "failure_reason", "expected_exit"),
+    [
+        ("hook_replace", "artifact", "startup_hook_missing_or_modified", {"status": 10, "verify": 40, "uninstall": 30}),
+        ("receipt_hardlink", "receipt", "receipt_ownership_invalid", {"status": 10, "verify": 40, "uninstall": 10}),
+        ("receipt_symlink", "receipt", "receipt_ownership_invalid", {"status": 10, "verify": 40, "uninstall": 10}),
+        ("receipt_replace", "receipt", "receipt_ownership_invalid", {"status": 10, "verify": 40, "uninstall": 10}),
+    ],
+)
+def test_public_ownership_verbs_reject_same_bytes_identity_substitution_without_mutation(
+    tmp_path,
+    capsys,
+    monkeypatch,
+    verb,
+    substitution,
+    failure_stage,
+    failure_reason,
+    expected_exit,
+) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    preexisting_hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    preexisting_hook.parent.mkdir(parents=True)
+    preexisting_hook.write_bytes(b"preexisting hook")
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    receipt = layout["receipt"]
+    foreign = tmp_path / ("foreign-%s" % substitution)
+    target = hook if substitution == "hook_replace" else receipt
+    if substitution == "receipt_hardlink":
+        os.link(str(receipt), str(foreign))
+    elif substitution == "receipt_symlink":
+        content = receipt.read_bytes()
+        receipt.unlink()
+        foreign.write_bytes(content)
+        os.symlink(str(foreign), str(receipt))
+    else:
+        foreign.write_bytes(target.read_bytes())
+        os.replace(str(foreign), str(target))
+    hook_identity = cli._file_identity(os.lstat(str(hook)))
+    receipt_identity = cli._file_identity(os.lstat(str(receipt)))
+    hook_content = hook.read_bytes()
+    receipt_content = receipt.read_bytes()
+    package_calls = []
+    monkeypatch.setattr(cli, "_uninstall_package", lambda _ctx: package_calls.append("package"))
+    monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
+
+    extra = ("--yes",) if verb == "uninstall" else ()
+    exit_code = cli.main(_args(layout, verb, *extra))
+    report = _report(cli, capsys)
+
+    assert exit_code == expected_exit[verb]
+    assert report["verify"] == {
+        "directly_usable": False,
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+    }
+    assert package_calls == []
+    assert hook.read_bytes() == hook_content
+    assert receipt.read_bytes() == receipt_content
+    assert cli._file_identity(os.lstat(str(hook))) == hook_identity
+    assert cli._file_identity(os.lstat(str(receipt))) == receipt_identity
+
+
+def test_receipt_persists_receipt_hook_and_previous_hook_identities(tmp_path, capsys, monkeypatch) -> None:
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
+    hook.parent.mkdir(parents=True)
+    hook.write_bytes(b"preexisting hook")
+    previous_identity = cli._file_identity(os.lstat(str(hook)))
+
+    _install_for_verify(cli, layout, capsys, monkeypatch)
+
+    receipt = json.loads(layout["receipt"].read_text(encoding="utf-8"))
+    assert receipt["receipt_identity"] == cli._identity_record(cli._file_identity(os.lstat(str(layout["receipt"]))))
+    assert receipt["artifacts"][0]["identity"] == cli._identity_record(cli._file_identity(os.lstat(str(hook))))
+    assert receipt["previous_hook"]["identity"] == cli._identity_record(previous_identity)
+
+
 def test_install_receipt_verify_and_uninstall_round_trip(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     layout = _layout(tmp_path)
