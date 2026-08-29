@@ -14,12 +14,14 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import stat
 import tempfile
 import unicodedata
 import urllib.request
+import uuid
 import zipfile
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
@@ -38,6 +40,14 @@ PY_PACKAGE_NAME = "dcc_mcp_3dsmax"
 CORE_PACKAGE_NAME = "dcc_mcp_core"
 SERVER_PACKAGE_NAME = "dcc_mcp_server"
 TARGET_PLATFORM = "win64"
+_RELEASE_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+
+
+def _validate_release_version(version: str) -> str:
+    """Validate a release version before it reaches paths or control files."""
+    if not isinstance(version, str) or _RELEASE_VERSION_RE.fullmatch(version) is None:
+        raise ValueError("version must match X.Y.Z")
+    return version
 RUNTIME_MANIFEST_NAME = "dcc-mcp-runtime-manifest.json"
 _WINDOWS_RESERVED_NAMES = {
     "aux",
@@ -553,19 +563,31 @@ def extract_wheel(wheel_path: Path, dest: Path, *, extensions_only: bool = False
             output_keys.add(output_key)
             selected.append((info, relative_parts))
 
+        if os.path.lexists(str(dest)):
+            dest_info = os.lstat(str(dest))
+            if _is_link_or_reparse_info(dest_info):
+                raise RuntimeError(f"{wheel_path.name} extraction root is unsafe")
         dest.mkdir(parents=True, exist_ok=True)
+        destination_identity = _object_identity(os.lstat(str(dest)))
+        _assert_owned_identity(dest, destination_identity, "wheel extraction root")
         destination_root = dest.resolve()
         for info, relative_parts in selected:
-            out = dest.joinpath(*relative_parts)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            if out.is_symlink():
-                raise RuntimeError(f"{wheel_path.name} extraction target is unsafe: {out.name}")
-            try:
-                out.resolve(strict=False).relative_to(destination_root)
-            except ValueError as exc:
-                raise RuntimeError(f"{wheel_path.name} extraction path escaped the runtime root") from exc
-            with zf.open(info) as src, out.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            _assert_owned_identity(dest, destination_identity, "wheel extraction root")
+            with os.scandir(str(dest)) as _destination_handle:
+                out = dest.joinpath(*relative_parts)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                parent_info = os.lstat(str(out.parent))
+                if _is_link_or_reparse_info(parent_info):
+                    raise RuntimeError(f"{wheel_path.name} extraction parent is unsafe: {out.parent.name}")
+                if os.path.lexists(str(out)) and _is_link_or_reparse_info(os.lstat(str(out))):
+                    raise RuntimeError(f"{wheel_path.name} extraction target is unsafe: {out.name}")
+                try:
+                    out.resolve(strict=False).relative_to(destination_root)
+                except ValueError as exc:
+                    raise RuntimeError(f"{wheel_path.name} extraction path escaped the runtime root") from exc
+                with zf.open(info) as src, out.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            _assert_owned_identity(dest, destination_identity, "wheel extraction root")
 
 
 def _runtime_manifest_entries(root: Path):
@@ -642,6 +664,7 @@ def _manifest_entries(document, lane: str):
 
 
 def _mzp_run_text(version: str) -> str:
+    _validate_release_version(version)
     return (
         f'name "dcc-mcp-3dsmax"\n'
         f'description "dcc-mcp-3dsmax {version} drag-and-drop installer"\n'
@@ -654,6 +677,7 @@ def _mzp_run_text(version: str) -> str:
 
 def _trusted_control_files(version: str):
     """Return the exact bytes for every non-runtime MZP control member."""
+    _validate_release_version(version)
     packaging_root = Path(__file__).resolve().parent
     try:
         return {
@@ -714,11 +738,138 @@ def _verify_mzp_archive_integrity(zf: zipfile.ZipFile, source: str, expected_ver
             raise RuntimeError(f"MZP {lane} runtime manifest integrity check failed")
 
 
+def _object_identity(info) -> Tuple[int, int, int, int]:
+    return (
+        getattr(info, "st_dev", 0),
+        getattr(info, "st_ino", 0),
+        getattr(info, "st_mode", 0),
+        getattr(info, "st_file_attributes", 0),
+    )
+
+
+def _is_link_or_reparse_info(info) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _assert_owned_identity(path: Path, expected, label: str) -> None:
+    try:
+        info = os.lstat(str(path))
+    except OSError as exc:
+        raise RuntimeError(f"{label} disappeared during cleanup") from exc
+    actual = _object_identity(info)
+    expected_identity = _object_identity(expected) if hasattr(expected, "st_mode") else tuple(expected)
+    if actual != expected_identity:
+        raise RuntimeError(f"{label} identity changed")
+    if _is_link_or_reparse_info(info):
+        raise RuntimeError(f"refusing linked/reparse {label}")
+
+
+def _remove_tree_no_links(root: Path, root_identity=None) -> None:
+    """Delete a detached tree while rebinding every physical object seam."""
+    root_info = os.lstat(str(root))
+    if _is_link_or_reparse_info(root_info):
+        raise RuntimeError("refusing linked/reparse tombstone root")
+    expected_root = root_identity or _object_identity(root_info)
+
+    def remove_directory(directory: Path, directory_identity) -> None:
+        _assert_owned_identity(directory, directory_identity, "cleanup directory")
+        try:
+            entries = list(os.scandir(str(directory)))
+        except OSError as exc:
+            raise RuntimeError(f"unable to enumerate cleanup directory {directory}") from exc
+        for entry in entries:
+            # Rebind the containing directory before and after every child seam.
+            _assert_owned_identity(directory, directory_identity, "cleanup parent")
+            child = Path(entry.path)
+            try:
+                child_info = os.lstat(str(child))
+            except FileNotFoundError:
+                continue
+            if _is_link_or_reparse_info(child_info):
+                raise RuntimeError("refusing nested linked/reparse payload")
+            child_identity = _object_identity(child_info)
+            if stat.S_ISDIR(child_info.st_mode):
+                remove_directory(child, child_identity)
+            else:
+                _assert_owned_identity(child, child_identity, "cleanup file")
+                child.unlink()
+                if os.path.lexists(str(child)):
+                    raise RuntimeError("nested cleanup target reappeared")
+            _assert_owned_identity(directory, directory_identity, "cleanup parent")
+        _assert_owned_identity(directory, directory_identity, "cleanup directory")
+        directory.rmdir()
+        if os.path.lexists(str(directory)):
+            raise RuntimeError("owned path cleanup incomplete")
+
+    remove_directory(root, expected_root)
+
+
+def _remove_owned_path(path: Path, identity, *, directory: bool) -> None:
+    """Atomically detach an identity-bound path before deleting its contents."""
+    tombstone = path.with_name(path.name + ".deleting-" + uuid.uuid4().hex)
+    parent = path.parent
+    parent_info = os.lstat(str(parent))
+    if _is_link_or_reparse_info(parent_info):
+        raise RuntimeError("refusing linked/reparse cleanup parent")
+    parent_identity = _object_identity(parent_info)
+    expected_identity = _object_identity(identity) if hasattr(identity, "st_mode") else tuple(identity)
+    _assert_owned_identity(path, expected_identity, "owned path")
+    try:
+        if os.path.lexists(str(tombstone)):
+            raise RuntimeError(f"quarantine collision at {tombstone}")
+        _assert_owned_identity(parent, parent_identity, "cleanup parent")
+        os.rename(str(path), str(tombstone))
+        _assert_owned_identity(parent, parent_identity, "cleanup parent after detach")
+        _assert_owned_identity(tombstone, expected_identity, "tombstone root")
+        tombstone_identity = _object_identity(os.lstat(str(tombstone)))
+        if directory:
+            _remove_tree_no_links(tombstone, tombstone_identity)
+        else:
+            _assert_owned_identity(tombstone, tombstone_identity, "tombstone file")
+            tombstone.unlink()
+            if os.path.lexists(str(tombstone)):
+                raise RuntimeError("owned path cleanup incomplete")
+        _assert_owned_identity(parent, parent_identity, "cleanup parent after delete")
+    except Exception as exc:
+        # Restore only when both the parent and detached object still match.
+        try:
+            _assert_owned_identity(parent, parent_identity, "cleanup parent during recovery")
+            if os.path.lexists(str(tombstone)):
+                _assert_owned_identity(tombstone, expected_identity, "quarantine tombstone during recovery")
+                if not os.path.lexists(str(path)):
+                    os.rename(str(tombstone), str(path))
+                    _assert_owned_identity(path, expected_identity, "restored owned path")
+        except Exception as recovery_exc:
+            raise RuntimeError(f"quarantine retained for recovery at {tombstone}: {recovery_exc}") from exc
+        raise RuntimeError(f"cleanup failed; quarantine restored from {tombstone}: {exc}") from exc
+
+
+def _assert_output_root(output: Path, identity) -> None:
+    """Rebind the output directory before each producer/destructive seam."""
+    _assert_owned_identity(output, identity, "MZP output root")
+
+
+def _assert_archive_root(archive_root: Path, identity) -> None:
+    _assert_owned_identity(archive_root, identity, "MZP archive root")
+
+
 def copy_package(project_root: Path, dest: Path) -> None:
     src = project_root / "src" / PY_PACKAGE_NAME
     target = dest / PY_PACKAGE_NAME
-    if target.exists():
-        shutil.rmtree(target)
+    if os.path.lexists(str(target)):
+        existing = os.lstat(str(target))
+        if stat.S_ISLNK(existing.st_mode) or bool(getattr(existing, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise RuntimeError("refusing to replace linked package target")
+        if target.resolve().parent != dest.resolve():
+            raise RuntimeError("package target escapes destination")
+        current = os.lstat(str(target))
+        if (current.st_dev, current.st_ino, current.st_mode) != (existing.st_dev, existing.st_ino, existing.st_mode):
+            raise RuntimeError("package target identity changed")
+        _remove_owned_path(target, existing, directory=True)
+        if os.path.lexists(str(target)):
+            raise RuntimeError("package target cleanup incomplete")
     shutil.copytree(src, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
 
 
@@ -731,6 +882,8 @@ def _read_template(name: str) -> str:
 
 
 def _render_template(name: str, **tokens: str) -> str:
+    if "VERSION" in tokens:
+        _validate_release_version(tokens["VERSION"])
     text = _read_template(name)
     for key, value in tokens.items():
         text = text.replace("{{" + key + "}}", value)
@@ -750,22 +903,61 @@ def write_startup_template(package_root: Path) -> None:
 
 
 def write_mzp_run(package_root: Path, version: str) -> None:
+    _validate_release_version(version)
     _write_utf8_lf(package_root / "mzp.run", _mzp_run_text(version))
 
 
 def write_install_script(package_root: Path, version: str) -> None:
+    _validate_release_version(version)
     _write_utf8_lf(package_root / "install.ms", _render_template("install.ms", VERSION=version))
 
 
 def assemble(project_root: Path, version: str, output: Path) -> Path:
-    output.mkdir(parents=True, exist_ok=True)
+    # Validate untrusted input before the first filesystem operation.
+    _validate_release_version(version)
+    raw_output = Path(output)
+    if os.path.lexists(str(raw_output)):
+        raw_info = os.lstat(str(raw_output))
+        if _is_link_or_reparse_info(raw_info):
+            raise RuntimeError("refusing linked/reparse MZP output root")
+    output = Path(output).resolve()
     archive_root = output / f"{PACKAGE_NAME}-{version}-{TARGET_PLATFORM}"
-    if archive_root.exists():
-        shutil.rmtree(archive_root)
+    archive_root_resolved = archive_root.resolve()
+    if archive_root_resolved.parent != output:
+        raise RuntimeError("MZP archive path escapes output root")
+    output.mkdir(parents=True, exist_ok=True)
+    output_identity = os.lstat(str(output))
+    _assert_output_root(output, output_identity)
+    if os.path.lexists(str(archive_root)):
+        before = os.lstat(str(archive_root))
+        if stat.S_ISLNK(before.st_mode) or bool(getattr(before, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise RuntimeError("refusing to replace linked MZP archive root")
+        if archive_root.resolve().parent != output:
+            raise RuntimeError("MZP archive path escapes output root")
+        current = os.lstat(str(archive_root))
+        if (before.st_dev, before.st_ino, before.st_mode) != (current.st_dev, current.st_ino, current.st_mode):
+            raise RuntimeError("MZP archive root identity changed")
+        output_before_delete = os.lstat(str(output))
+        if (output_identity.st_dev, output_identity.st_ino, output_identity.st_mode) != (output_before_delete.st_dev, output_before_delete.st_ino, output_before_delete.st_mode):
+            raise RuntimeError("MZP output root identity changed")
+        _remove_owned_path(archive_root, before, directory=True)
+        output_after_delete = os.lstat(str(output))
+        if (output_before_delete.st_dev, output_before_delete.st_ino, output_before_delete.st_mode) != (output_after_delete.st_dev, output_after_delete.st_ino, output_after_delete.st_mode):
+            raise RuntimeError("MZP output root identity changed")
+        if os.path.lexists(str(archive_root)):
+            raise RuntimeError("MZP archive root cleanup incomplete")
     payload = archive_root / "payload"
+    _assert_output_root(output, output_identity)
+    if not os.path.lexists(str(archive_root)):
+        archive_root.mkdir()
+    archive_root_identity = os.lstat(str(archive_root))
+    _assert_archive_root(archive_root, archive_root_identity)
     python_dir = payload / "python"
     python37_dir = payload / "python37"
-    python_dir.mkdir(parents=True)
+    with os.scandir(str(archive_root)) as _archive_handle:
+        python_dir.mkdir(parents=True)
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
 
     core_version = resolve_core_version(project_root)
     server_version = resolve_server_version(project_root)
@@ -783,25 +975,40 @@ def assemble(project_root: Path, version: str, output: Path) -> Path:
         cp37_wheels = [wheel for wheel in wheels if "cp37-cp37m" in wheel.name]
 
         for wheel in abi3_wheels or wheels:
+            _assert_output_root(output, output_identity)
+            _assert_archive_root(archive_root, archive_root_identity)
             print(f"Extracting {wheel.name} to python/")
             extract_wheel(wheel, python_dir)
 
         if cp37_wheels:
-            shutil.copytree(python_dir, python37_dir)
+            with os.scandir(str(archive_root)) as _archive_handle:
+                shutil.copytree(python_dir, python37_dir)
+            _assert_output_root(output, output_identity)
+            _assert_archive_root(archive_root, archive_root_identity)
             for wheel in cp37_wheels:
                 print(f"Extracting {wheel.name} extension files to python37/")
                 extract_wheel(wheel, python37_dir, extensions_only=True)
 
         print(f"Extracting {server_wheel.name} to python/")
+        _assert_output_root(output, output_identity)
+        _assert_archive_root(archive_root, archive_root_identity)
         extract_wheel(server_wheel, python_dir)
         if python37_dir.exists():
+            _assert_output_root(output, output_identity)
+            _assert_archive_root(archive_root, archive_root_identity)
             print(f"Extracting {server_wheel.name} to python37/")
             extract_wheel(server_wheel, python37_dir)
 
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     copy_package(project_root, python_dir)
     if python37_dir.exists():
+        _assert_output_root(output, output_identity)
+        _assert_archive_root(archive_root, archive_root_identity)
         copy_package(project_root, python37_dir)
 
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     write_runtime_manifests(payload)
 
     for payload_root in (python_dir, python37_dir):
@@ -814,18 +1021,36 @@ def assemble(project_root: Path, version: str, output: Path) -> Path:
 
     readme = project_root / "packaging" / "README.txt"
     if readme.exists():
+        _assert_output_root(output, output_identity)
+        _assert_archive_root(archive_root, archive_root_identity)
         shutil.copy2(readme, payload / "README.txt")
 
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     write_startup_template(payload)
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     write_mzp_run(archive_root, version)
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     write_install_script(archive_root, version)
 
     mzp_base = output / archive_root.name
+    _assert_output_root(output, output_identity)
+    _assert_archive_root(archive_root, archive_root_identity)
     zip_path = shutil.make_archive(str(mzp_base), "zip", root_dir=archive_root)
     mzp_path = Path(zip_path).with_suffix(".mzp")
-    if mzp_path.exists():
-        mzp_path.unlink()
+    if os.path.lexists(str(mzp_path)):
+        existing_mzp = os.lstat(str(mzp_path))
+        if stat.S_ISLNK(existing_mzp.st_mode) or bool(getattr(existing_mzp, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise RuntimeError("refusing to replace linked MZP file")
+        current_mzp = os.lstat(str(mzp_path))
+        if (current_mzp.st_dev, current_mzp.st_ino, current_mzp.st_mode) != (existing_mzp.st_dev, existing_mzp.st_ino, existing_mzp.st_mode):
+            raise RuntimeError("MZP output file identity changed")
+        _remove_owned_path(mzp_path, existing_mzp, directory=False)
+    _assert_output_root(output, output_identity)
     Path(zip_path).rename(mzp_path)
+    _assert_output_root(output, output_identity)
     with zipfile.ZipFile(str(mzp_path)) as zf:
         _verify_mzp_archive_integrity(zf, mzp_path.name, version)
     print(f"Created {mzp_path}")

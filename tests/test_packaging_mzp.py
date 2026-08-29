@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import importlib.util
 import json
+import os
+import re
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -52,6 +55,17 @@ def _generated_install_script(tmp_path: Path, version: str = "1.2.3") -> str:
     return (tmp_path / "install.ms").read_text(encoding="utf-8")
 
 
+def _embedded_python(maxscript: str) -> str:
+    """Decode the literal Python fragments emitted by a MaxScript template."""
+    chunks = []
+    for line in maxscript.splitlines():
+        if "py +=" not in line:
+            continue
+        for literal in re.findall(r'"(?:\\.|[^"\\])*"', line.split("py +=", 1)[1]):
+            chunks.append(ast.literal_eval(literal))
+    return "".join(chunks)
+
+
 def test_mzp_scripts_are_maintained_as_templates():
     """Long MZP scripts live as source files instead of inline assembler strings."""
     startup = TEMPLATES_DIR / "dcc_mcp_3dsmax_startup.ms"
@@ -77,6 +91,137 @@ def test_mzp_run_is_control_file(tmp_path):
     assert "clear temp on MAX exit" in text
     assert "python.Execute" not in text
     assert "messageBox" not in text
+
+
+@pytest.mark.parametrize("version", ["..", "../escape", "1.2", "1.2.3\"\nrun \"evil.ms\""])
+def test_assembler_rejects_malicious_release_versions_before_rendering(version):
+    assembler = _load_assembler()
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler._mzp_run_text(version)
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler.write_install_script(Path("."), version)
+
+
+def test_assembler_does_not_delete_outside_output_for_parent_version(tmp_path):
+    assembler = _load_assembler()
+    outside = tmp_path.parent / "dcc-mcp-3dsmax-escape-win64"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler.assemble(tmp_path / "project", "..", tmp_path / "out")
+    assert marker.exists()
+
+
+def test_assembler_creates_archive_root_before_binding_first_build(tmp_path, monkeypatch):
+    assembler = _load_assembler()
+    output = tmp_path / "out"
+    monkeypatch.setattr(assembler, "resolve_core_version", lambda project: (_ for _ in ()).throw(RuntimeError("stop")))
+    with pytest.raises(RuntimeError, match="stop"):
+        assembler.assemble(tmp_path / "project", "1.2.3", output)
+    assert (output / "dcc-mcp-3dsmax-1.2.3-win64").is_dir()
+
+
+def test_remove_owned_path_rejects_nested_links_and_restores_quarantine(tmp_path):
+    assembler = _load_assembler()
+    target = tmp_path / "payload"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    try:
+        (target / "nested-link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+    identity = target.stat()
+    with pytest.raises(RuntimeError, match="nested linked/reparse"):
+        assembler._remove_owned_path(target, identity, directory=True)
+    assert target.exists()
+    assert (outside / "keep.txt").exists()
+    assert not list(tmp_path.glob("payload.deleting-*"))
+
+
+def test_remove_tree_detects_deterministic_nested_reparse_swap(tmp_path, monkeypatch):
+    """A child replaced after enumeration is rejected before any foreign tree is touched."""
+    assembler = _load_assembler()
+    target = tmp_path / "payload"
+    target.mkdir()
+    child = target / "nested"
+    child.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    original_scandir = assembler.os.scandir
+    swapped = {"done": False}
+
+    def adversarial_scandir(path):
+        entries = list(original_scandir(path))
+        if Path(path) == target and not swapped["done"]:
+            swapped["done"] = True
+            child.rmdir()
+            child.symlink_to(outside, target_is_directory=True)
+        return entries
+
+    monkeypatch.setattr(assembler.os, "scandir", adversarial_scandir)
+    identity = os.lstat(str(target))
+    with pytest.raises(RuntimeError, match="linked/reparse|identity"):
+        assembler._remove_tree_no_links(target, identity)
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_remove_owned_path_binds_parent_and_reports_orphan_quarantine(tmp_path, monkeypatch):
+    """A parent replacement cannot redirect detach/recovery and leaves a diagnostic tombstone."""
+    assembler = _load_assembler()
+    parent = tmp_path / "versions"
+    parent.mkdir()
+    target = parent / "old"
+    target.mkdir()
+    (target / "owned.txt").write_text("owned", encoding="utf-8")
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "keep.txt").write_text("keep", encoding="utf-8")
+    original_rename = assembler.os.rename
+    swapped = {"done": False}
+
+    def adversarial_rename(src, dst):
+        original_rename(src, dst)
+        if Path(src) == target and not swapped["done"]:
+            swapped["done"] = True
+            parent.rename(tmp_path / "versions-replaced")
+            parent.mkdir()
+            (parent / "foreign.txt").write_text("must survive", encoding="utf-8")
+
+    monkeypatch.setattr(assembler.os, "rename", adversarial_rename)
+    identity = os.lstat(str(target))
+    with pytest.raises(RuntimeError, match="quarantine retained") as error:
+        assembler._remove_owned_path(target, identity, directory=True)
+    assert "deleting-" in str(error.value)
+    assert (parent / "foreign.txt").read_text(encoding="utf-8") == "must survive"
+    assert (tmp_path / "versions-replaced").exists()
+    assert list((tmp_path / "versions-replaced").glob("old.deleting-*"))
+
+
+def test_remove_tree_final_rmdir_swap_cannot_delete_foreign_tree(tmp_path, monkeypatch):
+    assembler = _load_assembler()
+    target = tmp_path / "payload"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    original_rmdir = Path.rmdir
+
+    def adversarial_rmdir(path):
+        if path == target:
+            target.rename(tmp_path / "payload-original")
+            target.symlink_to(outside, target_is_directory=True)
+        return original_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", adversarial_rmdir)
+    try:
+        assembler._remove_tree_no_links(target, os.lstat(str(target)))
+    except (NotADirectoryError, RuntimeError):
+        pass
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
@@ -110,6 +255,150 @@ def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
     assert "startup_script.unlink()" in text
     assert "uninstall_marker = Path(r'''" in text
     assert ") / 'dcc_mcp_3dsmax_uninstall_pending'" in text
+    assert "_SAFE_NAME = re.compile" in text
+    assert "st_file_attributes" in text
+    assert "refusing" in text
+    assert "startup_tmp" in text
+    assert "os.replace(str(startup_tmp), str(startup_script))" in text
+
+
+def test_generated_install_startup_copy_is_atomic_against_destination_symlink(tmp_path):
+    """Execute the generated copy helper and inject a destination-link race."""
+    template = (TEMPLATES_DIR / "install.ms").read_text(encoding="utf-8")
+    install_source = _embedded_python(template.split("fn _dccMcpUninstall", 1)[0])
+    paths = {
+        "source": tmp_path / "source",
+        "install_dir": tmp_path / "install",
+        "versions_dir": tmp_path / "install" / "versions",
+        "current_file": tmp_path / "install" / "current.txt",
+        "uninstall_marker": tmp_path / "uninstall.pending",
+        "legacy_uninstall_marker": tmp_path / "install" / "uninstall.pending",
+        "startup_dir": tmp_path / "startup",
+        "startup_script": tmp_path / "startup" / "dcc_mcp_3dsmax_startup.ms",
+    }
+    for name, value in paths.items():
+        install_source = re.sub(
+            rf"^{name} = Path\(r'''.*?\n",
+            f"{name} = Path(r'''{value.as_posix()}''')\n",
+            install_source,
+            flags=re.MULTILINE,
+        )
+    prefix = install_source.split("_stop_existing('install')", 1)[0]
+    namespace = {}
+    compile(prefix, "generated-install-runtime", "exec")
+    exec(prefix, namespace)
+    version_dir = paths["versions_dir"] / "v1"
+    (version_dir / "startup").mkdir(parents=True)
+    payload = version_dir / "startup" / "dcc_mcp_3dsmax_startup.ms"
+    payload.write_text("generated", encoding="utf-8")
+    paths["startup_dir"].mkdir()
+    outside = tmp_path / "outside.ms"
+    outside.write_text("must survive", encoding="utf-8")
+    original_replace = namespace["os"].replace
+
+    def race_replace(source, destination):
+        Path(destination).symlink_to(outside)
+        return original_replace(source, destination)
+
+    namespace["os"].replace = race_replace
+    namespace["_copy_startup"](version_dir)
+    assert outside.read_text(encoding="utf-8") == "must survive"
+    assert paths["startup_script"].read_text(encoding="utf-8") == "generated"
+
+
+def test_generated_current_activation_rebinds_parent_after_atomic_replace(tmp_path, monkeypatch):
+    """The generated current marker transaction detects a parent swap at readback."""
+    template = (TEMPLATES_DIR / "install.ms").read_text(encoding="utf-8")
+    source = _embedded_python(template.split("fn _dccMcpUninstall", 1)[0])
+    paths = {
+        "source": tmp_path / "source",
+        "install_dir": tmp_path / "install",
+        "versions_dir": tmp_path / "install" / "versions",
+        "current_file": tmp_path / "install" / "current.txt",
+        "uninstall_marker": tmp_path / "uninstall.pending",
+        "legacy_uninstall_marker": tmp_path / "install" / "uninstall.pending",
+        "startup_dir": tmp_path / "startup",
+        "startup_script": tmp_path / "startup" / "startup.ms",
+    }
+    for name, value in paths.items():
+        source = re.sub(
+            rf"^{name} = Path\(r'''.*?\n",
+            f"{name} = Path(r'''{value.as_posix()}''')\n",
+            source,
+            flags=re.MULTILINE,
+        )
+    prefix, activation = source.split("with os.scandir(str(install_dir)) as _install_handle:", 1)
+    activation = "with os.scandir(str(install_dir)) as _install_handle:" + activation.split("_copy_startup(version_dir)", 1)[0]
+    namespace = {}
+    exec(prefix.split("_stop_existing('install')", 1)[0], namespace)
+    paths["install_dir"].mkdir()
+    paths["versions_dir"].mkdir()
+    namespace["key"] = "v1"
+    namespace["version_dir"] = paths["versions_dir"] / "v1"
+    namespace["version_dir"].mkdir()
+    original_replace = namespace["os"].replace
+
+    def swap_after_replace(source_path, destination):
+        result = original_replace(source_path, destination)
+        paths["install_dir"].rename(tmp_path / "install-replaced")
+        paths["install_dir"].mkdir()
+        return result
+
+    monkeypatch.setattr(namespace["os"], "replace", swap_after_replace)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        exec(activation, namespace)
+    assert (tmp_path / "install-replaced" / "current.txt").read_text(encoding="utf-8").strip() == "v1"
+    assert not (paths["install_dir"] / "current.txt").exists()
+
+
+def test_generated_startup_cleanup_rejects_replacement_tree(tmp_path, monkeypatch):
+    """Execute startup cleanup with a helper seam that swaps in a symlink."""
+    template = (TEMPLATES_DIR / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
+    startup_source = _embedded_python(template)
+    paths = {
+        "root": tmp_path / "install",
+        "uninstall_marker": tmp_path / "pending",
+        "legacy_uninstall_marker": tmp_path / "install" / "pending",
+        "startup_script": tmp_path / "startup.ms",
+    }
+    for name, value in paths.items():
+        startup_source = re.sub(
+            rf"^{name} = Path\(r'''.*?\n",
+            f"{name} = Path(r'''{value.as_posix()}''')\n",
+            startup_source,
+            flags=re.MULTILINE,
+        )
+    prefix = startup_source.split("if _uninstall_pending():", 1)[0]
+    namespace = {}
+    compile(prefix, "generated-startup-runtime", "exec")
+    exec(prefix, namespace)
+    root = paths["root"]
+    root.mkdir()
+    target = root / "obsolete"
+    target.mkdir()
+    outside = tmp_path / "foreign"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    package = root / "python"
+    package.mkdir()
+    namespace["_installed_root"] = lambda: (root, None)
+    namespace["_validated_pkg"] = lambda base, base_id=None: (package, None)
+    original_scandir = namespace["os"].scandir
+    swapped = {"done": False}
+
+    def adversarial_scandir(path):
+        entries = list(original_scandir(path))
+        if Path(path) == target and not swapped["done"]:
+            swapped["done"] = True
+            target.rmdir()
+            target.symlink_to(outside, target_is_directory=True)
+        return entries
+
+    monkeypatch.setattr(namespace["os"], "scandir", adversarial_scandir)
+    with pytest.raises((RuntimeError, OSError), match="linked/reparse|identity|directory"):
+        namespace["_safe_remove_tree"](target)
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert target.is_symlink()
 
 
 def test_uninstall_script_escapes_pending_marker_newline_for_nested_python(tmp_path):
@@ -134,7 +423,7 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "DCC_MCP_CORE_ROOT" in text
     assert "DCC_MCP_SERVER_ROOT" in text
     assert "current = current_file.read_text" in text
-    assert "root / 'versions' / current" in text
+    assert "versions_dir / current" in text
     assert "def _is_python37_root(path):" in text
     assert "base.parent / 'python'" in text
     assert "def _compatible_python_path(path):" in text
@@ -149,6 +438,42 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "def _cleanup_obsolete_payloads(active_root):" in text
     assert "_cleanup_obsolete_payloads(install_payload)" in text
     assert "from dcc_mcp_core.install_lifecycle import safe_remove_tree" in text
+    assert "_SAFE_NAME = re.compile" in text
+    assert "st_file_attributes" in text
+    assert "refusing" in text
+
+
+@pytest.mark.parametrize("current", ["..", ".", "../outside", "C:/outside", "foo\\\\bar", "CON"])
+def test_generated_runtime_rejects_unsafe_current_names(tmp_path, current):
+    """The embedded runtime must fail closed for traversal, absolute, and reserved names."""
+    assembler = _load_assembler()
+    install = _generated_install_script(tmp_path)
+    startup_path = tmp_path / "startup"
+    assembler.write_startup_template(tmp_path)
+    startup = (startup_path / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
+    for text in (install, startup):
+        assert "_SAFE_NAME.fullmatch(current or '')" in text
+        assert "current.rstrip(' .') != current" in text
+        assert "current.split('.')[0].upper() in _RESERVED_NAMES" in text
+        assert current not in ("C:/outside",) or "os.path.realpath" in text
+
+
+def test_generated_runtime_rebinds_identity_around_cleanup_and_import(tmp_path):
+    assembler = _load_assembler()
+    install = _generated_install_script(tmp_path)
+    assembler.write_startup_template(tmp_path)
+    startup = (tmp_path / "startup" / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
+    for text in (install, startup):
+        assert "def _identity(path):" in text
+        assert "identity changed" in text
+        assert "st_file_attributes" in text
+        assert "os.path.lexists(str(path))" in text
+        assert "cleanup target reappeared" in text
+        assert "runtime package" in text
+    assert "os.replace(str(current_tmp), str(current_file))" in install
+    assert "os.replace(str(startup_tmp), str(startup_script))" in install
+    assert "if not os.path.lexists(str(path))" in install
+    assert "if not os.path.lexists(str(path))" in startup
 
 
 def test_release_payload_checker_uses_modern_python_root_on_py38_plus(tmp_path, monkeypatch):
@@ -224,6 +549,24 @@ def test_wheel_extraction_rejects_parent_path_escape_before_write(tmp_path):
         assembler.extract_wheel(wheel, destination)
 
     assert not escaped.exists()
+
+
+def test_wheel_extraction_rejects_nested_link_destination(tmp_path):
+    assembler = _load_assembler()
+    wheel = tmp_path / "payload.whl"
+    destination = tmp_path / "runtime"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        destination.mkdir()
+        (destination / "nested").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("nested/escaped.py", b"foreign write")
+    with pytest.raises(RuntimeError, match="unsafe|reparse|link"):
+        assembler.extract_wheel(wheel, destination)
+    assert not (outside / "escaped.py").exists()
 
 
 def test_wheel_extraction_rejects_duplicate_members(tmp_path):
