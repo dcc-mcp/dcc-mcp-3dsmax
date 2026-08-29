@@ -79,6 +79,26 @@ def test_mzp_run_is_control_file(tmp_path):
     assert "messageBox" not in text
 
 
+@pytest.mark.parametrize("version", ["..", "../escape", "1.2", "1.2.3\"\nrun \"evil.ms\""])
+def test_assembler_rejects_malicious_release_versions_before_rendering(version):
+    assembler = _load_assembler()
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler._mzp_run_text(version)
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler.write_install_script(Path("."), version)
+
+
+def test_assembler_does_not_delete_outside_output_for_parent_version(tmp_path):
+    assembler = _load_assembler()
+    outside = tmp_path.parent / "dcc-mcp-3dsmax-escape-win64"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    with pytest.raises((ValueError, RuntimeError), match="version|X.Y.Z"):
+        assembler.assemble(tmp_path / "project", "..", tmp_path / "out")
+    assert marker.exists()
+
+
 def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
     """Generated MaxScript avoids raw Python strings ending in backslashes."""
     text = _generated_install_script(tmp_path)
@@ -110,6 +130,9 @@ def test_install_script_normalizes_paths_before_embedding_in_python(tmp_path):
     assert "startup_script.unlink()" in text
     assert "uninstall_marker = Path(r'''" in text
     assert ") / 'dcc_mcp_3dsmax_uninstall_pending'" in text
+    assert "_SAFE_NAME = re.compile" in text
+    assert "st_file_attributes" in text
+    assert "refusing" in text
 
 
 def test_uninstall_script_escapes_pending_marker_newline_for_nested_python(tmp_path):
@@ -134,7 +157,7 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "DCC_MCP_CORE_ROOT" in text
     assert "DCC_MCP_SERVER_ROOT" in text
     assert "current = current_file.read_text" in text
-    assert "root / 'versions' / current" in text
+    assert "versions_dir / current" in text
     assert "def _is_python37_root(path):" in text
     assert "base.parent / 'python'" in text
     assert "def _compatible_python_path(path):" in text
@@ -149,6 +172,39 @@ def test_startup_script_installs_menu_after_adding_package_path(tmp_path):
     assert "def _cleanup_obsolete_payloads(active_root):" in text
     assert "_cleanup_obsolete_payloads(install_payload)" in text
     assert "from dcc_mcp_core.install_lifecycle import safe_remove_tree" in text
+    assert "_SAFE_NAME = re.compile" in text
+    assert "st_file_attributes" in text
+    assert "refusing" in text
+
+
+@pytest.mark.parametrize("current", ["..", ".", "../outside", "C:/outside", "foo\\\\bar", "CON"])
+def test_generated_runtime_rejects_unsafe_current_names(tmp_path, current):
+    """The embedded runtime must fail closed for traversal, absolute, and reserved names."""
+    assembler = _load_assembler()
+    install = _generated_install_script(tmp_path)
+    startup_path = tmp_path / "startup"
+    assembler.write_startup_template(tmp_path)
+    startup = (startup_path / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
+    for text in (install, startup):
+        assert "_SAFE_NAME.fullmatch(current or '')" in text
+        assert "current.rstrip(' .') != current" in text
+        assert "current.split('.')[0].upper() in _RESERVED_NAMES" in text
+        assert current not in ("C:/outside",) or "os.path.realpath" in text
+
+
+def test_generated_runtime_rebinds_identity_around_cleanup_and_import(tmp_path):
+    assembler = _load_assembler()
+    install = _generated_install_script(tmp_path)
+    assembler.write_startup_template(tmp_path)
+    startup = (tmp_path / "startup" / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
+    for text in (install, startup):
+        assert "def _identity(path):" in text
+        assert "identity changed" in text
+        assert "st_file_attributes" in text
+        assert "os.path.lexists(str(path))" in text
+        assert "cleanup target reappeared" in text
+        assert "runtime package" in text
+    assert "os.replace(str(current_tmp), str(current_file))" in install
 
 
 def test_release_payload_checker_uses_modern_python_root_on_py38_plus(tmp_path, monkeypatch):

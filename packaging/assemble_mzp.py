@@ -38,6 +38,14 @@ PY_PACKAGE_NAME = "dcc_mcp_3dsmax"
 CORE_PACKAGE_NAME = "dcc_mcp_core"
 SERVER_PACKAGE_NAME = "dcc_mcp_server"
 TARGET_PLATFORM = "win64"
+_RELEASE_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
+
+
+def _validate_release_version(version: str) -> str:
+    """Validate a release version before it reaches paths or control files."""
+    if not isinstance(version, str) or _RELEASE_VERSION_RE.fullmatch(version) is None:
+        raise ValueError("version must match X.Y.Z")
+    return version
 RUNTIME_MANIFEST_NAME = "dcc-mcp-runtime-manifest.json"
 _WINDOWS_RESERVED_NAMES = {
     "aux",
@@ -642,6 +650,7 @@ def _manifest_entries(document, lane: str):
 
 
 def _mzp_run_text(version: str) -> str:
+    _validate_release_version(version)
     return (
         f'name "dcc-mcp-3dsmax"\n'
         f'description "dcc-mcp-3dsmax {version} drag-and-drop installer"\n'
@@ -654,6 +663,7 @@ def _mzp_run_text(version: str) -> str:
 
 def _trusted_control_files(version: str):
     """Return the exact bytes for every non-runtime MZP control member."""
+    _validate_release_version(version)
     packaging_root = Path(__file__).resolve().parent
     try:
         return {
@@ -731,6 +741,8 @@ def _read_template(name: str) -> str:
 
 
 def _render_template(name: str, **tokens: str) -> str:
+    if "VERSION" in tokens:
+        _validate_release_version(tokens["VERSION"])
     text = _read_template(name)
     for key, value in tokens.items():
         text = text.replace("{{" + key + "}}", value)
@@ -750,17 +762,27 @@ def write_startup_template(package_root: Path) -> None:
 
 
 def write_mzp_run(package_root: Path, version: str) -> None:
+    _validate_release_version(version)
     _write_utf8_lf(package_root / "mzp.run", _mzp_run_text(version))
 
 
 def write_install_script(package_root: Path, version: str) -> None:
+    _validate_release_version(version)
     _write_utf8_lf(package_root / "install.ms", _render_template("install.ms", VERSION=version))
 
 
 def assemble(project_root: Path, version: str, output: Path) -> Path:
-    output.mkdir(parents=True, exist_ok=True)
+    # Validate untrusted input before the first filesystem operation.
+    _validate_release_version(version)
+    output = Path(output).resolve()
     archive_root = output / f"{PACKAGE_NAME}-{version}-{TARGET_PLATFORM}"
+    archive_root_resolved = archive_root.resolve()
+    if archive_root_resolved.parent != output:
+        raise RuntimeError("MZP archive path escapes output root")
+    output.mkdir(parents=True, exist_ok=True)
     if archive_root.exists():
+        if archive_root.is_symlink() or bool(getattr(archive_root.stat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise RuntimeError("refusing to replace linked MZP archive root")
         shutil.rmtree(archive_root)
     payload = archive_root / "payload"
     python_dir = payload / "python"
