@@ -63,7 +63,12 @@ def _stub_target(monkeypatch, cli):
     monkeypatch.setattr(
         cli,
         "_probe_compatibility",
-        lambda _ctx: {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"},
+        lambda _ctx: {
+            "python_version": "3.11.9",
+            "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
+            "host_version": "2025",
+        },
         raising=False,
     )
     monkeypatch.setattr(
@@ -72,7 +77,8 @@ def _stub_target(monkeypatch, cli):
         lambda _python: {
             "python_version": "3.11.9",
             "adapter_version": cli.ADAPTER_VERSION,
-            "core_version": "0.20.20",
+            "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
         },
     )
     monkeypatch.setattr(cli, "_install_package", lambda _ctx, _source, _mutex: {})
@@ -279,7 +285,12 @@ def test_dry_run_does_not_write_a_hook_receipt_or_install_package(tmp_path, caps
     monkeypatch.setattr(
         cli,
         "_probe_compatibility",
-        lambda _ctx: {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"},
+        lambda _ctx: {
+            "python_version": "3.11.9",
+            "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
+            "host_version": "2025",
+        },
     )
     monkeypatch.setattr(cli, "_install_package", lambda *_args: package_calls.append(_args))
 
@@ -298,11 +309,21 @@ def test_dry_run_does_not_write_a_hook_receipt_or_install_package(tmp_path, caps
     ("compatibility", "expected_reason"),
     [
         (
-            {"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"},
+            {
+                "python_version": "3.6.15",
+                "core_version": "0.20.22",
+                "server_version": "0.20.22",
+                "host_version": "2025",
+            },
             "python_version_unsupported",
         ),
         (
-            {"python_version": "3.11.9", "core_version": "0.20.19", "host_version": "2025"},
+            {
+                "python_version": "3.11.9",
+                "core_version": "0.20.21",
+                "server_version": "0.20.22",
+                "host_version": "2025",
+            },
             "core_version_too_old",
         ),
     ],
@@ -330,6 +351,53 @@ def test_dry_run_reports_read_only_compatibility_failures_without_mutation(
     assert mutations == []
     assert not layout["startup"].exists()
     assert not layout["receipt"].exists()
+
+
+@pytest.mark.parametrize("version", ["0.20.22rc1", "garbage0.20.22"])
+def test_dependency_versions_reject_prerelease_and_malformed_values(version) -> None:
+    cli = _install_cli()
+
+    with pytest.raises(cli.LifecycleError, match="core_version_invalid") as captured:
+        cli._validate_dependency_version(
+            version,
+            "core",
+            cli.MIN_CORE_VERSION,
+            cli.MAX_CORE_VERSION,
+            allow_missing=False,
+        )
+
+    assert captured.value.reason == "core_version_invalid"
+
+
+def _write_probe_distribution(
+    root: Path, import_name: str, distribution: str, version: str, *, module_version: str = "0.0.0-dev"
+) -> None:
+    package = root / import_name
+    package.mkdir()
+    (package / "__init__.py").write_text('__version__ = "%s"\n' % module_version, encoding="utf-8")
+    metadata = root / (distribution.replace("-", "_") + "-%s.dist-info" % version) / "METADATA"
+    metadata.parent.mkdir()
+    metadata.write_text(
+        "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" % (distribution, version),
+        encoding="utf-8",
+    )
+
+
+def test_target_probes_read_canonical_distribution_metadata(tmp_path, monkeypatch) -> None:
+    cli = _install_cli()
+    _write_probe_distribution(tmp_path, "dcc_mcp_core", "dcc-mcp-core", "0.20.22")
+    _write_probe_distribution(tmp_path, "dcc_mcp_server", "dcc-mcp-server", "0.20.22")
+    _write_probe_distribution(tmp_path, "dcc_mcp_3dsmax", "dcc-mcp-3dsmax", "0.2.2", module_version="0.2.2")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    target = cli._probe_target(Path(sys.executable))
+    compatibility = cli._probe_compatibility(SimpleNamespace(python_path=Path(sys.executable), host_version="2025"))
+
+    assert target["adapter_version"] == "0.2.2"
+    assert target["core_version"] == "0.20.22"
+    assert target["server_version"] == "0.20.22"
+    assert compatibility["core_version"] == "0.20.22"
+    assert compatibility["server_version"] == "0.20.22"
 
 
 def test_dry_run_rejects_an_unexecutable_interpreter_without_mutation(tmp_path, capsys, monkeypatch) -> None:
@@ -372,7 +440,12 @@ def test_dry_run_rejects_an_aliased_preexisting_hook_without_mutation(
     monkeypatch.setattr(
         cli,
         "_probe_compatibility",
-        lambda _ctx: {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"},
+        lambda _ctx: {
+            "python_version": "3.11.9",
+            "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
+            "host_version": "2025",
+        },
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: mutations.append("package_snapshot"))
     monkeypatch.setattr(cli, "_install_package", lambda *_args: mutations.append("package_install"))
@@ -845,7 +918,7 @@ def test_install_receipt_verify_and_uninstall_round_trip(tmp_path, capsys, monke
     assert receipt["host"]["path"] == str(layout["host"].resolve())
     assert receipt["python"]["path"] == str(layout["python"].resolve())
     assert receipt["python"]["version"] == "3.11.9"
-    assert receipt["core_version"] == "0.20.20"
+    assert receipt["core_version"] == cli.MIN_CORE_VERSION
     assert receipt["artifacts"][0]["sha256"] == cli._sha256(hook)
 
     monkeypatch.setattr(cli, "_wait_readiness", lambda _timeout: {"success": True, "status": "ready"})
@@ -1198,10 +1271,37 @@ def test_readiness_does_not_capture_base_exceptions(tmp_path, capsys, monkeypatc
 @pytest.mark.parametrize(
     ("compatibility", "expected_reason"),
     [
-        ({"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"}, "python_version_unsupported"),
-        ({"python_version": "3.11.9", "core_version": "0.20.19", "host_version": "2025"}, "core_version_too_old"),
-        ({"python_version": "3.11.9", "core_version": "1.0.0", "host_version": "2025"}, "core_version_unsupported"),
-        ({"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2016"}, "host_version_unsupported"),
+        (
+            {
+                "python_version": "3.6.15",
+                "core_version": "0.20.22",
+                "server_version": "0.20.22",
+                "host_version": "2025",
+            },
+            "python_version_unsupported",
+        ),
+        (
+            {
+                "python_version": "3.11.9",
+                "core_version": "0.20.21",
+                "server_version": "0.20.22",
+                "host_version": "2025",
+            },
+            "core_version_too_old",
+        ),
+        (
+            {"python_version": "3.11.9", "core_version": "1.0.0", "server_version": "0.20.22", "host_version": "2025"},
+            "core_version_unsupported",
+        ),
+        (
+            {
+                "python_version": "3.11.9",
+                "core_version": "0.20.22",
+                "server_version": "0.20.22",
+                "host_version": "2016",
+            },
+            "host_version_unsupported",
+        ),
     ],
 )
 def test_install_rejects_incompatible_target_before_any_mutation(
@@ -1246,7 +1346,12 @@ def test_uninstall_rejects_incompatible_target_before_package_or_file_mutation(t
         "_probe_compatibility",
         lambda _ctx: (
             events.append("compatibility")
-            or {"python_version": "3.6.15", "core_version": "0.20.20", "host_version": "2025"}
+            or {
+                "python_version": "3.6.15",
+                "core_version": cli.MIN_CORE_VERSION,
+                "server_version": cli.MIN_SERVER_VERSION,
+                "host_version": "2025",
+            }
         ),
     )
     monkeypatch.setattr(
@@ -1840,7 +1945,12 @@ def test_install_and_upgrade_compatibility_precedes_package_and_file_mutation(
         "_probe_compatibility",
         lambda _ctx: (
             events.append("compatibility")
-            or {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"}
+            or {
+                "python_version": "3.11.9",
+                "core_version": cli.MIN_CORE_VERSION,
+                "server_version": cli.MIN_SERVER_VERSION,
+                "host_version": "2025",
+            }
         ),
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: events.append("snapshot") or state)
@@ -1850,7 +1960,12 @@ def test_install_and_upgrade_compatibility_precedes_package_and_file_mutation(
         "_probe_target",
         lambda _python: (
             events.append("target")
-            or {"python_version": "3.11.9", "adapter_version": cli.ADAPTER_VERSION, "core_version": "0.20.20"}
+            or {
+                "python_version": "3.11.9",
+                "adapter_version": cli.ADAPTER_VERSION,
+                "core_version": cli.MIN_CORE_VERSION,
+                "server_version": cli.MIN_SERVER_VERSION,
+            }
         ),
     )
     real_replace = cli._replace_file
@@ -1878,7 +1993,12 @@ def test_uninstall_compatibility_precedes_package_and_file_mutation(tmp_path, ca
         "_probe_compatibility",
         lambda _ctx: (
             events.append("compatibility")
-            or {"python_version": "3.11.9", "core_version": "0.20.20", "host_version": "2025"}
+            or {
+                "python_version": "3.11.9",
+                "core_version": cli.MIN_CORE_VERSION,
+                "server_version": cli.MIN_SERVER_VERSION,
+                "host_version": "2025",
+            }
         ),
     )
     monkeypatch.setattr(cli, "_snapshot_package_state", lambda _ctx: events.append("snapshot") or state)
@@ -2557,6 +2677,7 @@ def test_install_rejects_target_interpreter_replacement_after_mutex_acquire(
                 "python_version": "3.11.9",
                 "adapter_version": cli.ADAPTER_VERSION,
                 "core_version": cli.MIN_CORE_VERSION,
+                "server_version": cli.MIN_SERVER_VERSION,
             },
         )
 
@@ -2978,6 +3099,7 @@ def test_uninstall_transaction_rejects_payload_hardlink_at_worker_parent_boundar
             "python_version": "3.11.9",
             "adapter_version": cli.ADAPTER_VERSION,
             "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
         },
     )
     ownership = (cli._snapshot(ctx.hook_path), cli._snapshot(ctx.receipt_path))
@@ -2995,6 +3117,7 @@ def test_uninstall_transaction_rejects_payload_hardlink_at_worker_parent_boundar
         lambda _ctx: {
             "python_version": "3.11.9",
             "core_version": cli.MIN_CORE_VERSION,
+            "server_version": cli.MIN_SERVER_VERSION,
             "host_version": "2025",
         },
     )
