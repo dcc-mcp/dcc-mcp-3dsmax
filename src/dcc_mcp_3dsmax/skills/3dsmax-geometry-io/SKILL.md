@@ -48,3 +48,8 @@ Use the validation tool before import to check supported formats and file
 existence. Use the FBX and OBJ tools for explicit export behavior, including
 selected-only versus whole-scene export and overwrite handling. Import tools
 return created node identities, warnings, and recoverable failure details.
+
+On import failure, inspect the returned created nodes and current scene before
+retrying. Native import can also modify existing nodes; the returned list is
+not a rollback log. Export success requires a nonempty output file, but does
+not prove format validity or freshness when overwriting an existing file.

@@ -113,6 +113,7 @@ def import_geometry_file(
         kwargs = {"using": plugin} if plugin is not None else {}
         result = runtime.importFile(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001
+        created_nodes = [node for node in iter_scene_nodes(runtime) if _node_key(node) not in before]
         return io_error(
             "Geometry import failed",
             file=file_info(file_path),
@@ -120,6 +121,9 @@ def import_geometry_file(
             warnings=warnings,
             exception_type=type(exc).__name__,
             error=str(exc),
+            created_nodes=[node_identity(node) for node in created_nodes],
+            created_count=len(created_nodes),
+            recovery="Inspect the scene before retrying; import may have partially modified existing nodes.",
         )
 
     after_nodes = iter_scene_nodes(runtime)
@@ -131,6 +135,8 @@ def import_geometry_file(
             format=format_name,
             warnings=warnings,
             created_nodes=[node_identity(node) for node in created_nodes],
+            created_count=len(created_nodes),
+            recovery="Inspect the scene before retrying; import may have partially modified existing nodes.",
         )
     return io_success(
         "Imported geometry",
@@ -175,12 +181,11 @@ def export_geometry_file(
             warnings=warnings,
         )
 
-    if not output_path.exists():
-        warnings.append("Export completed but output file was not observed on disk")
-    if result is False:
+    output = file_info(output_path)
+    if result is False or not output["is_file"] or not output["size_bytes"]:
         return io_error(
             "Geometry export did not complete",
-            file=file_info(output_path),
+            file=output,
             format=format_name,
             selected_only=bool(selected_only),
             exported_node_count=len(nodes),
