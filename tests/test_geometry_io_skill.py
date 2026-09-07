@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-geometry-io"
@@ -164,3 +166,40 @@ def test_generic_import_and_obj_export_run_through_adapter_executor(monkeypatch,
     assert exported["data"]["exported_node_count"] == 3
     assert runtime.export_calls[0]["kwargs"]["selectedOnly"] is False
     assert runtime.export_calls[0]["kwargs"]["using"] == "OBJEXP"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_partial_import_failure_reports_created_nodes(monkeypatch, tmp_path, raises):
+    runtime = _install_fake_pymxs(monkeypatch)
+    source = tmp_path / "partial.obj"
+    source.write_text("obj", encoding="utf-8")
+
+    def partial_import(*args, **kwargs):
+        runtime.objects.append(_FakeNode("partial", 44))
+        if raises:
+            raise RuntimeError("Importer failed after creating a node")
+        return False
+
+    runtime.importFile = partial_import
+    result = _load_action("action_import_geometry.py").main(str(source))
+    assert result["success"] is False
+    assert result["data"]["created_count"] == 1
+    assert result["data"]["created_nodes"][0]["node_name"] == "partial"
+    assert "before retrying" in result["data"]["recovery"]
+    assert len(runtime.objects) == 3  # Reporting must not delete partial scene work.
+
+
+@pytest.mark.parametrize("empty_file", [False, True])
+def test_export_without_output_bytes_is_failure(monkeypatch, tmp_path, empty_file):
+    runtime = _install_fake_pymxs(monkeypatch)
+    output = tmp_path / "missing.obj"
+
+    def incomplete_export(*args, **kwargs):
+        if empty_file:
+            output.touch()
+        return True
+
+    runtime.exportFile = incomplete_export
+    result = _load_action("action_export_obj.py").main(str(output))
+    assert result["success"] is False
+    assert not result["data"]["file"]["size_bytes"]
