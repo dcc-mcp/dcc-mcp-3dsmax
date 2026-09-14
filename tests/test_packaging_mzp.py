@@ -300,8 +300,13 @@ def test_generated_install_startup_copy_is_atomic_against_destination_symlink(tm
         Path(destination).symlink_to(outside)
         return original_replace(source, destination)
 
+    # ``namespace["os"]`` is the real ``os`` module; restoring it here prevents
+    # the injected replace from leaking into unrelated tests.
     namespace["os"].replace = race_replace
-    namespace["_copy_startup"](version_dir)
+    try:
+        namespace["_copy_startup"](version_dir)
+    finally:
+        namespace["os"].replace = original_replace
     assert outside.read_text(encoding="utf-8") == "must survive"
     assert paths["startup_script"].read_text(encoding="utf-8") == "generated"
 

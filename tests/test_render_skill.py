@@ -149,6 +149,36 @@ def test_render_output_tools_validate_paths_and_create_artifacts(monkeypatch, tm
     assert preview["data"]["artifact"]["extension"] == ".avi"
 
 
+def test_render_capture_viewport_fails_loud_on_empty_file(monkeypatch, tmp_path):
+    """A capture that produces a 0-byte file must report an error, not success."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    def empty_capture(output_path):
+        Path(output_path).write_text("", encoding="utf-8")
+
+    runtime.captureViewport = empty_capture  # noqa: N802 - mirrors pymxs runtime naming.
+    capture_path = tmp_path / "viewport.png"
+
+    captured = _load_action("action_capture_viewport.py").main(str(capture_path), overwrite=True)
+
+    assert captured["success"] is False
+    assert "empty" in captured["message"]
+    assert not capture_path.exists()
+
+
+def test_render_capture_viewport_atomically_renames_into_place(monkeypatch, tmp_path):
+    """Success means the target file exists and is non-empty immediately."""
+    _install_fake_pymxs(monkeypatch)
+    capture_path = tmp_path / "viewport.png"
+
+    captured = _load_action("action_capture_viewport.py").main(str(capture_path), overwrite=True)
+
+    assert captured["success"] is True
+    assert captured["data"]["artifact"]["size_bytes"] == len("viewport")
+    assert capture_path.exists()
+    assert capture_path.stat().st_size == len("viewport")
+
+
 def test_render_read_tools_return_settings_and_statistics(monkeypatch):
     _install_fake_pymxs(monkeypatch)
 

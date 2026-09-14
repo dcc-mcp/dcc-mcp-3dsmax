@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -114,18 +116,63 @@ def scene_render_stats(runtime: Any) -> Dict[str, Any]:
 
 
 def capture_viewport(runtime: Any, output_path: Path) -> Dict[str, Any]:
-    """Capture the viewport through host-provided helpers."""
+    """Capture the viewport through host-provided helpers.
+
+    The capture is written to a temporary file in the destination directory and
+    atomically renamed into place only after it is confirmed non-empty, so a
+    success response always means the target file exists and is fully flushed.
+    """
+    capture = _viewport_capture(runtime)
+    if not callable(capture):
+        return render_error("No viewport capture operation is available", artifact=artifact_info(output_path))
+
+    temp_path = _atomic_capture_target(output_path)
+    try:
+        capture(str(temp_path))
+        if not temp_path.exists() or not temp_path.is_file():
+            return render_error(
+                "Viewport capture did not produce a file", artifact=artifact_info(output_path)
+            )
+        if temp_path.stat().st_size <= 0:
+            return render_error(
+                "Viewport capture produced an empty file",
+                artifact=artifact_info(output_path),
+                size_bytes=0,
+            )
+        os.replace(temp_path, output_path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    return render_success("Captured viewport", artifact=artifact_info(output_path))
+
+
+def _viewport_capture(runtime: Any) -> Any:
+    """Return the first available viewport capture callable on the runtime."""
     for attr in ("captureViewport", "capture_viewport"):
         capture = getattr(runtime, attr, None)
         if callable(capture):
-            capture(str(output_path))
-            return render_success("Captured viewport", artifact=artifact_info(output_path))
+            return capture
     viewport = getattr(runtime, "viewport", None)
     capture = getattr(viewport, "captureBitmap", None) if viewport is not None else None
     if callable(capture):
-        capture(str(output_path))
-        return render_success("Captured viewport", artifact=artifact_info(output_path))
-    return render_error("No viewport capture operation is available", artifact=artifact_info(output_path))
+        return capture
+    return None
+
+
+def _atomic_capture_target(output_path: Path) -> Path:
+    """Create a sibling temporary file for an atomic capture-then-rename."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=output_path.name + ".",
+        suffix=output_path.suffix,
+        dir=str(output_path.parent),
+    )
+    os.close(fd)
+    return Path(temp_name)
 
 
 def create_preview(

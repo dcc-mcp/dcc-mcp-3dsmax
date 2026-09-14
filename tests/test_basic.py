@@ -1283,8 +1283,23 @@ class TestSceneAuthoringActions:
         assert "disabled" in result["message"]
 
     def test_capture_viewport_writes_to_requested_image_path(self, tmp_path, monkeypatch):
-        """Viewport skill emits a MaxScript capture script for README-ready images."""
+        """Viewport skill emits a MaxScript capture script and durably writes the image."""
         runtime = _FakeRuntime()
+        # Simulate MaxScript writing the captured image to the temp path it is
+        # told to write to, so the atomic rename can move a non-empty file.
+        original_execute = runtime.execute
+
+        def execute(script):
+            # The script assigns ``viewportBitmap.filename = "<temp path>"``;
+            # materialize a non-empty payload there so size > 0 holds.
+            import re
+
+            match = re.search(r"viewportBitmap\.filename = \"([^\"]+)\"", script)
+            if match:
+                Path(match.group(1).replace("/", os.sep)).write_text("png-bytes", encoding="utf-8")
+            return original_execute(script)
+
+        runtime.execute = execute
         monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
         action = _load_action_module(
             Path(__file__).resolve().parents[1]
@@ -1300,8 +1315,30 @@ class TestSceneAuthoringActions:
 
         assert result["success"] is True
         assert result["data"]["file_path"] == str(output)
+        assert result["data"]["size_bytes"] == len("png-bytes")
+        assert output.exists()
+        assert output.stat().st_size == len("png-bytes")
         assert "gw.getViewportDib()" in runtime.executed_script
-        assert str(output).replace("\\", "/") in runtime.executed_script
+
+    def test_capture_viewport_reports_error_when_no_file_written(self, tmp_path, monkeypatch):
+        """Viewport capture fails loudly instead of reporting success on an empty capture."""
+        runtime = _FakeRuntime()  # execute() records but never writes real bytes
+        monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+        action = _load_action_module(
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "dcc_mcp_3dsmax"
+            / "skills"
+            / "3dsmax-viewport"
+            / "action_capture_viewport.py"
+        )
+        output = tmp_path / "viewport.png"
+
+        result = action.main(str(output))
+
+        assert result["status"] == "error"
+        assert "empty file" in result["message"]
+        assert not output.exists()
 
     def test_capture_viewport_rejects_non_image_path(self, monkeypatch):
         """Viewport capture only writes known image extensions."""

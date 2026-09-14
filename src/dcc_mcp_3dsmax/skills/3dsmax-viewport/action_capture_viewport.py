@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -11,7 +12,12 @@ from dcc_mcp_3dsmax.api import get_runtime, max_error, with_max
 
 @with_max
 def main(file_path: Optional[str] = None) -> Dict[str, Any]:
-    """Capture the active viewport to a PNG file."""
+    """Capture the active viewport to a PNG file.
+
+    The capture is written to a temporary file in the destination directory and
+    atomically renamed into place only after the file is confirmed non-empty, so
+    a success response always means the target file exists and is fully flushed.
+    """
     try:
         output_path = _resolve_output_path(file_path)
     except ValueError as exc:
@@ -19,15 +25,45 @@ def main(file_path: Optional[str] = None) -> Dict[str, Any]:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rt = get_runtime()
-    script = _capture_script(output_path)
-    result = rt.execute(script)
 
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=output_path.name + ".",
+        suffix=output_path.suffix,
+        dir=str(output_path.parent),
+    )
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+    try:
+        script = _capture_script(temp_path)
+        rt.execute(script)
+
+        if not temp_path.exists() or not temp_path.is_file():
+            return max_error(
+                "Viewport capture did not produce a file",
+                file_path=str(output_path),
+            )
+        if temp_path.stat().st_size <= 0:
+            return max_error(
+                "Viewport capture produced an empty file",
+                file_path=str(output_path),
+                size_bytes=0,
+            )
+
+        os.replace(temp_path, output_path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    size_bytes = output_path.stat().st_size
     return {
         "success": True,
         "message": "Captured active viewport",
         "data": {
             "file_path": str(output_path),
-            "result": str(result) if result is not None else None,
+            "size_bytes": size_bytes,
         },
     }
 
