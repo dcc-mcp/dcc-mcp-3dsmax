@@ -168,7 +168,10 @@ class _FakeNode:
         self.min = _Point3(-1.0, -1.0, -1.0)
         self.max = _Point3(1.0, 1.0, 1.0)
         self.material = None
+        # "rejected" raises like a host that refuses a value; "swallowed"
+        # silently ignores the write, which is the dangerous silent-success case.
         self.rejected_properties = set()
+        self.swallowed_properties = set()
 
     # -- transform plumbing ------------------------------------------------
 
@@ -190,6 +193,8 @@ class _FakeNode:
     def pos(self, value):
         if "pos" in self.rejected_properties:
             raise RuntimeError("host rejected pos")
+        if "pos" in self.swallowed_properties:
+            return
         self._transform = _Matrix3(
             [
                 self._transform.rows[0],
@@ -219,6 +224,8 @@ class _FakeNode:
     def rotation(self, value):
         if "rotation" in self.rejected_properties:
             raise RuntimeError("host rejected rotation")
+        if "rotation" in self.swallowed_properties:
+            return
         matrix = _rotation_x(float(value.x)) * _rotation_y(float(value.y)) * _rotation_z(float(value.z))
         scaled = [[matrix.rows[r][c] * self._scale_component(r) for c in range(3)] for r in range(3)]
         self._transform = _Matrix3([scaled[0], scaled[1], scaled[2], list(self._transform.rows[3])])
@@ -244,6 +251,18 @@ class _FakeNode:
 # ── Fake runtime ────────────────────────────────────────────────────────
 
 
+class _MaxClass:
+    """Stand-in for a MAXScript class value: callable and in the class hierarchy."""
+
+    def __init__(self, name, factory, superclass="GeometryClass"):
+        self.name = name
+        self._factory = factory
+        self.superclass = superclass
+
+    def __call__(self, **kwargs):
+        return self._factory(**kwargs)
+
+
 class _FakeRuntime:
     def __init__(self):
         self.hero = _FakeNode("hero_box", 42)
@@ -252,6 +271,20 @@ class _FakeRuntime:
         self.creations = []
         self.clones = []
         self._next_handle = 1000
+        # Creatable classes are _MaxClass instances, so superClassOf proves them.
+        self.Teapot = _MaxClass("Teapot", self._make_teapot)
+        self.Tube = _MaxClass("Tube", self._make_tube)
+        # Bare global functions: callable, but not classes, so superClassOf fails.
+        # deleteFile / resetMaxFile are also blacklisted; unlistedGlobalFunc exercises
+        # the positive class check on its own.
+        self.deleteFile = lambda *args, **kwargs: None
+        self.resetMaxFile = lambda *args, **kwargs: None
+        self.unlistedGlobalFunc = lambda *args, **kwargs: None
+
+    def superClassOf(self, symbol):  # noqa: N802 - mirrors pymxs runtime naming.
+        if isinstance(symbol, _MaxClass):
+            return symbol.superclass
+        raise RuntimeError("superClassOf() requires a MAXWrapper")
 
     # -- value constructors ----------------------------------------------
 
@@ -296,10 +329,10 @@ class _FakeRuntime:
 
     # -- creatable classes -------------------------------------------------
 
-    def Teapot(self, radius=10.0):
+    def _make_teapot(self, radius=10.0):
         return self._create("Teapot", radius=radius)
 
-    def Tube(self, radius1=5.0, radius2=10.0, height=25.0):
+    def _make_tube(self, radius1=5.0, radius2=10.0, height=25.0):
         return self._create("Tube", radius1=radius1, radius2=radius2, height=height)
 
     def _create(self, class_name, **kwargs):
@@ -647,11 +680,7 @@ def test_create_object_returns_placement_feedback(monkeypatch):
 def test_create_object_rejects_unknown_class(monkeypatch):
     _install_fake_pymxs(monkeypatch)
 
-    result = (
-        _load_action("create_object")
-        if False
-        else _load_action("action_create_object.py").main(object_type="NotARealClass")
-    )
+    result = _load_action("action_create_object.py").main(object_type="NotARealClass")
 
     assert result["success"] is False
     assert "no such class" in result["message"]
@@ -672,20 +701,73 @@ def test_create_object_rejects_blocked_and_malformed_names(monkeypatch):
 def test_create_object_reports_constructor_failure(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
 
-    result = _load_action("action_create_object.py").main(object_type="Tube", params={"radius1": "not-a-number"})
-
-    # The fake Tube tolerates the value, so assert the happy path instead and
-    # prove the failure branch with a raising factory.
-    assert result["success"] is True
-
     def _broken_factory(**kwargs):
         raise TypeError("bad argument")
 
-    runtime.Broken = _broken_factory
+    # A proven class whose constructor raises must surface as a failure.
+    runtime.Broken = _MaxClass("Broken", _broken_factory)
     broken = _load_action("action_create_object.py").main(object_type="Broken")
 
     assert broken["success"] is False
     assert "could not create" in broken["message"]
+
+
+def test_create_object_rejects_bare_global_function(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+
+    # Not on the blacklist, so only the positive class check can reject it.
+    result = _load_action("action_create_object.py").main(object_type="unlistedGlobalFunc")
+
+    assert result["success"] is False
+    assert "not a creatable" in result["message"]
+    assert result["data"]["object_type"] == "unlistedGlobalFunc"
+    assert result["data"]["evidence"]["predicate"] == "superClassOf"
+
+
+def test_create_object_rejects_blacklisted_destructive_global(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+
+    result = _load_action("action_create_object.py").main(object_type="resetMaxFile")
+
+    assert result["success"] is False
+    assert "not creatable" in result["message"]
+
+
+def test_create_object_rejects_unproven_symbol_when_arbitrary_script_disabled(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+    monkeypatch.setenv("DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT", "1")
+
+    result = _load_action("action_create_object.py").main(object_type="unlistedGlobalFunc")
+
+    assert result["success"] is False
+    assert "DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT" in result["message"]
+    assert result["data"]["arbitrary_script_disabled"] is True
+
+
+def test_create_object_fails_closed_when_flag_set_and_no_class_predicate(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+    monkeypatch.setenv("DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT", "1")
+    monkeypatch.delattr(_FakeRuntime, "superClassOf")
+
+    # Even a genuine class cannot be proven, so the call must fail closed.
+    result = _load_action("action_create_object.py").main(object_type="Teapot")
+
+    assert result["success"] is False
+    assert "no creatable-class predicate" in result["message"]
+    assert result["data"]["evidence"]["available"] is False
+
+
+def test_create_object_allows_proven_class_even_when_flag_set(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    monkeypatch.setenv("DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT", "1")
+
+    # The flag must not over-block: a proven creatable class still works.
+    result = _load_action("action_create_object.py").main(object_type="Teapot", name="flagged_teapot")
+
+    assert result["success"] is True
+    assert result["data"]["node"]["node_name"] == "flagged_teapot"
+    assert result["data"]["creatable_class_evidence"]["superclass"] == "GeometryClass"
+    assert runtime.creations[-1][0] == "Teapot"
 
 
 # ── transform_object ────────────────────────────────────────────────────
@@ -759,6 +841,41 @@ def test_transform_object_rejects_bad_space_and_missing_operation(monkeypatch):
     assert no_op["success"] is False
     assert "At least one" in no_op["message"]
     assert bad_vector["success"] is False
+
+
+def test_transform_object_absolute_fails_when_position_is_swallowed(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.hero.swallowed_properties.add("pos")
+
+    result = _load_action("action_transform_object.py").main(
+        node_names=["hero_box"], move=[4.0, 5.0, 6.0], relative=False
+    )
+
+    assert result["success"] is False
+    assert "did not take effect" in result["message"]
+    assert result["data"]["requested"] == [4.0, 5.0, 6.0]
+    assert result["data"]["readback"] == [0.0, 0.0, 0.0]
+    assert result["data"]["before"]["position"] == [0.0, 0.0, 0.0]
+
+
+def test_transform_object_absolute_fails_when_rotation_is_swallowed(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.hero.swallowed_properties.add("rotation")
+
+    result = _load_action("action_transform_object.py").main(
+        node_names=["hero_box"], rotate=[0.0, 0.0, 90.0], relative=False
+    )
+
+    assert result["success"] is False
+    assert "did not take effect" in result["message"]
+    assert result["data"]["requested"] == [0.0, 0.0, 90.0]
+    assert result["data"]["before"]["rotation"] == [0.0, 0.0, 0.0]
+    # Rotation is compared as a matrix, so equivalent euler forms do not fail.
+    assert result["data"]["readback_rotation_rows"] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
 
 
 def test_transform_object_fails_when_host_rejects_transform(monkeypatch):

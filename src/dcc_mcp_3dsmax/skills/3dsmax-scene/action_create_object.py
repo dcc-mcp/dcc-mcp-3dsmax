@@ -1,35 +1,87 @@
-"""Create an object from an arbitrary creatable 3ds Max class."""
+"""Create an object from a creatable 3ds Max class."""
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+from dcc_mcp_3dsmax._env import ENV_DISABLE_ARBITRARY_SCRIPT, resolve_arbitrary_script_disabled
 from dcc_mcp_3dsmax._scene_utils import node_bounding_box, point3_to_list, serialize_property_value
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Runtime symbols that must never be reachable through object creation.
+# Layer 1: defense in depth. Runtime symbols that must never be reachable
+# through object creation, even if the class check below is ever bypassed.
 BLOCKED_CLASSES = frozenset(
     {
+        # Script/eval entry points.
         "execute",
+        "pyhelper",
+        # Scene and node destruction.
         "delete",
         "quitMax",
+        "resetMaxFile",
+        "saveNodes",
+        "createInstance",
+        # Filesystem and scene IO.
+        "deleteFile",
+        "createFile",
+        "openFile",
+        "importFile",
+        "exportFile",
         "fileIn",
         "fileOut",
         "loadMaxFile",
         "saveMaxFile",
         "mergeMaxFile",
-        "getNodeByName",
+        # Render and selection side effects.
+        "render",
         "select",
         "clearSelection",
-        "gc",
+        "getNodeByName",
         "setProperty",
         "getProperty",
-        "pyhelper",
+        "gc",
     }
 )
+
+
+def _prove_creatable_class(runtime: Any, symbol: Any) -> Tuple[bool, bool, Dict[str, Any]]:
+    """Prove a runtime symbol is a creatable 3ds Max class.
+
+    Only classes take part in the MAX class hierarchy, so ``superClassOf``
+    succeeds for them and fails for bare global functions. That single
+    structural check closes the whole "arbitrary runtime symbol" surface
+    without maintaining an unbounded list of dangerous function names.
+
+    Returns ``(proven, predicate_available, evidence)``.
+    """
+    predicate = getattr(runtime, "superClassOf", None)
+    if not callable(predicate):
+        return False, False, {"predicate": "superClassOf", "available": False}
+
+    try:
+        value = predicate(symbol)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            False,
+            True,
+            {
+                "predicate": "superClassOf",
+                "available": True,
+                "error": "{}: {}".format(type(exc).__name__, exc),
+            },
+        )
+
+    if value is None or callable(value):
+        return (
+            False,
+            True,
+            {"predicate": "superClassOf", "available": True, "superclass": None, "symbol_type": type(value).__name__},
+        )
+
+    return True, True, {"predicate": "superClassOf", "available": True, "superclass": str(value)}
 
 
 @with_max
@@ -43,8 +95,9 @@ def main(
 ) -> Dict[str, Any]:
     """Create one node from a creatable 3ds Max class and report its placement.
 
-    The class is looked up on the runtime and the returned value must be a
-    scene node with a name, so a failed or non-node creation is reported as a
+    The class is looked up on the runtime, proven to be a creatable class
+    rather than a bare global function, and the returned value must be a scene
+    node with a name, so a failed or non-node creation is reported as a
     failure instead of an empty success.
     """
     class_name = str(object_type or "").strip()
@@ -74,6 +127,29 @@ def main(
             "success": False,
             "message": "Runtime symbol is not a creatable class",
             "data": {"object_type": class_name, "symbol_type": type(factory).__name__},
+        }
+
+    arbitrary_script_disabled = resolve_arbitrary_script_disabled()
+    proven, predicate_available, evidence = _prove_creatable_class(rt, factory)
+    if not proven:
+        if arbitrary_script_disabled:
+            message = "Refusing to call an unproven runtime symbol because {} is set".format(
+                ENV_DISABLE_ARBITRARY_SCRIPT
+            )
+        else:
+            message = "Runtime symbol is not a creatable 3ds Max class"
+        if not predicate_available:
+            message = "{}: this runtime exposes no creatable-class predicate, so no symbol can be proven".format(
+                message
+            )
+        return {
+            "success": False,
+            "message": message,
+            "data": {
+                "object_type": class_name,
+                "arbitrary_script_disabled": arbitrary_script_disabled,
+                "evidence": evidence,
+            },
         }
 
     kwargs: Dict[str, Any] = {}
@@ -179,6 +255,7 @@ def main(
             "scale": point3_to_list(getattr(node, "scale", None)),
         },
         "bounding_box": node_bounding_box(node),
+        "creatable_class_evidence": evidence,
     }
     data["placement"].update(placement)
 

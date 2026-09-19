@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Sequence
 
 from dcc_mcp_3dsmax._scene_utils import (
@@ -33,6 +34,34 @@ def _optional_vector(value: Any, name: str) -> Optional[List[float]]:
     if value is None:
         return None
     return coerce_vector3(value, name)
+
+
+def _normalized_rotation_rows(value: Any) -> Optional[List[List[float]]]:
+    """Return the scale-free rotation rows of a Matrix3-like value.
+
+    Euler triplets have several equivalent representations, so rotation is
+    compared as a matrix rather than as raw angles.
+    """
+    rows = matrix_rows(value)
+    if rows is None:
+        return None
+    normalized: List[List[float]] = []
+    for row in rows[:3]:
+        length = math.sqrt(row[0] ** 2 + row[1] ** 2 + row[2] ** 2)
+        normalized.append([item / length for item in row] if length > 1e-9 else list(row))
+    return normalized
+
+
+def _rotation_rows_equal(
+    left: Optional[List[List[float]]], right: Optional[List[List[float]]], tolerance: float = 1e-4
+) -> bool:
+    if left is None or right is None:
+        return False
+    for left_row, right_row in zip(left, right):
+        for left_value, right_value in zip(left_row, right_row):
+            if abs(left_value - right_value) > tolerance:
+                return False
+    return True
 
 
 @with_max
@@ -145,7 +174,6 @@ def main(
 
         if move_values is not None or rotate_values is not None:
             if not relative:
-                target_transform = None
                 try:
                     if move_values is not None:
                         node.pos = _point3(rt, move_values)
@@ -164,6 +192,46 @@ def main(
                         },
                     }
                 record["requested"] = {"position": move_values, "rotation": rotate_values}
+
+                if move_values is not None:
+                    readback_position = point3_to_list(getattr(node, "pos", None))
+                    if readback_position is None:
+                        return {
+                            "success": False,
+                            "message": "Absolute position could not be read back",
+                            "data": {"node": identity, "transformed": transformed},
+                        }
+                    if not vector_equal(readback_position, move_values):
+                        return {
+                            "success": False,
+                            "message": "Absolute position write did not take effect",
+                            "data": {
+                                "node": identity,
+                                "requested": list(move_values),
+                                "readback": readback_position,
+                                "before": record["before"],
+                                "transformed": transformed,
+                            },
+                        }
+
+                if rotate_values is not None:
+                    readback_rotation = point3_to_list(getattr(node, "rotation", None))
+                    expected_rows = _normalized_rotation_rows(_rotation_matrix(rt, rotate_values))
+                    actual_rows = _normalized_rotation_rows(getattr(node, "transform", None))
+                    if readback_rotation is None or not _rotation_rows_equal(actual_rows, expected_rows):
+                        return {
+                            "success": False,
+                            "message": "Absolute rotation write did not take effect",
+                            "data": {
+                                "node": identity,
+                                "requested": list(rotate_values),
+                                "readback": readback_rotation,
+                                "requested_rotation_rows": expected_rows,
+                                "readback_rotation_rows": actual_rows,
+                                "before": record["before"],
+                                "transformed": transformed,
+                            },
+                        }
             else:
                 current = getattr(node, "transform", None)
                 if matrix_rows(current) is None:

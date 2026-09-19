@@ -1334,8 +1334,10 @@ tools:
     produces: ["scene_nodes"]
   - name: create_object
     description: >-
-      Create one node from an arbitrary creatable 3ds Max class and report its
-      name, transform, and bounding box as placement feedback.
+      Create one node from a creatable 3ds Max class and report its name,
+      transform, and bounding box as placement feedback. Bare global functions
+      are rejected; with DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT set, any
+      symbol that cannot be proven to be a creatable class is refused.
     source_file: action_create_object.py
     execution: sync
     affinity: main
