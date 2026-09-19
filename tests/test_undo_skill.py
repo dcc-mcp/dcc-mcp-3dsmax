@@ -271,6 +271,67 @@ def test_undo_last_allow_no_op_reports_a_warning_instead_of_failing(monkeypatch)
     assert result["data"]["applied"] == 0
 
 
+def _install_truncated_runtime(monkeypatch, **kwargs):
+    """Runtime whose scene is one node larger than the fingerprint sample."""
+    runtime = _install_fake_pymxs(monkeypatch, **kwargs)
+    runtime.objects.extend(
+        _Node("filler_{}".format(index), 1000 + index)
+        for index in range(_undo_utils.MAX_FINGERPRINT_NODES + 1)
+    )
+    return runtime
+
+
+def test_undo_last_reports_truncation_when_no_step_was_applied(monkeypatch):
+    """A truncated fingerprint must be flagged even on the empty-stack failure.
+
+    Otherwise a real undo that only moved nodes outside the sample is reported
+    as a bare "history stack is empty", hiding that verification was partial.
+    """
+    # Nothing is recorded, so the history stack is empty and nothing is applied.
+    _install_truncated_runtime(monkeypatch)
+
+    result = _load_action("action_undo_last.py").main()
+
+    assert result["success"] is False
+    assert result["data"]["applied"] == 0
+    assert result["data"]["fingerprint"]["truncated"] is True
+    assert any("best-effort" in item for item in result["data"]["warnings"])
+
+
+def test_undo_last_reports_truncation_on_the_allow_no_op_path(monkeypatch):
+    """The same caveat has to survive the allow_no_op success path."""
+    _install_truncated_runtime(monkeypatch)
+
+    result = _load_action("action_undo_last.py").main(allow_no_op=True)
+
+    assert result["success"] is True
+    warnings = result["data"]["warnings"]
+    assert any("no undo step changed the scene" in item for item in warnings)
+    assert any("best-effort" in item for item in warnings)
+
+
+def test_undo_last_reports_truncation_when_the_host_rejects_the_step(monkeypatch):
+    """A host rejection is also only partially verified on a truncated scene."""
+    _install_truncated_runtime(monkeypatch, undo_raises=True)
+
+    result = _load_action("action_undo_last.py").main()
+
+    assert result["success"] is False
+    assert "the host rejected undo step 1" in result["message"]
+    assert any("best-effort" in item for item in result["data"]["warnings"])
+
+
+def test_undo_last_reports_truncation_on_a_successful_step(monkeypatch):
+    """Large scenes stay flagged on the success path too - unchanged behaviour."""
+    runtime = _install_truncated_runtime(monkeypatch)
+    runtime.record_move(runtime.hero, 10.0, 0.0, 0.0)
+
+    result = _load_action("action_undo_last.py").main()
+
+    assert result["success"] is True
+    assert any("best-effort" in item for item in result["data"]["warnings"])
+
+
 def test_undo_last_warns_on_a_partial_batch(monkeypatch):
     """Asking for three steps with two available must be explicit, not silent."""
     runtime = _install_fake_pymxs(monkeypatch)
@@ -574,12 +635,79 @@ def test_every_destructive_tool_declares_undo_semantics():
 
 
 def test_undo_metadata_matches_known_granularities():
-    """The per-tool table in the undo doc must agree with the declarations."""
+    """Every tool with an undo block - destructive or not - is in the undo doc."""
     doc = (Path(__file__).resolve().parents[1] / "docs" / "UNDO.md").read_text(encoding="utf-8")
+    checked = 0
     for skill_dir in sorted(path for path in SKILLS_DIR.iterdir() if path.is_dir()):
         tools = yaml.safe_load((skill_dir / "tools.yaml").read_text(encoding="utf-8"))["tools"]
         for tool in tools:
-            if tool.get("destructive") is not True:
+            if not isinstance(tool.get("undo"), dict):
                 continue
+            checked += 1
             exported = "{}__{}".format(skill_dir.name, tool["name"])
             assert exported in doc, exported
+    assert checked >= 19, checked
+
+
+def _declared_undo_blocks():
+    """Yield ``(skill_name, tool_name, tool, undo)`` for every declared block."""
+    for skill_dir in sorted(path for path in SKILLS_DIR.iterdir() if path.is_dir()):
+        tools = yaml.safe_load((skill_dir / "tools.yaml").read_text(encoding="utf-8"))["tools"]
+        for tool in tools:
+            undo = tool.get("undo")
+            if isinstance(undo, dict):
+                yield skill_dir.name, tool["name"], tool, undo
+
+
+def test_every_declared_undo_block_uses_the_vocabulary():
+    """A non-destructive tool may declare undo metadata, but only on these terms."""
+    checked = 0
+    for skill_name, tool_name, _tool, undo in _declared_undo_blocks():
+        checked += 1
+        label = "{}__{}".format(skill_name, tool_name)
+        assert isinstance(undo.get("supported"), bool), label
+        assert undo.get("granularity") in _undo_utils.VALID_GRANULARITIES, label
+        assert isinstance(undo.get("notes"), str) and undo["notes"].strip(), label
+        if undo["granularity"] == _undo_utils.GRANULARITY_NONE:
+            assert undo["supported"] is False, label
+        else:
+            assert undo["supported"] is True, label
+
+    assert checked >= 19, checked
+
+
+# Reversing a batch write is the case an agent cannot answer from the tool list
+# alone: one call touches N nodes, and the host may or may not group them.
+BATCH_WRITE_TOOLS = {
+    "set_object_property": _undo_utils.GRANULARITY_SINGLE_CALL,
+    "batch_rename_objects": _undo_utils.GRANULARITY_BATCH_CALL,
+    "create_object": _undo_utils.GRANULARITY_SINGLE_CALL,
+    "transform_object": _undo_utils.GRANULARITY_BATCH_CALL,
+    "clone_objects": _undo_utils.GRANULARITY_BATCH_CALL,
+}
+
+
+def test_batch_write_tools_declare_their_undo_granularity():
+    """Non-destructive batch writes state how many undo entries one call leaves."""
+    tools = yaml.safe_load((SKILLS_DIR / "3dsmax-scene" / "tools.yaml").read_text(encoding="utf-8"))
+    by_name = {tool["name"]: tool for tool in tools["tools"]}
+
+    for name, expected in BATCH_WRITE_TOOLS.items():
+        tool = by_name[name]
+        # Declaring undo coverage does not reclassify the tool as destructive.
+        assert tool["destructive"] is False, name
+        undo = tool.get("undo")
+        assert isinstance(undo, dict), name
+        assert undo["supported"] is True, name
+        assert undo["granularity"] == expected, name
+        assert undo["notes"].strip(), name
+
+
+def test_batch_call_is_published_in_the_granularity_vocabulary(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+
+    result = _load_action("action_get_undo_status.py").main()
+
+    vocabulary = result["data"]["granularity_vocabulary"]
+    assert _undo_utils.GRANULARITY_BATCH_CALL in vocabulary
+    assert "undo once" in vocabulary[_undo_utils.GRANULARITY_BATCH_CALL]

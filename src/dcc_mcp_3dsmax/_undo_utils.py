@@ -34,16 +34,20 @@ UNDO_TOOL = "3dsmax-undo__undo_last"
 REDO_TOOL = "3dsmax-undo__redo_last"
 
 # Undo granularity vocabulary. These are the only values allowed in the
-# ``undo.granularity`` metadata of a destructive tool declaration, so agents
-# can reason about how many ``undo_last`` calls reverse one tool call.
+# ``undo.granularity`` metadata of a tool declaration, so agents can reason
+# about how many ``undo_last`` calls reverse one tool call. Destructive tools
+# must declare one of these; write paths that are not destructive may declare
+# one to state how a batch collapses onto the host undo stack.
 GRANULARITY_SINGLE_CALL = "single_call"
 GRANULARITY_PER_NODE = "per_node"
+GRANULARITY_BATCH_CALL = "batch_call"
 GRANULARITY_SCRIPT_DEFINED = "script_defined"
 GRANULARITY_NONE = "none"
 
 VALID_GRANULARITIES = (
     GRANULARITY_SINGLE_CALL,
     GRANULARITY_PER_NODE,
+    GRANULARITY_BATCH_CALL,
     GRANULARITY_SCRIPT_DEFINED,
     GRANULARITY_NONE,
 )
@@ -51,6 +55,10 @@ VALID_GRANULARITIES = (
 GRANULARITY_DESCRIPTIONS = {
     GRANULARITY_SINGLE_CALL: "One host undo entry per tool call; one undo_last call reverses it.",
     GRANULARITY_PER_NODE: "One host undo entry per node touched; call undo_last once per reported node.",
+    GRANULARITY_BATCH_CALL: (
+        "One call writes N nodes. The host usually groups the batch into a single undo entry, but the "
+        "grouping cannot be queried: undo once, re-read the nodes, then repeat while the scene still differs."
+    ),
     GRANULARITY_SCRIPT_DEFINED: "Undo coverage is decided by the script body and cannot be verified by the adapter.",
     GRANULARITY_NONE: "Not reversible through the host undo stack; back up the scene before calling it.",
 }
@@ -253,6 +261,12 @@ def run_history_steps(
     leaves the scene byte-identical is treated as a no-op: the loop stops there
     and the no-op is surfaced, because the usual cause is an exhausted history
     stack rather than an undo that "worked" invisibly.
+
+    On a scene larger than :data:`MAX_FINGERPRINT_NODES` the fingerprint only
+    samples part of the scene, so verification is best-effort. That caveat is
+    attached to *every* result - including the empty-stack failure and the
+    ``allow_no_op`` success - because it is exactly the case in which a real
+    undo can look like a no-op.
     """
     label = "undo" if direction == UNDO_DIRECTION else "redo"
     error = _validate_count(count)
@@ -311,7 +325,17 @@ def run_history_steps(
         "fingerprint": scene_fingerprint(rt),
     }
 
+    # Attached before every exit below: a step that looks like a no-op may only
+    # look that way because the fingerprint never sampled the nodes that moved.
+    if data["fingerprint"]["truncated"]:
+        warnings.append(
+            "the scene fingerprint sampled only the first {} nodes, so step verification is best-effort".format(
+                data["fingerprint"]["sampled_nodes"]
+            )
+        )
+
     if failure:
+        data["warnings"] = warnings
         return undo_error(failure, **data)
 
     if applied == 0:
@@ -333,13 +357,6 @@ def run_history_steps(
         warnings.append(
             "only {} of {} {} step(s) changed the scene; the history stack was exhausted".format(
                 applied, count, label
-            )
-        )
-
-    if data["fingerprint"]["truncated"]:
-        warnings.append(
-            "the scene fingerprint sampled only the first {} nodes, so step verification is best-effort".format(
-                data["fingerprint"]["sampled_nodes"]
             )
         )
 
@@ -442,6 +459,7 @@ def undo_capabilities(rt: Any) -> Dict[str, Any]:
 
 
 __all__ = [
+    "GRANULARITY_BATCH_CALL",
     "GRANULARITY_DESCRIPTIONS",
     "GRANULARITY_NONE",
     "GRANULARITY_PER_NODE",

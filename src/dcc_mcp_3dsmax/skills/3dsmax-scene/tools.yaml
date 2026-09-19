@@ -1288,6 +1288,11 @@ tools:
       render: false
       targets: ["scene_nodes"]
     produces: ["object_properties"]
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        One property write on one node is one host undo entry; undo_last(count=1) reverses it.
   - name: batch_rename_objects
     description: >-
       Rename many nodes with one prefix, suffix, replace, or numbered pattern
@@ -1363,6 +1368,12 @@ tools:
       render: false
       targets: ["scene_nodes"]
     produces: ["scene_nodes"]
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        Renames N nodes in one call. Undo once and re-read the renamed nodes; repeat while names still
+        differ, because 3ds Max may or may not group the per-node writes into a single entry.
   - name: create_object
     description: >-
       Create one node from a creatable 3ds Max class and report its name,
@@ -1428,8 +1439,12 @@ tools:
       imports: false
       file_output: false
       render: false
-      targets: ["scene_nodes"]
-    produces: ["scene_nodes", "bounding_box"]
+      targets: ["scene_nodes", "bounding_box"]
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        Creating one node is one host undo entry; undo_last(count=1) removes the node again.
   - name: transform_object
     description: >-
       Move, rotate, and scale nodes in world or local space. Offsets are
@@ -1495,6 +1510,12 @@ tools:
       render: false
       targets: ["scene_nodes"]
     produces: ["scene_nodes"]
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        Transforms N nodes in one call. Undo once and re-read the transforms; repeat while the nodes
+        still differ, because 3ds Max may or may not group the per-node writes into a single entry.
   - name: clone_objects
     description: >-
       Clone nodes as copies, instances, or references and verify the resulting
@@ -1554,6 +1575,12 @@ tools:
       render: false
       targets: ["scene_nodes"]
     produces: ["scene_nodes"]
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        Clones N nodes in one call. Undo once and re-check the node list; repeat while clones are still
+        present, because 3ds Max may or may not group the per-node writes into a single entry.
   - name: analyze_node_orientation
     description: >-
       Report pivot, bounding box, local axis directions and drift, and the

@@ -62,15 +62,20 @@ observable trace can pass `allow_no_op: true` to receive an explicit warning
 instead. A request where only *some* steps changed the scene succeeds with an
 explicit warning and reports `applied` versus `requested`.
 
-## Undo metadata on destructive tools
+## Undo metadata on write tools
 
 Every tool declared `destructive: true` in this adapter carries an `undo:`
-block stating whether it is reversible and at what granularity. See
-`docs/UNDO.md` for the vocabulary and the per-tool table.
+block stating whether it is reversible and at what granularity. Write paths that
+are not destructive may carry the same block when one call touches several
+nodes. See `docs/UNDO.md` for the vocabulary and the per-tool tables.
 
 - `single_call` - one `undo_last` call reverses the whole tool call.
 - `per_node` - the host records one entry per node, so pass `count` equal to
   the number of nodes the tool reported changing.
+- `batch_call` - one call wrote N nodes and the host may or may not have
+  grouped them. Undo **once**, re-read the nodes, and repeat while they still
+  differ. Do not pass `count=N` up front: if the host did group the batch, the
+  extra steps consume undo entries that belong to earlier work.
 - `script_defined` - arbitrary script; the adapter cannot verify coverage.
 - `none` - not reversible through the host stack (file I/O, scene reset).
 

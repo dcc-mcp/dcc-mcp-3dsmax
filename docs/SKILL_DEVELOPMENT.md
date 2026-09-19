@@ -270,7 +270,11 @@ See `src/dcc_mcp_3dsmax/skills/3dsmax-materials/` for a complete example.
    `destructive: true` in `tools.yaml`: an `undo` block with `supported`,
    `granularity`, and `notes`. The vocabulary and the contract are in
    [UNDO.md](UNDO.md); `tests/test_undo_skill.py` rejects a declaration that
-   omits it.
+   omits it. A write path that is **not** destructive may declare the same
+   block - and should, when one call touches several nodes - so agents know how
+   many `undo_last` steps reverse it. Use `granularity: batch_call` for a batch
+   write whose grouping the adapter cannot query. Any `undo` block you add must
+   also appear in the tables in [UNDO.md](UNDO.md).
 
 ## Advanced Topics
 
