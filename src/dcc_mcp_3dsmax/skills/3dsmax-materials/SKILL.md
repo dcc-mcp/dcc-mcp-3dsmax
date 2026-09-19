@@ -45,6 +45,36 @@ Inspect, create, edit, and assign 3ds Max materials in the current scene. All
 tools touch the live scene through `pymxs`, so they declare `affinity: main`.
 
 Tool contracts live in `tools.yaml`. `apply_material` uses current selection
-when `node_names` is omitted. Renderer-specific behavior stays optional and
-returns clear errors or warnings when the host does not expose that material
-class or map slot.
+when `node_names` is omitted.
+
+## Renderer-aware parameters and slots
+
+`create_material_from_textures`, `assign_bitmap_texture`, and
+`set_material_attributes` resolve canonical PBR controls onto the
+renderer-native property and verify every write by readback:
+
+| Canonical | VRayMtl | Arnold | Physical |
+|---|---|---|---|
+| roughness | `reflectionRoughness` (needs `brdf_useRoughness = true`), else `reflection_glossiness` inverted | `specular_roughness` | `base_roughness` |
+| metalness | `metalness` | `metalness` | `base_metalness` |
+| diffuse map | `texmap_diffuse` | `baseColorMap` | `base_color_map` |
+| roughness map | `texmap_roughness` / `texmap_reflectionRoughness` | `specularRoughnessMap` | `base_roughness_map` |
+| metalness map | `texmap_metalness` | `metalnessMap` | `base_metalness_map` |
+| normal map | `texmap_bump` (Normal Bump wrapper) | `normalMap` | `bump_map` |
+| bump map | `texmap_bump` | `bumpMap` | `bump_map` |
+| displacement map | `texmap_displacement` | `displacementMap` | `displacement_map` |
+| opacity map | `texmap_opacity` | `opacityMap` | `cutout_map` |
+
+A parameter or slot the material class does not expose fails the tool call and
+rolls the created material back; it is never reported as a silent success.
+Generic attribute names that fall outside the renderer tables go through the
+same readback check: a host that refuses every candidate, or silently accepts
+one it never persists, is reported as an error rather than a success.
+
+`assign_bitmap_texture` reports the resulting connections through the same
+renderer-native slot names, so a write to `texmap_roughness` shows up in
+`connections` instead of returning an empty list.
+
+Texture-set files are matched on filename tokens (`basecolor`, `albedo`,
+`diffuse`, `roughness`, `metalness`, `normal`, `bump`, `displacement`,
+`height`, `opacity`, `alpha`, `specular`, `emission`, `reflection`, `ao`).

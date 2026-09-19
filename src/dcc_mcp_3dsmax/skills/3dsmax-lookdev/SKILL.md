@@ -54,7 +54,11 @@ detection (Arnold, V-Ray, Scanline).
   configure rotation and intensity, and create a renderer-compatible
   three-point light rig. Arnold scenes use native Arnold lights with host
   property readback; an unavailable or incompatible light capability fails
-  closed before the environment is changed.
+  closed before the environment is changed. On a V-Ray scene the HDRI is built
+  as a `VRayBitmap` with `map_type` (angular / cubic / spherical /
+  mirrored_ball / max_standard), `gamma`, `color_space`, and
+  `horizontal_rotation` control; a projection control the bitmap refuses fails
+  the call before anything in the scene is changed.
 - **`set_hdri_rotation`** — Rotate the active environment for a lighting
   turntable without rebuilding the rig.
 - **`preview_material`** — Create a test sphere or quad, apply a named scene
@@ -62,3 +66,12 @@ detection (Arnold, V-Ray, Scanline).
 - **`assign_renderer_material`** — Detect the active renderer
   (Arnold/V-Ray/Scanline), create or find a suitable material class, apply it
   to named nodes, and return a summary.
+
+## V-Ray roughness rule
+
+VRayMtl roughness is not a `roughness` property. The tool sets
+`brdf_useRoughness = true` first and then writes `reflectionRoughness`; on
+V-Ray 4 hosts that only expose `reflection_glossiness` it writes the inverted
+value instead. Both writes are verified by readback, and a VRayMtl that accepts
+neither spelling fails the call and rolls the new material back instead of
+returning a success the agent cannot trust.

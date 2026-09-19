@@ -38,3 +38,58 @@ def test_configure_renderer_reads_renderers_current():
 
     assert result["success"] is True
     assert runtime.renderers.current.AA_samples == 6
+
+
+class _RejectingRenderer(_ArnoldRenderer):
+    """Model a host renderer that refuses an unknown parameter."""
+
+    def __setattr__(self, name, value) -> None:
+        if name == "unknown_setting":
+            raise AttributeError("unknown_setting")
+        super().__setattr__(name, value)
+
+
+class _SilentRenderer(_ArnoldRenderer):
+    """Model MXSWrapperBase accepting a property it never persists."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._silenced = True
+
+    def __setattr__(self, name, value) -> None:
+        if name == "AA_samples" and getattr(self, "_silenced", False):
+            return
+        super().__setattr__(name, value)
+
+
+def test_configure_renderer_fails_closed_when_the_host_refuses_a_setting():
+    runtime = _Runtime()
+    runtime.renderers.current = _RejectingRenderer()
+
+    result = configure_renderer(runtime, settings={"unknown_setting": 1})
+
+    assert result["success"] is False
+    assert result["data"]["errors"][0]["setting"] == "unknown_setting"
+
+
+def test_configure_renderer_fails_closed_on_a_silently_ignored_setting():
+    runtime = _Runtime()
+    runtime.renderers.current = _SilentRenderer()
+
+    result = configure_renderer(runtime, settings={"AA_samples": 6})
+
+    assert result["success"] is False
+    assert result["data"]["errors"][0]["requested"] == 6
+    assert runtime.renderers.current.AA_samples == 3
+
+
+def test_configure_renderer_restores_the_previous_values_after_a_batch_failure():
+    runtime = _Runtime()
+    runtime.renderers.current = _RejectingRenderer()
+
+    result = configure_renderer(runtime, settings={"AA_samples": 6, "unknown_setting": 1})
+
+    assert result["success"] is False
+    assert result["data"]["rollback"]["rolled_back"] is True
+    assert "AA_samples" in result["data"]["rollback"]["restored"]
+    assert runtime.renderers.current.AA_samples == 3
