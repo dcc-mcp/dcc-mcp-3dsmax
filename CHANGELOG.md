@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.3...v0.2.4) (2026-09-14)
+
+
+### Bug Fixes
+
+* harden MZP installer path handling ([ec23fd3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ec23fd307aa050405bac2d4e7198396051ecd092))
+* make viewport capture durable via atomic temp-file write ([#177](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/177)) ([5597d86](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5597d86ff05fc3bb916027cd8ad5561186507c64))
+* report partial geometry imports and incomplete exports ([2998c25](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2998c250fe4888d1a7aad830b081968cb5ac4a14))
+* restore zero-dependency Python 3.7 payload ([56a6558](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/56a6558413bfdfdbc61202adbdb831f97360686d))
+
 ## [0.2.3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.2...v0.2.3) (2026-08-27)
 
 
