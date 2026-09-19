@@ -278,6 +278,57 @@ def test_json_status_is_one_schema_valid_report(tmp_path, capsys) -> None:
     cli.validate_public_report(report)
 
 
+def test_public_report_validation_uses_cores_native_validator(tmp_path, capsys, monkeypatch) -> None:
+    """Report validation runs through Core's Rust-backed validator, not jsonschema."""
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+
+    exit_code = cli.main(_args(layout, "status"))
+    report = _report(cli, capsys)
+    assert exit_code == 10
+
+    calls = []
+    monkeypatch.setattr(cli, "_native_report_validator", lambda: calls.append)
+
+    cli.validate_public_report(report)
+
+    assert calls == [report]
+    assert "jsonschema" not in sys.modules
+
+
+def test_public_report_validation_still_rejects_invalid_reports(tmp_path, capsys) -> None:
+    """A report that breaks the Install SOP contract still raises ValueError."""
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+
+    cli.main(_args(layout, "status"))
+    report = _report(cli, capsys)
+
+    report["schema_version"] = 2
+    with pytest.raises(ValueError):
+        cli.validate_public_report(report)
+
+    report["schema_version"] = 1
+    del report["verify"]
+    with pytest.raises(ValueError):
+        cli.validate_public_report(report)
+
+
+def test_runtime_dependencies_exclude_jsonschema() -> None:
+    """The adapter must not ship a third-party JSON Schema runtime dependency."""
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - Python < 3.11
+        import tomli as tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    payload = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = payload["project"]["dependencies"]
+
+    assert not [raw for raw in dependencies if "jsonschema" in raw.lower()]
+    assert any(raw.startswith("dcc-mcp-core>=0.20.24") for raw in dependencies)
+
+
 def test_dry_run_does_not_write_a_hook_receipt_or_install_package(tmp_path, capsys, monkeypatch) -> None:
     cli = _install_cli()
     layout = _layout(tmp_path)

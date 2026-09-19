@@ -28,9 +28,10 @@ classifiers = [
 
 dependencies = [
     # Core 0.20.22 restores the zero-backport Python 3.7 runtime contract.
-    "dcc-mcp-core>=0.20.22,<1.0.0",
+    # 0.20.24 is required for the native (Rust) Install SOP v1 validator, which
+    # replaces the third-party ``jsonschema`` runtime dependency.
+    "dcc-mcp-core>=0.20.24,<1.0.0",
     "dcc-mcp-server>=0.20.22,<1.0.0",
-    "jsonschema>=4.17,<5",
 ]
 
 [project.optional-dependencies]

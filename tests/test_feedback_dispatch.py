@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover - Python < 3.11
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_CONTRACT_VERSION = "0.20.22"
+RUNTIME_CONTRACT_VERSION = "0.20.24"
 
 
 def _project_dependencies():
@@ -32,7 +32,7 @@ def test_runtime_dependency_floor_includes_core_feedback_forwarder():
 
 def test_documented_install_surfaces_use_feedback_forwarder_floor():
     """Operator and agent install paths must not resolve a legacy server."""
-    expected = "dcc-mcp-core>=0.20.22"
+    expected = "dcc-mcp-core>=0.20.24"
     expected_server = "dcc-mcp-server>=0.20.22"
 
     for relative_path in ("README.md", "llms-full.txt", "justfile"):

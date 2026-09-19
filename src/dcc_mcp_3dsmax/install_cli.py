@@ -22,14 +22,17 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .__version__ import __version__ as ADAPTER_VERSION
 
 DCC_TYPE = "3dsmax"
 COMMAND = "dcc-mcp-3dsmax"
 STARTUP_SCRIPT_NAME = "dcc_mcp_3dsmax_startup.ms"
-MIN_CORE_VERSION = "0.20.22"
+# Core 0.20.24 is the first release shipping the native (Rust) Install SOP v1
+# validator -- ``dcc_mcp_core.deployment.validate_install_sop_report`` -- which
+# is what lets this adapter drop the third-party ``jsonschema`` runtime dependency.
+MIN_CORE_VERSION = "0.20.24"
 MAX_CORE_VERSION = "1.0.0"
 MIN_SERVER_VERSION = "0.20.22"
 MAX_SERVER_VERSION = "1.0.0"
@@ -164,14 +167,34 @@ def _published_schema() -> Optional[Dict[str, Any]]:
     return load_install_sop_schema()
 
 
-def validate_public_report(report: Dict[str, Any]) -> None:
-    """Validate against Core's published Draft 2020-12 schema when available."""
-    schema = _published_schema()
-    if schema is not None:
-        from jsonschema import Draft202012Validator
+def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:
+    """Return Core's Rust-backed Install SOP v1 validator when available."""
+    try:
+        from dcc_mcp_core.deployment import validate_install_sop_report
+    except ImportError:
+        try:
+            from dcc_mcp_core import validate_install_sop_report
+        except ImportError:
+            return None
+    return validate_install_sop_report
 
-        Draft202012Validator(schema).validate(report)
-        return
+
+def validate_public_report(report: Dict[str, Any]) -> None:
+    """Validate against Core's Rust-backed Install SOP v1 validator.
+
+    Core compiles Draft 2020-12 validation into its ``_core`` extension module,
+    so the adapter needs no third-party JSON Schema package at runtime. When the
+    native validator is missing -- for example on the py37-lite pure-Python Core
+    wheel -- fall back to the structural check this CLI has always used.
+    """
+    validator = _native_report_validator()
+    if validator is not None and _published_schema() is not None:
+        try:
+            validator(report)
+        except RuntimeError:
+            pass  # Native validator unusable in this Core build; degrade below.
+        else:
+            return
     required = {
         "schema_version",
         "status",

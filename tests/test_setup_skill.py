@@ -40,7 +40,7 @@ def test_startup_script_enforces_the_public_core_and_server_range(tmp_path):
 
     text = setup.build_startup_script(source="local", repo_root=repo)
 
-    assert "min_core_version = '0.20.22'" in text
+    assert "min_core_version = '0.20.24'" in text
     assert "max_core_version = '1.0.0'" in text
     assert "min_server_version = '0.20.22'" in text
     assert "max_server_version = '1.0.0'" in text
