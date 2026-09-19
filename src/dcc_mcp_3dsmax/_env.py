@@ -76,6 +76,16 @@ def resolve_execute_maxscript_disabled() -> bool:
     return _env_truthy(ENV_DISABLE_EXECUTE_MAXSCRIPT)
 
 
+def resolve_arbitrary_script_disabled() -> bool:
+    """Return True when arbitrary script execution must be refused.
+
+    Distinct from the per-tool ``execute_python`` / ``execute_maxscript``
+    opt-outs: this reports only the blanket ``DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT``
+    switch, so any other runtime-symbol call path can fail closed with it.
+    """
+    return _env_truthy(ENV_DISABLE_ARBITRARY_SCRIPT)
+
+
 def resolve_metrics_enabled(metrics_enabled: Optional[bool]) -> bool:
     """Resolve the Prometheus ``/metrics`` endpoint flag.
 

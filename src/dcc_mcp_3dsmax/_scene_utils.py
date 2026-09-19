@@ -285,6 +285,184 @@ def is_camera_node(node: Any, *, runtime: Any = None) -> bool:
     return "camera" in text
 
 
+def euler_degrees_to_list(value: Any) -> Optional[List[float]]:
+    """Serialize an EulerAngles-like value into degrees as floats."""
+    return point3_to_list(value)
+
+
+def color_to_list(value: Any) -> Optional[List[float]]:
+    """Serialize a Color-like value (r/g/b) into floats."""
+    if value is None:
+        return None
+    for attrs in (("r", "g", "b"), ("R", "G", "B")):
+        try:
+            return [float(getattr(value, attrs[0])), float(getattr(value, attrs[1])), float(getattr(value, attrs[2]))]
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 3:
+        try:
+            return [float(value[0]), float(value[1]), float(value[2])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def quat_to_list(value: Any) -> Optional[List[float]]:
+    """Serialize a Quat-like value (x/y/z/w) into floats."""
+    for attrs in (("x", "y", "z", "w"), ("X", "Y", "Z", "W")):
+        try:
+            return [
+                float(getattr(value, attrs[0])),
+                float(getattr(value, attrs[1])),
+                float(getattr(value, attrs[2])),
+                float(getattr(value, attrs[3])),
+            ]
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def matrix_rows(value: Any) -> Optional[List[List[float]]]:
+    """Serialize a Matrix3-like value into its four rows as float lists."""
+    if value is None:
+        return None
+    rows = []
+    for index in range(4):
+        try:
+            row = value[index]
+        except Exception:  # noqa: BLE001
+            try:
+                row = value.row(index)
+            except Exception:  # noqa: BLE001
+                return None
+        serialized = point3_to_list(row)
+        if serialized is None:
+            return None
+        rows.append(serialized)
+    return rows
+
+
+def matrix_equal(left: Any, right: Any, tolerance: float = 1e-4) -> bool:
+    """Compare two Matrix3-like values row by row."""
+    left_rows = matrix_rows(left)
+    right_rows = matrix_rows(right)
+    if left_rows is None or right_rows is None:
+        return False
+    for left_row, right_row in zip(left_rows, right_rows):
+        for left_value, right_value in zip(left_row, right_row):
+            if abs(left_value - right_value) > tolerance:
+                return False
+    return True
+
+
+def vector_equal(left: Any, right: Any, tolerance: float = 1e-4) -> bool:
+    """Compare two Point3/Color-like values component by component."""
+    left_values = point3_to_list(left)
+    if left_values is None:
+        left_values = color_to_list(left)
+    right_values = point3_to_list(right)
+    if right_values is None:
+        right_values = color_to_list(right)
+    if left_values is None or right_values is None:
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(left_values, right_values))
+
+
+def scalar_equal(left: Any, right: Any, tolerance: float = 1e-6) -> bool:
+    """Compare two scalar values with a tolerance."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return bool(left) is bool(right)
+    try:
+        return abs(float(left) - float(right)) <= tolerance
+    except (TypeError, ValueError):
+        return str(left) == str(right)
+
+
+def _build_scalar(current: Any, value: Any, name: str) -> Any:
+    if isinstance(current, bool):
+        if isinstance(value, bool):
+            return value
+        raise ValueError("{} expects a boolean value".format(name))
+    if isinstance(current, int) and not isinstance(value, bool):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and float(value).is_integer():
+            return int(value)
+        raise ValueError("{} expects an integer value".format(name))
+    if isinstance(current, float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("{} expects a numeric value".format(name))
+        return float(value)
+    if isinstance(current, str):
+        if not isinstance(value, str):
+            raise ValueError("{} expects a string value".format(name))
+        return value
+    return None
+
+
+def build_property_value(runtime: Any, current: Any, value: Any, name: str) -> Any:
+    """Coerce a user supplied value into the shape the target property expects.
+
+    Raises ``ValueError`` whenever the value cannot be represented in the
+    target type so callers fail loudly instead of writing a wrong value.
+    """
+    scalar = _build_scalar(current, value, name)
+    if scalar is not None:
+        return scalar
+
+    if point3_to_list(current) is not None and hasattr(current, "x"):
+        vector = coerce_vector3(value, name)
+        return runtime.Point3(vector[0], vector[1], vector[2])
+
+    if color_to_list(current) is not None and hasattr(current, "r"):
+        vector = coerce_vector3(value, name)
+        return runtime.Color(vector[0], vector[1], vector[2])
+
+    if quat_to_list(current) is not None:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 4:
+            raise ValueError("{} expects four components [x, y, z, w]".format(name))
+        return runtime.Quat(value[0], value[1], value[2], value[3])
+
+    return value
+
+
+def serialize_property_value(value: Any) -> Any:
+    """Convert one property value into JSON-safe data."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    point = point3_to_list(value)
+    if point is not None and hasattr(value, "x") and not hasattr(value, "w"):
+        return point
+    color = color_to_list(value)
+    if color is not None and hasattr(value, "r"):
+        return color
+    quat = quat_to_list(value)
+    if quat is not None:
+        return quat
+    rows = matrix_rows(value)
+    if rows is not None:
+        return rows
+    return json_safe(value)
+
+
+def read_property(node: Any, name: str) -> Dict[str, Any]:
+    """Read one property from a node and report availability explicitly."""
+    try:
+        value = getattr(node, name)
+    except Exception as exc:  # noqa: BLE001
+        return {"name": name, "available": False, "error": "{}: {}".format(type(exc).__name__, exc)}
+
+    if callable(value):
+        return {
+            "name": name,
+            "available": False,
+            "callable": True,
+            "error": "{} is a method, not a property".format(name),
+        }
+
+    return {"name": name, "available": True, "type": type(value).__name__, "value": serialize_property_value(value)}
+
+
 def runtime_symbol_info(runtime: Any, name: str) -> Dict[str, Any]:
     """Return safe metadata for one runtime symbol."""
     try:
