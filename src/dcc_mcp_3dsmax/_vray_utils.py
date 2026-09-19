@@ -119,13 +119,13 @@ def create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[st
             maximum=MAX_LIGHTS_PER_CALL,
         )
 
-    created: List[Dict[str, Any]] = []
-    owned: List[Tuple[Any, Optional[int], Dict[str, Any]]] = []
+    # Validate every spec before the first node exists: a malformed value must
+    # never leave an already-created light behind.
     errors: List[Dict[str, Any]] = []
     for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             errors.append({"index": index, "message": "Light spec must be an object", "spec": spec})
-            break
+            continue
         unknown = sorted(set(spec) - set(LIGHT_SPEC_FIELDS))
         if unknown:
             errors.append(
@@ -134,17 +134,50 @@ def create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[st
                     "message": "Unsupported V-Ray light fields: {}".format(", ".join(unknown)),
                 }
             )
+            continue
+        invalid = _invalid_spec_values(spec)
+        if invalid:
+            errors.append(
+                {
+                    "index": index,
+                    "message": "Invalid V-Ray light values",
+                    "fields": invalid,
+                }
+            )
+    if errors:
+        return cam_error(
+            "Rejected V-Ray light specs before creating anything",
+            errors=errors,
+            failure_reason="vray_light_spec_invalid",
+            **rollback_summary([]),
+        )
+
+    created: List[Dict[str, Any]] = []
+    # The node is registered the moment it exists, so even an unexpected
+    # exception later in the pipeline leaves it tracked for rollback.
+    raw_nodes: List[Any] = []
+    for index, spec in enumerate(specs):
+        try:
+            result, node = _create_vray_light_with_node(runtime, spec, sink=raw_nodes)
+        except Exception as exc:  # noqa: BLE001 - a crash must still roll back.
+            errors.append(
+                {
+                    "index": index,
+                    **cam_error(
+                        "V-Ray light creation raised an error",
+                        exception_type=type(exc).__name__,
+                        error=str(exc),
+                    ),
+                }
+            )
             break
-        result, node = _create_vray_light_with_node(runtime, spec)
-        if node is not None:
-            owned.append(owned_light(runtime, node))
         if not result.get("success"):
             errors.append({"index": index, **result})
             break
         created.append(result["data"]["light"])
 
     if errors:
-        incomplete = rollback_owned_nodes(runtime, owned)
+        incomplete = rollback_owned_nodes(runtime, _owned_nodes(runtime, raw_nodes))
         return cam_error(
             "Could not create the requested V-Ray lights",
             errors=errors,
@@ -154,8 +187,89 @@ def create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[st
     return cam_success("Created V-Ray lights", lights=created, changed_node_count=len(created))
 
 
-def _create_vray_light_with_node(runtime: Any, spec: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Any]]:
-    """Create one V-Ray light, verify every requested control, and return it."""
+def _owned_nodes(runtime: Any, nodes: Sequence[Any]) -> List[Tuple[Any, Optional[int], Dict[str, Any]]]:
+    """Snapshot owned nodes for rollback without letting diagnostics raise."""
+    owned: List[Tuple[Any, Optional[int], Dict[str, Any]]] = []
+    for node in nodes:
+        try:
+            owned.append(owned_light(runtime, node))
+        except Exception:  # noqa: BLE001 - rollback must still delete the node.
+            owned.append((node, getattr(node, "handle", None), {}))
+    return owned
+
+
+def _invalid_spec_values(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return every spec field whose value cannot be used as requested."""
+    invalid: List[Dict[str, Any]] = []
+
+    def _reject(field: str, value: Any, reason: str) -> None:
+        invalid.append({"field": field, "value": _jsonable(value), "reason": reason})
+
+    def _number(field: str, value: Any) -> None:
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            _reject(field, value, "expected a number")
+
+    def _sequence(field: str, value: Any, length: int) -> None:
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            _reject(field, value, "expected a list of {} numbers".format(length))
+            return
+        if len(value) < length:
+            _reject(field, value, "expected at least {} numbers".format(length))
+            return
+        for item in value[:length]:
+            try:
+                float(item)
+            except (TypeError, ValueError):
+                _reject(field, value, "expected numeric channels")
+                return
+
+    for field in ("name", "texture_path", "color_space"):
+        value = spec.get(field)
+        if value is not None and not isinstance(value, str):
+            _reject(field, value, "expected a string")
+    for field in ("targeted", "cast_shadows", "normalize_color"):
+        value = spec.get(field)
+        if value is not None and not isinstance(value, bool):
+            _reject(field, value, "expected a boolean")
+    for field in ("multiplier", "size_u", "size_v", "gamma", "horizontal_rotation"):
+        if spec.get(field) is not None:
+            _number(field, spec[field])
+    for field in ("position", "target_position"):
+        if spec.get(field) is not None:
+            _sequence(field, spec[field], 3)
+    if spec.get("color") is not None:
+        _sequence("color", spec["color"], 3)
+    shape = spec.get("shape")
+    if shape is not None and str(shape).strip().lower() not in VRAY_LIGHT_SHAPES:
+        _reject("shape", shape, "unsupported V-Ray light shape")
+    units = spec.get("units")
+    if units is not None and str(units).strip().lower() not in VRAY_LIGHT_UNITS:
+        _reject("units", units, "unsupported V-Ray light unit")
+    map_type = spec.get("map_type")
+    if map_type is not None and str(map_type).strip().lower() not in VRAY_BITMAP_MAP_TYPES:
+        _reject("map_type", map_type, "unsupported V-Ray HDRI map type")
+    return invalid
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, (str, bool, int, float)) or value is None:
+        return value
+    return str(value)
+
+
+def _create_vray_light_with_node(
+    runtime: Any,
+    spec: Dict[str, Any],
+    *,
+    sink: Optional[List[Any]] = None,
+) -> Tuple[Dict[str, Any], Optional[Any]]:
+    """Create one V-Ray light, verify every requested control, and return it.
+
+    ``sink`` receives the node as soon as it is constructed so the caller can
+    roll it back even when a later step raises.
+    """
     factory_errors: List[str] = []
     light = None
     for factory_name in VRAY_LIGHT_FACTORIES:
@@ -167,6 +281,8 @@ def _create_vray_light_with_node(runtime: Any, spec: Dict[str, Any]) -> Tuple[Di
             break
         except Exception as exc:  # noqa: BLE001 - try the next V-Ray factory spelling.
             factory_errors.append("Could not create {}: {}".format(factory_name, exc))
+    if light is not None and sink is not None:
+        sink.append(light)
     if light is None:
         return (
             cam_error(
@@ -261,17 +377,58 @@ def _create_vray_light_with_node(runtime: Any, spec: Dict[str, Any]) -> Tuple[Di
 
     position = spec.get("position")
     if position is not None:
+        expected = [float(value) for value in position[:3]]
         _set_plain(light, "position", point3_value(runtime, position))
         _set_plain(light, "pos", point3_value(runtime, position))
+        actual = _vector_or_none(_read_attr_any(runtime, light, ("position", "pos")))
+        if not _vector_matches(actual, expected):
+            failures.append(
+                {
+                    "field": "position",
+                    "requested": expected,
+                    "actual": actual,
+                    "error": "V-Ray light position readback did not match",
+                }
+            )
 
     target_position = spec.get("target_position")
     if target_position is not None:
+        expected = [float(value) for value in target_position[:3]]
         target = _resolve_target(runtime, light)
         if target is None:
-            warnings.append("V-Ray light exposes no target node for target_position")
+            failures.append(
+                {
+                    "field": "target_position",
+                    "requested": expected,
+                    "error": "V-Ray light exposes no target node to aim",
+                }
+            )
         else:
             _set_plain(target, "position", point3_value(runtime, target_position))
             _set_plain(target, "pos", point3_value(runtime, target_position))
+            actual = _vector_or_none(_read_attr_any(runtime, target, ("position", "pos")))
+            if not _vector_matches(actual, expected):
+                failures.append(
+                    {
+                        "field": "target_position",
+                        "requested": expected,
+                        "actual": actual,
+                        "error": "V-Ray light target position readback did not match",
+                    }
+                )
+
+    name = spec.get("name")
+    if name:
+        actual_name = _read_attr_any(runtime, light, ("name",))
+        if str(actual_name) != str(name):
+            failures.append(
+                {
+                    "field": "name",
+                    "requested": str(name),
+                    "actual": None if actual_name is None else str(actual_name),
+                    "error": "V-Ray light name readback did not match",
+                }
+            )
 
     texture_path = spec.get("texture_path")
     bitmap_report: Optional[Dict[str, Any]] = None
@@ -663,6 +820,31 @@ def _read_bool(runtime: Any, node: Any, attributes: Sequence[str]) -> Optional[b
     if value is None:
         return None
     return bool(value)
+
+
+def _vector_matches(readback: Optional[List[float]], expected: Sequence[float]) -> bool:
+    if readback is None or len(readback) < 3:
+        return False
+    return all(
+        math.isclose(float(readback[index]), float(expected[index]), rel_tol=1e-6, abs_tol=1e-6)
+        for index in range(3)
+    )
+
+
+def _vector_or_none(value: Any) -> Optional[List[float]]:
+    if value is None:
+        return None
+    for names in (("x", "y", "z"), ("r", "g", "b")):
+        try:
+            return [float(getattr(value, name)) for name in names]
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if isinstance(value, (list, tuple)) and len(value) >= 3 and not isinstance(value, (str, bytes)):
+        try:
+            return [float(value[0]), float(value[1]), float(value[2])]
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _numeric_matches(readback: Any, expected: float) -> bool:

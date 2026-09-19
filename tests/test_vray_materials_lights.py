@@ -604,3 +604,176 @@ def test_auto_renderer_detects_vray_from_the_material_class(monkeypatch):
     assert result["data"]["renderer"] == "vray"
     assert result["data"]["applied"][0]["native_attribute"] == "reflectionRoughness"
     assert material.brdf_useRoughness is True
+
+
+class _SwallowingVRayMtl(_VRayMtl):
+    """Model MXSWrapperBase accepting a property it never persists."""
+
+    _SWALLOWED = ("specular", "specularColor")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._swallow = True
+
+    def __setattr__(self, name, value) -> None:
+        if name in self._SWALLOWED and getattr(self, "_swallow", False):
+            return
+        super().__setattr__(name, value)
+
+
+class _RejectingVRayMtl(_VRayMtl):
+    """Model a host that refuses every property except the V-Ray roughness pair."""
+
+    _REJECTED = ("specular", "specularColor")
+
+    def __setattr__(self, name, value) -> None:
+        if name in self._REJECTED:
+            raise AttributeError("Cannot set unknown property {}".format(name))
+        super().__setattr__(name, value)
+
+
+def test_set_material_attributes_fails_when_the_host_rejects_a_known_generic_name(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime(material_class=_RejectingVRayMtl))
+    material = runtime.VRayMtl()
+    material.name = "Mat"
+
+    result = _load_action(MATERIALS_DIR, "action_set_material_attributes.py").main(
+        material_name="Mat", attributes={"specular": [10, 20, 30]}
+    )
+
+    assert result["success"] is False
+    assert result["data"]["errors"][0]["attribute"] == "specular"
+    assert result["data"]["applied"] == []
+    assert not hasattr(material, "specular")
+
+
+def test_set_material_attributes_fails_on_a_silently_ignored_generic_name(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime(material_class=_SwallowingVRayMtl))
+    material = runtime.VRayMtl()
+    material.name = "Mat"
+
+    result = _load_action(MATERIALS_DIR, "action_set_material_attributes.py").main(
+        material_name="Mat", attributes={"specular": [10, 20, 30]}
+    )
+
+    assert result["success"] is False
+    assert result["data"]["errors"][0]["attribute"] == "specular"
+    assert result["data"]["applied"] == []
+
+
+def test_create_vray_light_rejects_malformed_specs_before_creating_nodes(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+
+    result = _load_action(LIGHTING_DIR, "action_create_vray_light.py").main(
+        lights=[
+            {"name": "Good", "shape": "sphere"},
+            {"name": "Bad", "shape": "sphere", "multiplier": "bright", "color": [1, 2]},
+        ]
+    )
+
+    assert result["success"] is False
+    assert result["data"]["changed_node_count"] == 0
+    assert runtime.objects == []
+    fields = {entry["field"] for entry in result["data"]["errors"][0]["fields"]}
+    assert fields == {"multiplier", "color"}
+
+
+def test_create_vray_light_rejects_unsupported_enum_values(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+
+    result = _load_action(LIGHTING_DIR, "action_create_vray_light.py").main(
+        lights=[{"name": "Bad", "shape": "triangle", "units": "candelas", "map_type": "cylindrical"}]
+    )
+
+    assert result["success"] is False
+    assert runtime.objects == []
+    fields = {entry["field"] for entry in result["data"]["errors"][0]["fields"]}
+    assert fields == {"shape", "units", "map_type"}
+
+
+def test_create_vray_light_rolls_back_when_light_creation_raises(monkeypatch):
+    import dcc_mcp_3dsmax._vray_utils as vray_utils
+
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+    real_summary = vray_utils.light_summary
+    calls = []
+
+    def _exploding_summary(node, *, runtime=None):
+        calls.append(node)
+        if len(calls) > 1:
+            raise RuntimeError("host readback failed")
+        return real_summary(node, runtime=runtime)
+
+    monkeypatch.setattr(vray_utils, "light_summary", _exploding_summary)
+
+    result = _load_action(LIGHTING_DIR, "action_create_vray_light.py").main(
+        lights=[{"name": "Good", "shape": "sphere"}, {"name": "Bad", "shape": "sphere"}]
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    assert runtime.objects == []
+
+
+# ---------------------------------------------------------------------------
+# Rollback completeness and response consistency
+# ---------------------------------------------------------------------------
+
+
+class _RejectingNode(_VRayLight):
+    """A node whose material assignment the host refuses."""
+
+    def __setattr__(self, name, value) -> None:
+        if name == "material":
+            raise AttributeError("Cannot set material on this node")
+        super().__setattr__(name, value)
+
+
+def test_failed_assignment_restores_previous_materials_before_rollback(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+    original = runtime.VRayMtl()
+    original.name = "Original"
+
+    accepted = _VRayLight(1)
+    accepted.name = "hero_mesh"
+    accepted.material = original
+    rejected = _RejectingNode(2)
+    rejected.name = "locked_mesh"
+    runtime.objects.extend([accepted, rejected])
+
+    result = _load_action(LOOKDEV_DIR, "action_assign_renderer_material.py").main(
+        material_name="Rejected", roughness=0.2, node_names=["hero_mesh", "locked_mesh"]
+    )
+
+    assert result["success"] is False
+    # The node that was already switched must not be left pointing at the
+    # material that is about to be deleted.
+    assert result["data"]["restore"]["restored"] == ["hero_mesh"]
+    assert accepted.material is original
+    assert result["data"]["rollback"]["rolled_back"] is True
+    assert runtime.sceneMaterials == [original]
+
+
+def test_assign_bitmap_texture_reports_the_native_connection(monkeypatch, tmp_path):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+    material = runtime.VRayMtl()
+    material.name = "Mat"
+    texture = _write_texture(tmp_path, "hero_roughness.png")
+
+    result = _load_action(MATERIALS_DIR, "action_assign_bitmap_texture.py").main(
+        material_name="Mat", slot="roughness", texture_path=str(texture)
+    )
+
+    assert result["success"] is True
+    assert result["data"]["connections"], "a successful native write must be reported back"
+    assert result["data"]["connections"][0]["attribute"] == "texmap_roughness"
+    assert result["data"]["connections"][0]["path"] == str(texture)
+
+
+def test_glossiness_keeps_the_declared_native_order():
+    from dcc_mcp_3dsmax._renderer_materials import numeric_plans
+
+    plans = numeric_plans("vray", "glossiness")
+    native = [attribute for attribute, _transform, _prereqs in plans if attribute.startswith("reflection")]
+
+    assert native[0] == "reflection_glossiness"

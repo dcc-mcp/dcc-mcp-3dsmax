@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dcc_mcp_3dsmax._lookdev_utils import lookdev_error, lookdev_success
 from dcc_mcp_3dsmax._renderer_materials import (
     create_renderer_material,
     detect_renderer_family,
+    restore_node_materials,
     rollback_material,
     set_material_color,
     set_material_number,
@@ -77,7 +78,9 @@ def main(
 
     targets, target_errors = _resolve_targets(runtime, node_names)
     assigned: List[Dict[str, Any]] = []
+    snapshots: List[Tuple[Any, Any]] = []
     for target in targets:
+        snapshots.append((target, getattr(target, "material", None)))
         try:
             target.material = material
         except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
@@ -93,6 +96,9 @@ def main(
     data["assignment_errors"] = target_errors
     data["warnings"] = warnings
     if target_errors:
+        # Restore the previous materials first: deleting the new material while
+        # nodes still reference it would leave them pointing at nothing.
+        data["restore"] = restore_node_materials(runtime, snapshots)
         data["rollback"] = rollback_material(runtime, material)
         return lookdev_error("Could not assign the new material to every target", **data)
     return lookdev_success("Created and assigned renderer material", **data)

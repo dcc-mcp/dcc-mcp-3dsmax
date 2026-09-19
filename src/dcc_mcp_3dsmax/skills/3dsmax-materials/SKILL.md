@@ -67,6 +67,13 @@ renderer-native property and verify every write by readback:
 
 A parameter or slot the material class does not expose fails the tool call and
 rolls the created material back; it is never reported as a silent success.
+Generic attribute names that fall outside the renderer tables go through the
+same readback check: a host that refuses every candidate, or silently accepts
+one it never persists, is reported as an error rather than a success.
+
+`assign_bitmap_texture` reports the resulting connections through the same
+renderer-native slot names, so a write to `texmap_roughness` shows up in
+`connections` instead of returning an empty list.
 
 Texture-set files are matched on filename tokens (`basecolor`, `albedo`,
 `diffuse`, `roughness`, `metalness`, `normal`, `bump`, `displacement`,

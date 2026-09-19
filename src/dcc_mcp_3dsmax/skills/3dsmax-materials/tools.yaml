@@ -467,7 +467,11 @@ tools:
       targets: ['materials']
     produces: ['material']
   - name: assign_bitmap_texture
-    description: Assign a bitmap texture path to a common material map slot.
+    description: >-
+      Assign a bitmap texture path to a material map slot. The slot is resolved
+      through the renderer-native property (VRayMtl texmap_*, Arnold, Physical)
+      and verified by readback; a slot the material does not expose fails the
+      call instead of reporting a silent success.
     source_file: action_assign_bitmap_texture.py
     execution: sync
     affinity: main
@@ -478,9 +482,16 @@ tools:
       additionalProperties: false
       properties:
         material_name: {type: string, minLength: 1}
-        slot: {type: string, enum: [diffuse, base_color, normal, bump, roughness, metalness, opacity]}
+        slot:
+          type: string
+          enum: [diffuse, base_color, normal, bump, roughness, metalness, opacity, displacement, specular, emission, reflection, refraction, glossiness]
         texture_path: {type: string, minLength: 1}
+        renderer: {type: string, enum: [auto, vray, arnold, physical, standard], default: auto}
         allow_missing: {type: boolean, default: false}
+        wrap_normal:
+          type: boolean
+          default: true
+          description: Wrap normal maps in the native Normal Bump texmap.
     output_schema:
       type: object
       additionalProperties: true
@@ -495,10 +506,10 @@ tools:
     idempotent: true
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
 
-    intent: "Assign a bitmap texture file to a material slot."
+    intent: "Assign a bitmap texture file to a renderer-native material slot."
     tool_role: action
     risk: medium
-    search_aliases: ["assign_bitmap_texture", "assign bitmap texture", "assign bitmap texture"]
+    search_aliases: ["assign_bitmap_texture", "assign bitmap texture", "vray texmap"]
     side_effects:
       creates: false
       modifies: true

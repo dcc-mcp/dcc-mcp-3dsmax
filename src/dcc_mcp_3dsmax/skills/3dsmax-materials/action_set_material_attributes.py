@@ -17,6 +17,7 @@ from dcc_mcp_3dsmax._renderer_materials import (
     detect_renderer_family,
     set_material_color,
     set_material_number,
+    verify_generic_attribute,
 )
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
@@ -99,11 +100,35 @@ def _apply_attribute(
         }
     warnings = set_material_attribute(material, attribute, value, runtime=runtime)
     unsupported = [item for item in warnings if item.startswith("Unsupported material attribute")]
+    if unsupported:
+        return {
+            "applied": False,
+            "attribute": attribute,
+            "native_attribute": None,
+            "renderer": family,
+            "warnings": warnings,
+            "error": unsupported[0],
+        }
+    # ``set_material_attribute`` reports host rejections as warnings, so a host
+    # that refused every candidate would still look like a success. Verify the
+    # write by reading it back before reporting anything as applied.
+    verification = verify_generic_attribute(material, attribute, value, runtime=runtime)
+    warnings.extend(verification.get("warnings", []))
+    if not verification.get("applied"):
+        return {
+            "applied": False,
+            "attribute": attribute,
+            "native_attribute": None,
+            "renderer": family,
+            "candidates": verification.get("candidates", []),
+            "warnings": warnings,
+            "error": verification.get("error", "attribute_not_applied"),
+        }
     return {
-        "applied": not unsupported,
+        "applied": True,
         "attribute": attribute,
-        "native_attribute": attribute if not unsupported else None,
+        "native_attribute": verification.get("attribute"),
         "renderer": family,
         "warnings": warnings,
-        "error": unsupported[0] if unsupported else None,
+        "error": None,
     }

@@ -32,7 +32,7 @@ from dcc_mcp_3dsmax._material_utils import (
 from dcc_mcp_3dsmax._material_utils import (
     NUMERIC_ATTRS as LEGACY_NUMERIC_ATTRS,
 )
-from dcc_mcp_3dsmax._material_utils import wrap_normal_map
+from dcc_mcp_3dsmax._material_utils import bitmap_connections, wrap_normal_map
 from dcc_mcp_3dsmax._render_utils import current_renderer
 from dcc_mcp_3dsmax._scene_utils import node_identity
 
@@ -234,20 +234,93 @@ def map_slot_candidates(family: str, slot: str) -> Tuple[str, ...]:
 
 
 def numeric_plans(family: str, parameter: str) -> Tuple[Tuple[str, Optional[str], Tuple[Tuple[str, Any], ...]], ...]:
-    """Return ordered write plans for one canonical numeric parameter."""
-    native = {}
+    """Return ordered write plans for one canonical numeric parameter.
+
+    Native plans keep their declaration order: flipping the order can change
+    which native property a host that exposes both spellings ends up using, and
+    with it the BRDF mode (see the V-Ray glossiness/roughness pair).
+    """
+    native: Dict[str, Tuple[str, Optional[str], Tuple[Tuple[str, Any], ...]]] = {}
+    native_order: List[str] = []
     for attribute, transform, prerequisites in NUMERIC_PLANS.get(family, {}).get(parameter, ()):
         native[attribute] = (attribute, transform, prerequisites)
+        if attribute not in native_order:
+            native_order.append(attribute)
     plans: List[Tuple[str, Optional[str], Tuple[Tuple[str, Any], ...]]] = []
     for attribute in LEGACY_NUMERIC_ATTRS.get(parameter, ()):
         plans.append(native.pop(attribute, (attribute, None, ())))
-    plans.extend(native[attribute] for attribute in sorted(native))
+    for attribute in native_order:
+        if attribute in native:
+            plans.append(native[attribute])
     return tuple(plans)
 
 
 def color_candidates(family: str, parameter: str) -> Tuple[str, ...]:
     """Return ordered native attribute candidates for one canonical color."""
     return _merge(LEGACY_COLOR_ATTRS.get(parameter, ()), COLOR_PLANS.get(family, {}).get(parameter, ()))
+
+
+def generic_attribute_candidates(parameter: str) -> Tuple[str, ...]:
+    """Return the historical generic attribute names for one parameter."""
+    if parameter in LEGACY_COLOR_ATTRS:
+        return tuple(LEGACY_COLOR_ATTRS[parameter])
+    if parameter in LEGACY_NUMERIC_ATTRS:
+        return tuple(LEGACY_NUMERIC_ATTRS[parameter])
+    return (parameter,)
+
+
+def verify_generic_attribute(
+    material: Any,
+    parameter: str,
+    value: Any,
+    *,
+    runtime: Any = None,
+) -> Dict[str, Any]:
+    """Confirm a generic attribute write actually landed on the material.
+
+    ``set_material_attribute`` returns warnings instead of raising, so a host
+    that rejects every candidate still looks like a success. This reads the
+    value back through the same candidate list and reports the native attribute
+    that really holds it, or an explicit failure when none does.
+    """
+    candidates = generic_attribute_candidates(parameter)
+    is_color = parameter in LEGACY_COLOR_ATTRS
+    expected = _coerce_channels(value) if is_color else _coerce_scalar(value)
+    warnings: List[str] = []
+    for attribute in candidates:
+        if not _host_has_property(runtime, material, attribute):
+            continue
+        if is_color:
+            readback = _read_channels(runtime, material, attribute)
+        else:
+            readback = _read_number(runtime, material, attribute)
+        matched = (
+            _channels_match(readback, expected)
+            if is_color
+            else (readback is not None and math.isclose(readback, expected, rel_tol=1e-6, abs_tol=1e-6))
+        )
+        if matched:
+            return {"applied": True, "attribute": attribute, "warnings": warnings}
+        warnings.append("{} read back {!r} after writing {}".format(attribute, readback, expected))
+    return {
+        "applied": False,
+        "attribute": None,
+        "candidates": list(candidates),
+        "warnings": warnings,
+        "error": "No native attribute holds the requested {} value".format(parameter),
+    }
+
+
+def renderer_bitmap_connections(
+    material: Any,
+    *,
+    runtime: Any = None,
+    renderer: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return bitmap connections including the renderer-native slot names."""
+    family = detect_renderer_family(runtime, material=material, requested=renderer)
+    extra = {slot: map_slot_candidates(family, slot) for slot in MAP_SLOT_PLANS.get(family, {})}
+    return bitmap_connections(material, extra_slots=extra)
 
 
 def _merge(legacy: Sequence[str], native: Sequence[str]) -> Tuple[str, ...]:
@@ -687,7 +760,9 @@ def build_material_from_texture_set(
         data["assignment_errors"] = assignment["errors"]
         warnings.extend(assignment["warnings"])
         if assignment["errors"]:
+            restore = restore_node_materials(runtime, assignment["snapshots"])
             rollback = rollback_material(runtime, material)
+            data["restore"] = restore
             data["rollback"] = rollback
             data["changed_material_count"] = 0
             return renderer_material_error("Could not assign the new material to every target", **data)
@@ -731,7 +806,9 @@ def _assign_to_nodes(
             warnings.append("No nodes were selected; the material was created without assignment")
 
     assigned: List[Dict[str, Any]] = []
+    snapshots: List[Tuple[Any, Any]] = []
     for node in targets:
+        snapshots.append((node, getattr(node, "material", None)))
         try:
             node.material = material
         except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
@@ -741,7 +818,33 @@ def _assign_to_nodes(
             errors.append({"node": node_identity(node), "error": "Material readback did not match"})
             continue
         assigned.append(node_identity(node))
-    return {"assigned": assigned, "errors": errors, "warnings": warnings}
+    return {"assigned": assigned, "errors": errors, "warnings": warnings, "snapshots": snapshots}
+
+
+def restore_node_materials(
+    runtime: Any,
+    snapshots: Sequence[Tuple[Any, Any]],
+) -> Dict[str, Any]:
+    """Restore each node's previous material after a failed assignment.
+
+    Deleting a newly created material without this leaves every node that was
+    already switched pointing at a material that no longer exists, which is a
+    worse scene state than leaving the failure alone.
+    """
+    restored: List[str] = []
+    failed: List[Dict[str, Any]] = []
+    for node, previous in snapshots:
+        name = str(getattr(node, "name", ""))
+        try:
+            node.material = previous
+        except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
+            failed.append({"node": name, "error": str(exc)})
+            continue
+        if getattr(node, "material", None) is not previous:
+            failed.append({"node": name, "error": "Material readback did not match the snapshot"})
+            continue
+        restored.append(name)
+    return {"restored": restored, "failed": failed}
 
 
 def rollback_material(runtime: Any, material: Any) -> Dict[str, Any]:
@@ -875,6 +978,13 @@ def _channels_match(readback: Optional[List[float]], expected: List[float]) -> b
     return all(
         math.isclose(readback[index], expected[index], rel_tol=1e-3, abs_tol=1e-3) for index in range(3)
     )
+
+
+def _coerce_scalar(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _coerce_channels(value: Sequence[float]) -> List[float]:

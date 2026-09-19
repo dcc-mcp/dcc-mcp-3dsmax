@@ -81,3 +81,15 @@ def test_configure_renderer_fails_closed_on_a_silently_ignored_setting():
     assert result["success"] is False
     assert result["data"]["errors"][0]["requested"] == 6
     assert runtime.renderers.current.AA_samples == 3
+
+
+def test_configure_renderer_restores_the_previous_values_after_a_batch_failure():
+    runtime = _Runtime()
+    runtime.renderers.current = _RejectingRenderer()
+
+    result = configure_renderer(runtime, settings={"AA_samples": 6, "unknown_setting": 1})
+
+    assert result["success"] is False
+    assert result["data"]["rollback"]["rolled_back"] is True
+    assert "AA_samples" in result["data"]["rollback"]["restored"]
+    assert runtime.renderers.current.AA_samples == 3

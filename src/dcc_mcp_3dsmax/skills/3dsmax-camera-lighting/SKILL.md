@@ -61,6 +61,13 @@ transaction (up to 32 lights per call):
 | local size | `U_size`/`V_size` (then `sizeU`/`sizeV`, `size0`/`size1`) | float |
 | dome texture | `texmap` (then `dome_tex`) + `VRayBitmap` | `map_type`, `gamma`, `color_space`, `horizontal_rotation` |
 
-Every requested control is read back from the host. A control that is missing,
-rejected, or silently ignored fails the whole call and rolls every light created
-in that call back.
+Every requested control is read back from the host — including `name`,
+`position`, and `target_position`. A control that is missing, rejected, or
+silently ignored fails the whole call and rolls every light created in that
+call back.
+
+Values are validated for every spec before the first light is built, so a
+malformed spec (`multiplier: "bright"`, a two-channel `color`, an unknown
+`shape`) is rejected with per-field detail and creates nothing. If the host
+raises an unexpected error after a light exists, that light is still rolled
+back rather than left in the scene.

@@ -300,6 +300,12 @@ def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str
     verified: List[str] = []
     errors: List[Dict[str, Any]] = []
     warnings: List[str] = []
+    # Snapshot before the first write so a rejected setting cannot leave the
+    # batch half-applied: the renderer is restored to its previous state.
+    previous: Dict[str, Any] = {}
+    for key in settings:
+        if _read_setting(renderer, key) is not None:
+            previous[key] = _read_setting(renderer, key)
     for key, value in settings.items():
         try:
             setattr(renderer, key, value)
@@ -324,8 +330,23 @@ def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str
         "warnings": warnings,
     }
     if errors:
+        data["rollback"] = _restore_settings(renderer, previous)
         return render_error("Could not apply every renderer setting", **data)
     return render_success("Configured renderer", **data)
+
+
+def _restore_settings(renderer: Any, previous: Mapping[str, Any]) -> Dict[str, Any]:
+    """Restore renderer settings captured before a failed batch."""
+    restored: List[str] = []
+    failed: List[Dict[str, Any]] = []
+    for key, value in previous.items():
+        try:
+            setattr(renderer, key, value)
+        except Exception as exc:  # noqa: BLE001 - report, never mask, a failed restore.
+            failed.append({"setting": key, "error": str(exc)})
+            continue
+        restored.append(key)
+    return {"rolled_back": not failed, "restored": restored, "failed": failed}
 
 
 def _read_setting(renderer: Any, key: str) -> Any:

@@ -61,8 +61,24 @@ def iter_scene_materials(runtime: Any) -> List[Any]:
     return materials
 
 
-def material_identity(material: Any) -> Dict[str, Any]:
-    """Return JSON-safe material metadata."""
+def _renderer_bitmap_connections(material: Any, *, runtime: Any) -> List[Dict[str, Any]]:
+    """Report bitmap connections through the renderer-native slot resolver."""
+    from dcc_mcp_3dsmax._renderer_materials import renderer_bitmap_connections
+
+    return renderer_bitmap_connections(material, runtime=runtime)
+
+
+def material_identity(material: Any, runtime: Any = None) -> Dict[str, Any]:
+    """Return JSON-safe material metadata.
+
+    ``runtime`` lets the map report include renderer-native slots (VRayMtl
+    ``texmap_*``) instead of only the historical generic slot names.
+    """
+    maps = (
+        _renderer_bitmap_connections(material, runtime=runtime)
+        if runtime is not None
+        else bitmap_connections(material)
+    )
     return {
         "name": str(getattr(material, "name", "")),
         "type": type(material).__name__,
@@ -73,15 +89,27 @@ def material_identity(material: Any) -> Dict[str, Any]:
         "metalness": _numeric_value(material, "metalness"),
         "opacity": _numeric_value(material, "opacity"),
         "glossiness": _numeric_value(material, "glossiness"),
-        "maps": bitmap_connections(material),
+        "maps": maps,
     }
 
 
-def bitmap_connections(material: Any) -> List[Dict[str, Any]]:
-    """Return bitmap/map slot connections for one material."""
+def bitmap_connections(material: Any, extra_slots: Optional[Dict[str, Sequence[str]]] = None) -> List[Dict[str, Any]]:
+    """Return bitmap/map slot connections for one material.
+
+    ``extra_slots`` adds renderer-native slot names (for example VRayMtl
+    ``texmap_*``) so a connection written through the native property is still
+    reported back to the caller.
+    """
     rows = []
     seen = set()
-    for slot, attrs in MAP_SLOTS.items():
+    slots = {slot: tuple(attrs) for slot, attrs in MAP_SLOTS.items()}
+    for slot, attrs in (extra_slots or {}).items():
+        merged = list(slots.get(slot, ()))
+        for attr in attrs:
+            if attr not in merged:
+                merged.append(attr)
+        slots[slot] = tuple(merged)
+    for slot, attrs in slots.items():
         for attr in attrs:
             if attr in seen:
                 continue
