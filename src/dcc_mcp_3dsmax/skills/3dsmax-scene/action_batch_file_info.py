@@ -4,13 +4,22 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from dcc_mcp_3dsmax._max_file_io import DEFAULT_NAME_LIMIT, MAX_BATCH_FILES, read_max_file_record
+from dcc_mcp_3dsmax._max_file_io import (
+    BATCH_SIZE_WARNING,
+    DEFAULT_NAME_LIMIT,
+    MAX_BATCH_FILES,
+    RECOMMENDED_BATCH_FILES,
+    read_max_file_record,
+)
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
 def _validated_paths(file_paths: Any) -> List[str]:
     if not isinstance(file_paths, list) or not 1 <= len(file_paths) <= MAX_BATCH_FILES:
-        raise ValueError("file_paths must contain between 1 and {} paths".format(MAX_BATCH_FILES))
+        raise ValueError(
+            "file_paths must contain between 1 and {} paths; split a larger inventory into "
+            "several calls".format(MAX_BATCH_FILES)
+        )
     paths: List[str] = []
     for item in file_paths:
         if not isinstance(item, str) or not item.strip():
@@ -60,6 +69,8 @@ def main(
             )
     if duplicates_ignored:
         warnings.append("ignored {} duplicate path(s) in file_paths".format(duplicates_ignored))
+    if len(requested) > RECOMMENDED_BATCH_FILES:
+        warnings.append(BATCH_SIZE_WARNING.format(len(requested), RECOMMENDED_BATCH_FILES))
 
     data: Dict[str, Any] = {
         "files": records,

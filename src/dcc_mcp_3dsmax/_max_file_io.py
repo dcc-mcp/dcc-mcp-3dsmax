@@ -7,7 +7,10 @@ never have to guess whether "no objects" means "empty file" or "unreadable
 file".
 
 The merge half centralises the fixed no-prompt conflict policies so
-``merge_file`` and ``merge_from_file`` cannot drift apart.
+``merge_file`` and ``merge_from_file`` cannot drift apart. The merge readback
+capability is probed **before** the scene is modified: a host that cannot
+report what it merged is rejected up front, because "merged but unverified"
+would leave a caller free to retry and duplicate the objects.
 """
 
 from __future__ import annotations
@@ -18,7 +21,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._scene_lifecycle import normalize_scene_path, scene_status
 
-MAX_BATCH_FILES = 50
+# A batch is a serial, main-thread host read per path, so the supported size is
+# deliberately smaller than the per-request page limits: callers are told to
+# split bigger inventories instead of waiting on one long call.
+MAX_BATCH_FILES = 20
+RECOMMENDED_BATCH_FILES = 10
 MAX_NAME_LIMIT = 1000
 DEFAULT_NAME_LIMIT = 200
 MAX_PATTERN_LENGTH = 256
@@ -48,7 +55,13 @@ REASON_MESSAGES = {
     "is_max_file_failed": "isMaxFile raised while validating the file",
     "external_scene_reader_unavailable": "this 3ds Max host exposes no getMAXFileObjectNames reader",
     "object_names_read_failed": "getMAXFileObjectNames raised while reading the file",
+    "merge_readback_unavailable": "this 3ds Max host exposes no getLastMergedNodes readback",
 }
+
+BATCH_SIZE_WARNING = (
+    "this batch reads {} scene files serially on the 3ds Max main thread and may be slow; "
+    "split it into batches of {} paths or fewer"
+)
 
 
 class MaxFileReadError(Exception):
@@ -57,6 +70,21 @@ class MaxFileReadError(Exception):
     def __init__(self, reason: str, detail: str = "") -> None:
         super().__init__(detail or reason)
         self.reason = reason
+        self.detail = detail
+
+
+class MaxMergeReadbackError(Exception):
+    """Raised **before** a merge when the host cannot report what it merged.
+
+    Carrying this out of the shared helper means a caller can never see "the
+    host merged something but the adapter could not confirm it", which is the
+    state where a retry would duplicate the merged objects.
+    """
+
+    reason = "merge_readback_unavailable"
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__(detail or self.reason)
         self.detail = detail
 
 
@@ -81,11 +109,15 @@ def read_object_names(rt: Any, path: Any) -> List[str]:
         raise MaxFileReadError("external_scene_reader_unavailable")
     try:
         names = reader(str(path), quiet=True)
-    except Exception:  # noqa: BLE001 - retry without the quiet flag.
+    except TypeError:
+        # Only an unsupported ``quiet`` keyword earns a positional retry: a real
+        # read failure must not read the same file twice.
         try:
             names = reader(str(path))
         except Exception as exc:  # noqa: BLE001
             raise MaxFileReadError("object_names_read_failed", str(exc))
+    except Exception as exc:  # noqa: BLE001 - every other failure is reported once.
+        raise MaxFileReadError("object_names_read_failed", str(exc))
     return [str(name) for name in list(names or [])]
 
 
@@ -289,13 +321,21 @@ def merge_nodes_from_file(
 ) -> Dict[str, Any]:
     """Merge nodes with fixed no-prompt policies and read the result back.
 
-    Raises ``ValueError`` for unsupported options so callers can fail before
-    touching the scene. The returned dict reports both the native return value
-    and the readback verdict; callers must treat ``verified`` as the outcome.
+    Raises ``ValueError`` for unsupported options and ``MaxMergeReadbackError``
+    when the host cannot report a merge, so callers always fail before touching
+    the scene. The returned dict reports both the native return value and the
+    readback verdict; callers must treat ``verified`` as the outcome.
     """
     duplicate_flag, material_flag, reparent_flag = validate_merge_options(
         duplicate_names, material_duplicates, reparent, select_merged
     )
+
+    # Preflight, not post-mortem: if the host cannot say what it merged, refuse
+    # before the scene changes instead of reporting an unverifiable merge that a
+    # caller might retry.
+    readback = getattr(rt, "getLastMergedNodes", None)
+    if readback is None:
+        raise MaxMergeReadbackError()
 
     before = scene_status(rt)
     before_handles = {int(getattr(node, "handle", 0)) for node in list(rt.objects)}
@@ -310,8 +350,7 @@ def merge_nodes_from_file(
     merge_returned = rt.mergeMAXFile(str(path), *args, quiet=True)
     after = scene_status(rt)
 
-    reader = getattr(rt, "getLastMergedNodes", None)
-    merged_nodes = _node_records(reader()) if reader is not None else []
+    merged_nodes = _node_records(readback())
     merged_handles = {item["handle"] for item in merged_nodes if item["handle"]}
     after_handles = {int(getattr(node, "handle", 0)) for node in list(rt.objects)}
 
@@ -330,4 +369,5 @@ def merge_nodes_from_file(
         "merged_nodes": merged_nodes,
         "merge_returned": bool(merge_returned),
         "verified": bool(verified),
+        "scene_modified": bool(merge_returned) or after["object_count"] > before["object_count"],
     }

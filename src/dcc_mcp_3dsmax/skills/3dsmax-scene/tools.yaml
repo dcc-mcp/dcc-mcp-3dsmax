@@ -1670,9 +1670,12 @@ tools:
     produces: ["max_file_info", "object_names"]
   - name: batch_file_info
     description: >-
-      Read metadata for a batch of external .max files in one call. Every file
-      gets a per-file status; a file that cannot be read is reported as an
-      explicit error and fails the call rather than being skipped silently.
+      Read metadata for a batch of up to 20 external .max files in one call.
+      Every file gets a per-file status; a file that cannot be read is
+      reported as an explicit error and fails the call rather than being
+      skipped silently. Paths are read serially on the 3ds Max main thread,
+      so keep batches small: a batch above 10 paths returns a warning asking
+      for a smaller batch instead of one long call.
     source_file: action_batch_file_info.py
     execution: sync
     affinity: main
@@ -1685,9 +1688,11 @@ tools:
         file_paths:
           type: array
           minItems: 1
-          maxItems: 50
+          maxItems: 20
           items: {type: string, minLength: 1, maxLength: 4096}
-          description: Existing absolute .max paths to read.
+          description: >-
+            Existing absolute .max paths to read, at most 20 per call. Paths are
+            read serially on the 3ds Max main thread.
         limit:
           type: integer
           minimum: 1
@@ -1705,7 +1710,7 @@ tools:
         success: {type: boolean}
         message: {type: string}
         data: {type: object}
-    timeout_hint_secs: 60
+    timeout_hint_secs: 120
     read_only: true
     destructive: false
     idempotent: true
@@ -1730,9 +1735,12 @@ tools:
     produces: ["max_file_info"]
   - name: search_max_files
     description: >-
-      Search a batch of external .max files for objects whose name matches a
-      substring or glob pattern. Files that cannot be read are reported as
-      explicit per-file errors and fail the call.
+      Search a batch of up to 20 external .max files for objects whose name
+      matches a substring or glob pattern. Files that cannot be read are
+      reported as explicit per-file errors and fail the call. Paths are read
+      serially on the 3ds Max main thread, so keep batches small: a batch
+      above 10 paths returns a warning asking for a smaller batch instead of
+      one long call.
     source_file: action_search_max_files.py
     execution: sync
     affinity: main
@@ -1745,9 +1753,11 @@ tools:
         file_paths:
           type: array
           minItems: 1
-          maxItems: 50
+          maxItems: 20
           items: {type: string, minLength: 1, maxLength: 4096}
-          description: Existing absolute .max paths to search.
+          description: >-
+            Existing absolute .max paths to search, at most 20 per call. Paths
+            are read serially on the 3ds Max main thread.
         name_pattern:
           type: string
           minLength: 1
@@ -1775,7 +1785,7 @@ tools:
         success: {type: boolean}
         message: {type: string}
         data: {type: object}
-    timeout_hint_secs: 60
+    timeout_hint_secs: 120
     read_only: true
     destructive: false
     idempotent: true

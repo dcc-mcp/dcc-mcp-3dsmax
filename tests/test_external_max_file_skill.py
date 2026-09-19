@@ -29,7 +29,15 @@ class _Node:
 class _FakeRuntime:
     """Stands in for ``pymxs.runtime`` with an external-file reader."""
 
-    def __init__(self, object_names=None, *, with_reader=True, with_version=True, with_is_max_file=True):
+    def __init__(
+        self,
+        object_names=None,
+        *,
+        with_reader=True,
+        with_version=True,
+        with_is_max_file=True,
+        with_readback=True,
+    ):
         self.maxFileName = "working.max"
         self.maxFilePath = "C:/scenes/"
         self.objects = [_Node("existing_box", 1)]
@@ -43,12 +51,15 @@ class _FakeRuntime:
         self.is_max_file_results = {}
         self.object_names_raises = {}
         self.reject_quiet_flag = False
+        self.object_names_calls = []
         if with_reader:
             self.getMAXFileObjectNames = self._get_max_file_object_names
         if with_version:
             self.getMAXFileVersion = self._get_max_file_version
         if with_is_max_file:
             self.isMaxFile = self._is_max_file
+        if with_readback:
+            self.getLastMergedNodes = self._get_last_merged_nodes
 
     # ── scene status surface ──
     def getSaveRequired(self):  # noqa: N802 - mirrors pymxs runtime naming.
@@ -64,7 +75,11 @@ class _FakeRuntime:
     def _get_max_file_version(self, file_path):
         return "2024 - 26.0"
 
+    def _get_last_merged_nodes(self):
+        return list(self.last_merged_nodes)
+
     def _get_max_file_object_names(self, file_path, *args, **kwargs):
+        self.object_names_calls.append((str(file_path), args, kwargs))
         if self.reject_quiet_flag and kwargs:
             raise TypeError("quiet is not a supported keyword")
         raises = self.object_names_raises.get(str(file_path))
@@ -84,9 +99,6 @@ class _FakeRuntime:
         self.last_merged_nodes = nodes
         self._dirty = True
         return True
-
-    def getLastMergedNodes(self):  # noqa: N802 - mirrors pymxs runtime naming.
-        return list(self.last_merged_nodes)
 
 
 def _install(monkeypatch, runtime):
@@ -186,6 +198,8 @@ def test_inspect_max_file_fails_when_the_reader_raises(monkeypatch, tmp_path):
 
     assert result["success"] is False
     assert result["data"]["failure_reason"] == "object_names_read_failed"
+    # A real read failure must not read the same file twice without quiet=True.
+    assert runtime.object_names_calls == [(str(source), (), {"quiet": True})]
 
 
 def test_inspect_max_file_fails_without_a_host_reader(monkeypatch, tmp_path):
@@ -299,7 +313,15 @@ def test_batch_file_info_rejects_unbounded_batches(monkeypatch):
     _install(monkeypatch, _FakeRuntime())
 
     assert _run("action_batch_file_info.py", {"file_paths": []})["data"]["failure_reason"] == "invalid_file_paths"
-    too_many = ["C:/scenes/{}.max".format(index) for index in range(51)]
+    from dcc_mcp_3dsmax._max_file_io import MAX_BATCH_FILES
+
+    exactly_max = ["C:/scenes/{}.max".format(index) for index in range(MAX_BATCH_FILES)]
+    _install(monkeypatch, _FakeRuntime())
+    at_cap = _run("action_batch_file_info.py", {"file_paths": exactly_max})
+    assert at_cap["success"] is False
+    assert at_cap["data"]["requested_count"] == MAX_BATCH_FILES
+    assert at_cap["data"]["failed_count"] == MAX_BATCH_FILES
+    too_many = ["C:/scenes/{}.max".format(index) for index in range(MAX_BATCH_FILES + 1)]
     assert (
         _run("action_batch_file_info.py", {"file_paths": too_many})["data"]["failure_reason"] == "invalid_file_paths"
     )
@@ -540,7 +562,28 @@ def test_merge_from_file_fails_on_a_missing_source_file(monkeypatch, tmp_path):
 # ── shared helper and tool contract ─────────────────────────────────────
 
 
-def test_match_object_names_is_platform_stable():
+def test_batch_readers_warn_above_the_recommended_batch_size(monkeypatch, tmp_path):
+    from dcc_mcp_3dsmax._max_file_io import RECOMMENDED_BATCH_FILES
+
+    paths = []
+    names = {}
+    for index in range(RECOMMENDED_BATCH_FILES + 1):
+        path = _write_max(tmp_path, "batch_{}.max".format(index))
+        paths.append(str(path))
+        names[str(path)] = ["prop_a"]
+    runtime = _FakeRuntime(names)
+    runtime.maxFilePath = str(tmp_path)
+    _install(monkeypatch, runtime)
+
+    info = _run("action_batch_file_info.py", {"file_paths": paths})
+    search = _run("action_search_max_files.py", {"file_paths": paths, "name_pattern": "prop"})
+
+    for result in (info, search):
+        assert result["success"] is True, result
+        assert any("split it into batches" in warning for warning in result["data"]["warnings"]), result["data"]
+
+    small = _run("action_batch_file_info.py", {"file_paths": paths[:RECOMMENDED_BATCH_FILES]})
+    assert small["data"]["warnings"] == []
     from dcc_mcp_3dsmax._max_file_io import match_object_names
 
     names = ["PROP_One", "prop_two", "hero"]
@@ -548,6 +591,59 @@ def test_match_object_names_is_platform_stable():
     assert match_object_names(names, "prop", case_sensitive=False) == ["PROP_One", "prop_two"]
     assert match_object_names(names, "PROP_*", match_mode="glob", case_sensitive=True) == ["PROP_One"]
     assert match_object_names(names, "prop_*", match_mode="glob", case_sensitive=False) == ["PROP_One", "prop_two"]
+
+
+def test_merge_from_file_refuses_a_host_without_readback_before_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]}, with_readback=False)
+    runtime.maxFilePath = str(tmp_path)
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_from_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "precondition"
+    assert result["data"]["failure_reason"] == "merge_readback_unavailable"
+    assert result["data"]["scene_modified"] is False
+    assert runtime.merged == []
+
+
+def test_merge_file_refuses_a_host_without_readback_before_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]}, with_readback=False)
+    runtime.maxFilePath = str(tmp_path)
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "merge_readback_unavailable"
+    assert runtime.merged == []
+
+
+def test_merge_from_file_flags_an_unverified_scene_change(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]})
+    runtime.maxFilePath = str(tmp_path)
+    runtime.mergeMAXFile = lambda _file_path, *_args, **_kwargs: True  # type: ignore[method-assign]
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_from_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "scene_merge_readback_mismatch"
+    assert result["data"]["scene_modified"] is True
+    assert any("undo_last" in warning for warning in result["data"]["warnings"])
+
+
+def test_merge_file_preserves_the_validity_probe_reason(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    _install(monkeypatch, _FakeRuntime({str(source): ["hero"]}, with_is_max_file=False))
+
+    result = _run("action_merge_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "is_max_file_unavailable"
 
 
 def test_merge_file_still_uses_the_shared_conflict_policies(monkeypatch, tmp_path):

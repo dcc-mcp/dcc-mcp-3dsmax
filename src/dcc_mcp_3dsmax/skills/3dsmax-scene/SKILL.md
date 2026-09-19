@@ -86,18 +86,29 @@ the variable gates arbitrary script execution, not typed class construction.
 
 External `.max` files are inspected without opening them. `inspect_max_file`
 reports the objects and metadata of one file, `batch_file_info` does the same
-for up to 50 files, and `search_max_files` finds objects by name pattern
-across a batch of files. All three fail closed: a file that is missing,
-unreadable, or not a scene file is reported as an explicit per-file error with
-a stable reason, never as an empty object list. Host functions used to read
-external files are probed rather than assumed, so a host that lacks a reader
-reports `external_scene_reader_unavailable` instead of returning no objects.
+for a batch of up to 20 files, and `search_max_files` finds objects by name
+pattern across a batch of up to 20 files. Both batch tools read one path at a
+time on the 3ds Max main thread, so the per-call limit is deliberately small
+and a batch above 10 paths answers with a warning that asks for a smaller
+batch; split a larger inventory into several calls instead of issuing one long
+request. All three fail closed: a file that is missing, unreadable, or not a
+scene file is reported as an explicit per-file error with a stable reason,
+never as an empty object list. Host functions used to read external files are
+probed rather than assumed, so a host that lacks a reader reports
+`external_scene_reader_unavailable` instead of returning no objects.
 
 `merge_from_file` merges objects selected by exact name or by name pattern
 from an external `.max` file. The selection is resolved against the source
 file before anything is merged, so a name or pattern that matches nothing
 fails the call, and names that could not be resolved are always returned in
 `unresolved_object_names`; pass `require_all=true` to make them fail the call.
+
+Both merge tools probe `getLastMergedNodes` **before** they merge. A host
+without that readback is rejected with `merge_readback_unavailable` and no
+scene change at all, because "merged but unconfirmed" is the one state where a
+retry would duplicate objects. When the host does accept the merge but the
+readback does not confirm it, the response reports `scene_modified` and tells
+the caller to undo once before retrying.
 It shares the verified readback and the fixed no-prompt conflict policies of
 `merge_file`, so use `merge_file` when the exact source node names are already
 known and `merge_from_file` when the selection has to be resolved by pattern.

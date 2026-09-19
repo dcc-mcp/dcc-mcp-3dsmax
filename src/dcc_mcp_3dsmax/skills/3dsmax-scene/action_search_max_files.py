@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from dcc_mcp_3dsmax._max_file_io import (
+    BATCH_SIZE_WARNING,
     DEFAULT_NAME_LIMIT,
     MATCH_MODES,
     MAX_BATCH_FILES,
     MAX_PATTERN_LENGTH,
+    RECOMMENDED_BATCH_FILES,
     MaxFileReadError,
     bounded_limit,
     is_max_file,
@@ -35,7 +37,10 @@ def main(
     rt = get_runtime()
     try:
         if not isinstance(file_paths, list) or not 1 <= len(file_paths) <= MAX_BATCH_FILES:
-            raise ValueError("file_paths must contain between 1 and {} paths".format(MAX_BATCH_FILES))
+            raise ValueError(
+                "file_paths must contain between 1 and {} paths; split a larger inventory into "
+                "several calls".format(MAX_BATCH_FILES)
+            )
         if not isinstance(name_pattern, str) or not name_pattern.strip() or len(name_pattern) > MAX_PATTERN_LENGTH:
             raise ValueError(
                 "name_pattern must be a non-empty string of at most {} characters".format(MAX_PATTERN_LENGTH)
@@ -106,6 +111,10 @@ def main(
             if len(matches) < safe_limit:
                 matches.append({"file_path": str(path), "object_name": name})
 
+    warnings: List[str] = []
+    if len(requested) > RECOMMENDED_BATCH_FILES:
+        warnings.append(BATCH_SIZE_WARNING.format(len(requested), RECOMMENDED_BATCH_FILES))
+
     data: Dict[str, Any] = {
         "files": per_file,
         "matches": matches,
@@ -120,6 +129,7 @@ def main(
         "match_mode": match_mode,
         "case_sensitive": case_sensitive,
         "partial": bool(failed) and len(failed) < len(per_file),
+        "warnings": warnings,
     }
     if failed:
         return {

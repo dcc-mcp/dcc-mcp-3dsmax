@@ -9,6 +9,7 @@ from dcc_mcp_3dsmax._max_file_io import (
     MAX_OBJECT_NAME_LENGTH,
     MAX_PATTERN_LENGTH,
     MaxFileReadError,
+    MaxMergeReadbackError,
     is_max_file,
     match_object_names,
     merge_nodes_from_file,
@@ -182,6 +183,20 @@ def main(
             "message": str(exc) or "Unsupported merge option",
             "data": dict(selection, failure_stage="precondition", failure_reason="invalid_merge_options"),
         }
+    except MaxMergeReadbackError as exc:
+        return {
+            "success": False,
+            "message": (
+                "3ds Max cannot report which objects a merge produced, so nothing was merged; "
+                "a retry cannot duplicate objects"
+            ),
+            "data": dict(
+                selection,
+                failure_stage="precondition",
+                failure_reason=exc.reason,
+                scene_modified=False,
+            ),
+        }
 
     warnings: List[str] = []
     if unresolved:
@@ -198,9 +213,15 @@ def main(
         "merged_count": len(outcome["merged_nodes"]),
         "verified": outcome["verified"],
         "merge_returned": outcome["merge_returned"],
+        "scene_modified": outcome["scene_modified"],
         "warnings": warnings,
     }
     data.update(selection)
+    if outcome["scene_modified"] and not outcome["verified"]:
+        data["warnings"].append(
+            "the host accepted the merge call; call undo_last(count=1) before retrying "
+            "so the merged objects are not duplicated"
+        )
     if not outcome["verified"]:
         return {
             "success": False,
@@ -209,6 +230,7 @@ def main(
                 data,
                 failure_stage="verify",
                 failure_reason="scene_merge_readback_mismatch",
+                scene_modified=outcome["scene_modified"],
             ),
         }
     return {
