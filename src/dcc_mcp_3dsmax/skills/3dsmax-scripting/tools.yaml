@@ -60,6 +60,12 @@ tools:
       render: false
       targets: []
     produces: ['script_result']
+    undo:
+      supported: true
+      granularity: script_defined
+      notes: >-
+        Undo coverage depends on the script body and cannot be verified by the adapter; prefer typed tools.
+
   - name: execute_maxscript
     description: >-
       Execute explicit MaxScript in the current 3ds Max session via
@@ -117,6 +123,12 @@ tools:
       render: false
       targets: []
     produces: ['script_result']
+    undo:
+      supported: true
+      granularity: script_defined
+      notes: >-
+        Undo coverage depends on the script body and cannot be verified by the adapter; prefer typed tools.
+
   - name: run_python_check
     description: >-
       Evaluate a small Python expression against pymxs, rt, and runtime for

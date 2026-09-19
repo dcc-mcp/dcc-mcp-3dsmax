@@ -105,6 +105,12 @@ tools:
       render: false
       targets: ['layers']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        One host undo entry for the whole layer delete, including member nodes removed with `delete_nodes=true`.
+
   - name: assign_nodes_to_layer
     description: Assign explicit target nodes to a display layer.
     source_file: action_assign_nodes_to_layer.py
@@ -362,3 +368,8 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per node in the response; pass `changed_property_count` to `undo_last`.

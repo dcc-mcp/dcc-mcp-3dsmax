@@ -266,6 +266,12 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per node in the response.
+
   - name: set_constraint_target
     description: Create or update a basic transform constraint target with explicit node validation.
     source_file: action_set_constraint_target.py

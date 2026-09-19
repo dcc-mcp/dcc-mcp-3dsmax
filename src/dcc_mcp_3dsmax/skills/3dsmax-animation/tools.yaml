@@ -361,6 +361,12 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per node listed in `changes`; pass that count to `undo_last`.
+
   - name: set_key_interpolation
     description: Set interpolation metadata on matching keys.
     source_file: action_set_key_interpolation.py

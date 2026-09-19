@@ -132,6 +132,12 @@ tools:
       render: false
       targets: ["scene"]
     produces: ["scene_status"]
+    undo:
+      supported: false
+      granularity: none
+      notes: >-
+        File > New resets the scene and clears the 3ds Max history stack; save the scene before calling it.
+
   - name: open_scene
     description: >-
       Open an existing absolute .max file without dialogs. A dirty scene is
@@ -186,6 +192,12 @@ tools:
       render: false
       targets: ["scene"]
     produces: ["scene_status"]
+    undo:
+      supported: false
+      granularity: none
+      notes: >-
+        File > Open replaces the scene and clears the history stack; save the scene before calling it.
+
   - name: save_scene
     description: >-
       Save the current scene to its existing path. The legacy explicit
@@ -239,6 +251,12 @@ tools:
       render: false
       targets: ["scene_file"]
     produces: ["scene_file", "scene_status"]
+    undo:
+      supported: false
+      granularity: none
+      notes: >-
+        Writing a file is outside the host undo stack; keep a backup copy before overwriting.
+
   - name: save_scene_as
     description: >-
       Save the current scene to an explicit absolute .max path and make it the
@@ -293,6 +311,12 @@ tools:
       render: false
       targets: ["scene_file"]
     produces: ["scene_file", "scene_status"]
+    undo:
+      supported: false
+      granularity: none
+      notes: >-
+        Writing a file is outside the host undo stack; the previous file on disk is the only fallback.
+
   - name: merge_file
     description: >-
       Merge all or selected nodes from an absolute .max file using fixed,
@@ -814,6 +838,13 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        Deleted in one host call, so one undo entry; the per-node fallback used when the batch delete is rejected
+        leaves one entry per node.
+
   - name: group_nodes
     description: >-
       Group nodes under a new group node.

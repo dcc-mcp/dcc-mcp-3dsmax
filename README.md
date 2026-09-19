@@ -44,6 +44,7 @@ dcc-mcp-cli update apply
 
 - **Sidecar MCP Server**: Starts `dcc-mcp-server.exe sidecar` and keeps 3ds Max scene edits on the main thread
 - **Progressive Skill Loading**: Discover skills without loading them immediately
+- **Verified Undo/Redo**: `3dsmax-undo` reverses host operations and confirms each step, and every destructive tool declares whether it is undoable — see `docs/UNDO.md`
 - **Shared Gateway**: Registers with the stable gateway at `http://127.0.0.1:9765/mcp`
 - **Job Persistence**: SQLite-based job storage for long-running operations
 - **Prometheus Metrics**: Optional `/metrics` endpoint for monitoring

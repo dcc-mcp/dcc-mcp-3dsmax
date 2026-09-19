@@ -280,6 +280,12 @@ tools:
       render: false
       targets: ['scene_nodes', 'modifier']
     produces: ['modifier_stack']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per node in the response; pass that count to `undo_last`.
+
   - name: set_modifier_state
     description: >-
       Enable or disable a modifier with separate viewport and render granularity.
@@ -430,6 +436,12 @@ tools:
       render: false
       targets: ['scene_nodes', 'modifier']
     produces: ['scene_nodes']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        Reversible only through the host stack: one entry per node, and the history is lost when the session ends.
+
   - name: make_modifier_unique
     description: >-
       Break modifier instancing so one node's modifier can be edited independently.

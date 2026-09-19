@@ -266,6 +266,11 @@ See `src/dcc_mcp_3dsmax/skills/3dsmax-materials/` for a complete example.
 4. **Handle errors gracefully** and return `success=False`
 5. **Use type hints** for better code clarity
 6. **Write tests** for your actions
+7. **Declare undo semantics** on every tool that is declared
+   `destructive: true` in `tools.yaml`: an `undo` block with `supported`,
+   `granularity`, and `notes`. The vocabulary and the contract are in
+   [UNDO.md](UNDO.md); `tests/test_undo_skill.py` rejects a declaration that
+   omits it.
 
 ## Advanced Topics
 
