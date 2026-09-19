@@ -58,7 +58,8 @@ def main(
             enabled_in_render=enabled_in_render,
         )
         if error:
-            return mesh_error(error, node=node_identity(node), updated=rows)
+            # Surface the flags that did land before the failure.
+            return mesh_error(error, node=node_identity(node), updated=rows, partially_applied=applied)
         rows.append(
             {
                 "node": node_identity(node),

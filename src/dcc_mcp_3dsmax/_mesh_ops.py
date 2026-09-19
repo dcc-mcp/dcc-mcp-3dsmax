@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._scene_utils import json_safe, node_identity, resolve_node_object, resolve_node_objects
@@ -92,7 +93,8 @@ def modifier_stack_summary(
     When a runtime is supplied and ``include_parameters`` is true, every stack
     entry also carries a ``parameters`` mapping. Properties that cannot be read
     are reported in ``unreadable`` so callers never mistake a partial read for
-    a complete one.
+    a complete one. When a modifier exposes more properties than
+    :data:`MODIFIER_PROPERTY_LIMIT`, the entry sets ``parameters_truncated``.
     """
     raw_modifiers, error = modifier_stack_entries(node)
     if error:
@@ -110,12 +112,14 @@ def modifier_stack_summary(
             if value is not None:
                 entry[key] = bool(value)
         if include_parameters and runtime is not None:
-            parameters, unreadable, parameter_error = modifier_parameters(runtime, modifier, property_names)
+            parameters, unreadable, parameter_error, truncated = modifier_parameters(runtime, modifier, property_names)
             entry["parameters"] = parameters
             if unreadable:
                 entry["unreadable"] = unreadable
             if parameter_error:
                 entry["parameter_error"] = parameter_error
+            if truncated:
+                entry["parameters_truncated"] = True
         modifiers.append(entry)
     return {"node": node_identity(node), "modifiers": modifiers, "count": len(modifiers)}
 
@@ -336,6 +340,13 @@ def assign_smoothing_group(
 # accept is reported as an error, never as a success. Writes are verified by
 # reading the value back before the tool reports success.
 
+# 3ds Max stores parameters as 32-bit floats. ``sys.float_info``-style epsilon
+# for binary32 is 2**-23; comparisons use that as the relative bound so a
+# round-trip rounding difference is accepted while a genuinely rejected or
+# coerced value (which differs by far more) still fails.
+_FLOAT32_REL_TOL = 2.0**-23
+_FLOAT32_ABS_TOL = 2.0**-23
+
 # Upper bound on how many modifier parameters a single read will serialize.
 MODIFIER_PROPERTY_LIMIT = 64
 
@@ -404,6 +415,21 @@ def _coerce_property_name(value: Any) -> Optional[str]:
     return text if _is_valid_property_name(text) else None
 
 
+def _numbers_equal(requested: float, actual: float) -> bool:
+    """Compare two numbers, tolerating 3ds Max's 32-bit float round-trip.
+
+    3ds Max stores parameters as 32-bit floats, so a read-back can differ in
+    the low bits (``123456.789`` comes back as ``123456.7890625``). Integers
+    round-trip exactly, so they are compared exactly: a relative tolerance on
+    a large integer would silently swallow a one-unit difference.
+    """
+    if requested == actual:
+        return True
+    if requested.is_integer() and actual.is_integer():
+        return False
+    return math.isclose(requested, actual, rel_tol=_FLOAT32_REL_TOL, abs_tol=_FLOAT32_ABS_TOL)
+
+
 def _values_equal(requested: Any, actual: Any) -> bool:
     """Compare a requested value against a read-back value, tolerating coercion."""
     if requested is None or actual is None:
@@ -412,8 +438,8 @@ def _values_equal(requested: Any, actual: Any) -> bool:
         return bool(requested) == bool(actual)
     if isinstance(requested, (int, float)) and isinstance(actual, (int, float)):
         try:
-            return abs(float(requested) - float(actual)) <= 1e-6
-        except (TypeError, ValueError):
+            return _numbers_equal(float(requested), float(actual))
+        except (TypeError, ValueError, OverflowError):
             return False
     if isinstance(requested, str) and not isinstance(actual, str):
         try:
@@ -512,8 +538,12 @@ def _read_one_property(runtime: Any, modifier: Any, name: str) -> Tuple[bool, An
         return False, None
 
 
-def modifier_property_names(runtime: Any, modifier: Any) -> List[str]:
-    """Discover the readable property names exposed by one modifier."""
+def modifier_property_names(runtime: Any, modifier: Any) -> Tuple[List[str], bool]:
+    """Discover the readable property names exposed by one modifier.
+
+    Returns ``(names, truncated)``; ``truncated`` reports whether the result was
+    cut at :data:`MODIFIER_PROPERTY_LIMIT`.
+    """
     names: List[str] = []
     prop_names = getattr(runtime, "getPropNames", None)
     if callable(prop_names):
@@ -538,23 +568,24 @@ def modifier_property_names(runtime: Any, modifier: Any) -> List[str]:
                 continue
             if not callable(value):
                 names.append(candidate)
-    return names[:MODIFIER_PROPERTY_LIMIT]
+    return names[:MODIFIER_PROPERTY_LIMIT], len(names) > MODIFIER_PROPERTY_LIMIT
 
 
 def modifier_parameters(
     runtime: Any, modifier: Any, property_names: Optional[Sequence[str]] = None
-) -> Tuple[Dict[str, Any], List[str], Optional[str]]:
-    """Return ``(parameters, unreadable, error)`` for one modifier."""
+) -> Tuple[Dict[str, Any], List[str], Optional[str], bool]:
+    """Return ``(parameters, unreadable, error, truncated)`` for one modifier."""
     if property_names:
         names: List[str] = []
         for item in property_names:
             candidate = _coerce_property_name(item)
             if candidate is None:
-                return {}, [], "'{}' is not a valid modifier property name".format(item)
+                return {}, [], "'{}' is not a valid modifier property name".format(item), False
             if candidate not in names:
                 names.append(candidate)
+        names, truncated = names[:MODIFIER_PROPERTY_LIMIT], len(names) > MODIFIER_PROPERTY_LIMIT
     else:
-        names = modifier_property_names(runtime, modifier)
+        names, truncated = modifier_property_names(runtime, modifier)
 
     parameters: Dict[str, Any] = {}
     unreadable: List[str] = []
@@ -564,7 +595,7 @@ def modifier_parameters(
             parameters[name] = json_safe(value)
         else:
             unreadable.append(name)
-    return parameters, unreadable, None
+    return parameters, unreadable, None, truncated
 
 
 def set_modifier_property(runtime: Any, modifier: Any, name: Any, value: Any) -> Tuple[Any, Optional[str]]:
@@ -637,6 +668,10 @@ def attach_modifier(runtime: Any, node: Any, modifier: Any) -> Tuple[Optional[in
     """Attach an instantiated modifier to a node and verify the stack grew.
 
     Returns ``(index, error)`` where ``index`` is the 1-based stack position.
+
+    3ds Max numbers the modifier stack from the top, and ``addModifier`` without
+    ``before:`` inserts at the top - so the new modifier lands at index 1, not
+    at the bottom of the stack.
     """
     before, error = modifier_stack_entries(node)
     if error:
@@ -647,26 +682,33 @@ def attach_modifier(runtime: Any, node: Any, modifier: Any) -> Tuple[Optional[in
             add(node, modifier)
         except Exception as exc:  # noqa: BLE001
             return None, "Could not attach modifier to {}: {}".format(_node_label(node), exc)
+        inserted_at_top = True
     else:
         try:
             node.modifiers.append(modifier)
         except Exception as exc:  # noqa: BLE001
             return None, "Could not attach modifier to {}: {}".format(_node_label(node), exc)
+        inserted_at_top = False
 
     after, error = modifier_stack_entries(node)
     if error:
         return None, error
-    if len(after) == len(before) + 1:
-        return len(after), None
+
+    # Identity first: it is the only check that is correct regardless of where
+    # the host inserted the modifier. pymxs hands back a fresh wrapper per
+    # access, so fall through to positional reasoning when it does not match.
     for index, existing in enumerate(after, start=1):
         if existing is modifier:
             return index, None
-    return (
-        None,
-        "Modifier was not attached to {}: the stack still has {} entr(ies), expected {}".format(
-            _node_label(node), len(after), len(before) + 1
-        ),
-    )
+
+    if len(after) != len(before) + 1:
+        return (
+            None,
+            "Modifier was not attached to {}: the stack still has {} entr(ies), expected {}".format(
+                _node_label(node), len(after), len(before) + 1
+            ),
+        )
+    return 1 if inserted_at_top else len(after), None
 
 
 def remove_modifier(runtime: Any, node: Any, index: int) -> Optional[str]:

@@ -46,7 +46,9 @@ def main(
 
         applied, error = apply_modifier_properties(rt, modifier, properties)
         if error:
-            return mesh_error(error, modifier_class=wanted_class, applied_to=rows)
+            # The modifier is not attached yet, so the partial writes are
+            # discarded with it - but report them rather than hiding them.
+            return mesh_error(error, modifier_class=wanted_class, applied_to=rows, partially_applied=applied)
 
         index, error = attach_modifier(rt, node, modifier)
         if error:

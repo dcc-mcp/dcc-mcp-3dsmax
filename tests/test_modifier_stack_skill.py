@@ -95,6 +95,87 @@ class _FakeNode:
         self.modifiers = list(modifiers or [])
 
 
+class _VolatileModifierProxy:
+    """Stands in for a pymxs modifier wrapper.
+
+    Real pymxs hands back a fresh wrapper object on every attribute access, so
+    ``existing is modifier`` never matches across two reads of the stack. This
+    proxy reproduces that so the positional fallback in ``attach_modifier`` is
+    exercised.
+    """
+
+    def __init__(self, inner):
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, "_inner"), name, value)
+
+
+class _TopInsertNode:
+    """Node whose stack is pre-populated and returns fresh proxies per read.
+
+    ``addModifier`` without ``before:`` inserts at the TOP of the stack in
+    3ds Max, and stack indices count from the top - so a newly added modifier
+    must report index 1, not the bottom-of-stack index.
+    """
+
+    def __init__(self, name, handle, modifiers=None):
+        self.name = name
+        self.handle = handle
+        self.parent = None
+        self.isHidden = False
+        self._modifiers = list(modifiers or [])
+
+    @property
+    def modifiers(self):
+        return [_VolatileModifierProxy(item) for item in self._modifiers]
+
+    @modifiers.setter
+    def modifiers(self, value):
+        self._modifiers = list(value)
+
+
+class _TopInsertRuntime:
+    """Runtime that inserts added modifiers at the top of a pre-populated stack."""
+
+    def __init__(self):
+        self.hero = _TopInsertNode("hero_mesh", 42, [_Modifier("Skin"), _Modifier("TurboSmooth", iterations=2)])
+        self.objects = [self.hero]
+        self.selection = [self.hero]
+
+    def getNodeByName(self, name):
+        for node in self.objects:
+            if node.name == name:
+                return node
+        return None
+
+    def addModifier(self, node, modifier):
+        # 3ds Max inserts at the top of the stack when `before:` is omitted.
+        node._modifiers.insert(0, modifier)
+
+    def deleteModifier(self, node, target):
+        if isinstance(target, int):
+            del node._modifiers[target - 1]
+            return True
+        node._modifiers = [item for item in node._modifiers if item is not target]
+        return True
+
+    def getPropNames(self, modifier):
+        return ["#enabled", "#enabledInViews", "#enabledInRender"]
+
+    def getProperty(self, modifier, name):
+        return getattr(modifier, name)
+
+    def Bend(self):
+        return _Modifier("Bend", angle=0.0)
+
+    def Edit_Poly(self):
+        return _Modifier("Edit_Poly")
+
+
 class _FakeMaxOps:
     """Stands in for ``rt.maxOps``."""
 
@@ -705,6 +786,262 @@ def test_make_modifier_unique_is_two_phase(monkeypatch):
 
     assert result["success"] is False
     assert runtime.unique_calls == []
+
+
+# ── regression: reported findings ───────────────────────────────────────
+
+
+def test_add_modifier_reports_top_of_stack_index_on_prepopulated_stack(monkeypatch):
+    """Regression: addModifier without `before:` inserts at the TOP of the stack.
+
+    3ds Max numbers the stack from the top, so a freshly added modifier is
+    index 1. Returning the bottom index would make any later by-index remove or
+    edit hit the wrong modifier.
+    """
+    runtime = _TopInsertRuntime()
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    result = _load_action("action_add_modifier.py").main(modifier_class="Bend", node_names=["hero_mesh"])
+
+    assert result["success"] is True
+    assert result["data"]["nodes"][0]["modifier"]["index"] == 1
+    # The new modifier really is at the top, above the pre-existing Skin.
+    assert [mod.name for mod in runtime.hero._modifiers] == ["Bend", "Skin", "TurboSmooth"]
+
+
+def test_add_modifier_index_targets_the_added_modifier(monkeypatch):
+    """The reported index must resolve back to the modifier just added."""
+    runtime = _TopInsertRuntime()
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+
+    added = _load_action("action_add_modifier.py").main(
+        modifier_class="Bend", node_names=["hero_mesh"], properties={"angle": 45.0}
+    )
+    index = added["data"]["nodes"][0]["modifier"]["index"]
+
+    stack = _load_action("action_get_modifier_stack.py").main(node_names=["hero_mesh"], include_parameters=False)[
+        "data"
+    ]["nodes"][0]
+
+    assert stack["modifiers"][index - 1]["name"] == "Bend"
+
+
+def test_identity_still_wins_when_host_returns_same_object(monkeypatch):
+    """When the host hands back the same object, identity is authoritative."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    result = _load_action("action_add_modifier.py").main(modifier_class="Edit_Poly", node_names=["hero_mesh"])
+
+    assert result["success"] is True
+    index = result["data"]["nodes"][0]["modifier"]["index"]
+    assert runtime.hero.modifiers[index - 1] is runtime.hero.modifiers[-1]
+
+
+def test_large_float_readback_within_float32_rounding_is_accepted(monkeypatch):
+    """Regression: 3ds Max stores floats as 32-bit; 123456.789 -> 123456.7890625.
+
+    An absolute tolerance of 1e-6 rejected a write that had actually succeeded.
+    """
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _Float32Modifier(_Modifier):
+        def __init__(self):
+            super().__init__("Bend")
+            self._width = 0.0
+
+        @property
+        def width(self):
+            return self._width
+
+        @width.setter
+        def width(self, value):
+            # Emulate a binary32 round-trip of the stored value.
+            import struct
+
+            self._width = struct.unpack("f", struct.pack("f", float(value)))[0]
+
+    runtime.hero.modifiers = [_Float32Modifier()]
+
+    result = _load_action("action_set_modifier_property.py").main(
+        node_names=["hero_mesh"], modifier_index=1, properties={"width": 123456.789}
+    )
+
+    assert result["success"] is True, result["message"]
+    assert abs(result["data"]["nodes"][0]["modifier"]["applied_properties"]["width"] - 123456.789) < 0.001
+
+
+def test_integer_readback_stays_exact(monkeypatch):
+    """Integers round-trip exactly, so a one-unit drift must still fail."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _DriftingModifier(_Modifier):
+        def __init__(self):
+            super().__init__("TurboSmooth")
+            self._iterations = 1
+
+        @property
+        def iterations(self):
+            return self._iterations
+
+        @iterations.setter
+        def iterations(self, value):
+            # Off by one: a relative tolerance on large integers would hide this.
+            self._iterations = int(value) + 1
+
+    runtime.hero.modifiers = [_DriftingModifier()]
+
+    result = _load_action("action_set_modifier_property.py").main(
+        node_names=["hero_mesh"], modifier_index=1, properties={"iterations": 4}
+    )
+
+    assert result["success"] is False
+    assert "rejected property 'iterations'" in result["message"]
+
+
+def test_large_integer_off_by_one_is_caught(monkeypatch):
+    """A 1-unit difference at large magnitude must not be masked by rel_tol."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _BigIntModifier(_Modifier):
+        def __init__(self):
+            super().__init__("Bend")
+            self._seed = 0
+
+        @property
+        def seed(self):
+            return self._seed
+
+        @seed.setter
+        def seed(self, value):
+            self._seed = int(value) + 1
+
+    runtime.hero.modifiers = [_BigIntModifier()]
+
+    result = _load_action("action_set_modifier_property.py").main(
+        node_names=["hero_mesh"], modifier_index=1, properties={"seed": 123456789}
+    )
+
+    assert result["success"] is False
+
+
+def test_materially_different_float_still_fails(monkeypatch):
+    """A genuinely rejected float (not just rounding) must still fail."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _ClampingModifier(_Modifier):
+        def __init__(self):
+            super().__init__("Bend")
+            self._angle = 0.0
+
+        @property
+        def angle(self):
+            return self._angle
+
+        @angle.setter
+        def angle(self, value):
+            self._angle = min(float(value), 10.0)  # clamps hard
+
+    runtime.hero.modifiers = [_ClampingModifier()]
+
+    result = _load_action("action_set_modifier_property.py").main(
+        node_names=["hero_mesh"], modifier_index=1, properties={"angle": 90.0}
+    )
+
+    assert result["success"] is False
+    assert "rejected property 'angle'" in result["message"]
+
+
+def test_truncated_parameter_read_is_reported(monkeypatch):
+    """Regression: a truncated parameter read must say so, not look complete."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _WideModifier(_Modifier):
+        def __init__(self):
+            super().__init__("Wide")
+            for i in range(70):
+                setattr(self, "prop_{:03d}".format(i), i)
+
+    runtime.hero.modifiers = [_WideModifier()]
+
+    result = _load_action("action_get_modifier_stack.py").main(node_names=["hero_mesh"])
+    entry = result["data"]["nodes"][0]["modifiers"][0]
+
+    from dcc_mcp_3dsmax._mesh_ops import MODIFIER_PROPERTY_LIMIT
+
+    assert len(entry["parameters"]) == MODIFIER_PROPERTY_LIMIT
+    assert entry["parameters_truncated"] is True
+
+
+def test_untruncated_parameter_read_omits_the_flag(monkeypatch):
+    """No truncation means no flag - the flag must not be emitted unconditionally."""
+    _install_fake_pymxs(monkeypatch)
+
+    result = _load_action("action_get_modifier_stack.py").main(node_names=["hero_mesh"])
+
+    for entry in result["data"]["nodes"][0]["modifiers"]:
+        assert "parameters_truncated" not in entry
+
+
+def test_partial_property_writes_are_reported(monkeypatch):
+    """Regression: values written before a failure must not be discarded silently."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _HalfAcceptingModifier(_Modifier):
+        ACCEPTED = ("iterations",)
+
+        def __init__(self, name):
+            object.__setattr__(self, "name", name)
+            object.__setattr__(self, "enabled", True)
+            object.__setattr__(self, "iterations", 1)
+
+        def __setattr__(self, key, value):
+            if key not in self.ACCEPTED:
+                raise AttributeError("no writable property '{}'".format(key))
+            object.__setattr__(self, key, value)
+
+    runtime.hero.modifiers = [_HalfAcceptingModifier("TurboSmooth")]
+
+    result = _load_action("action_set_modifier_property.py").main(
+        node_names=["hero_mesh"],
+        modifier_index=1,
+        properties={"iterations": 3, "bogus": 1},
+    )
+
+    assert result["success"] is False
+    assert result["data"]["partially_applied"] == {"iterations": 3}
+
+
+def test_partial_state_writes_are_reported(monkeypatch):
+    """Regression: set_modifier_state must surface flags applied before a failure."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _RenderOnlyModifier(_Modifier):
+        def __init__(self):
+            object.__setattr__(self, "name", "Bend")
+            object.__setattr__(self, "enabled", True)
+            object.__setattr__(self, "enabledInViews", True)
+            object.__setattr__(self, "_render", True)
+
+        @property
+        def enabledInRender(self):
+            return object.__getattribute__(self, "_render")
+
+        @enabledInRender.setter
+        def enabledInRender(self, value):
+            raise RuntimeError("enabledInRender is locked")
+
+    runtime.hero.modifiers = [_RenderOnlyModifier()]
+
+    result = _load_action("action_set_modifier_state.py").main(
+        node_names=["hero_mesh"],
+        modifier_index=1,
+        enabled_in_views=False,
+        enabled_in_render=False,
+    )
+
+    assert result["success"] is False
+    # enabledInViews landed before enabledInRender failed.
+    assert result["data"]["partially_applied"] == {"enabledInViews": False}
 
 
 # ── tools.yaml contract ─────────────────────────────────────────────────

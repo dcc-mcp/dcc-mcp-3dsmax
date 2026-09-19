@@ -50,7 +50,9 @@ def main(
     for node, index, modifier in pending:
         applied, error = apply_modifier_properties(rt, modifier, properties)
         if error:
-            return mesh_error(error, node=node_identity(node), updated=rows)
+            # Surface the values that did land before the failure, so the caller
+            # knows the modifier is now partially modified.
+            return mesh_error(error, node=node_identity(node), updated=rows, partially_applied=applied)
         rows.append(
             {
                 "node": node_identity(node),

@@ -29,7 +29,7 @@ metadata:
     side_effects:
       creates: true
       modifies: true
-      deletes: false
+      deletes: true
       exports: false
       imports: false
       file_output: false
