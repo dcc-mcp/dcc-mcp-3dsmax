@@ -266,15 +266,21 @@ See `src/dcc_mcp_3dsmax/skills/3dsmax-materials/` for a complete example.
 4. **Handle errors gracefully** and return `success=False`
 5. **Use type hints** for better code clarity
 6. **Write tests** for your actions
-7. **Declare undo semantics** on every tool that is declared
-   `destructive: true` in `tools.yaml`: an `undo` block with `supported`,
-   `granularity`, and `notes`. The vocabulary and the contract are in
-   [UNDO.md](UNDO.md); `tests/test_undo_skill.py` rejects a declaration that
-   omits it. A write path that is **not** destructive may declare the same
-   block - and should, when one call touches several nodes - so agents know how
-   many `undo_last` steps reverse it. Use `granularity: batch_call` for a batch
-   write whose grouping the adapter cannot query. Any `undo` block you add must
-   also appear in the tables in [UNDO.md](UNDO.md).
+7. **Declare undo semantics** with an `undo` block (`supported`,
+   `granularity`, `notes`) wherever [UNDO.md](UNDO.md) requires one:
+
+   - **Required** on every tool declared `destructive: true`.
+   - **Required** on every multi-node write path: a tool that writes
+     `scene_nodes` and takes a plural node selection (an array `node_names` /
+     `handles` property), so one call can change N nodes. Use
+     `granularity: batch_call` there, because the host may or may not group the
+     batch and the adapter cannot query the grouping.
+   - **Optional** on single-node and settings-level writes, but a declared
+     block must use the vocabulary either way.
+
+   The vocabulary and the contract are in [UNDO.md](UNDO.md);
+   `tests/test_undo_skill.py` rejects a missing or invalid block, and requires
+   every tool that declares one to appear in that file's tables.
 
 ## Advanced Topics
 

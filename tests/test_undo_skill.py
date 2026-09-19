@@ -332,6 +332,32 @@ def test_undo_last_reports_truncation_on_a_successful_step(monkeypatch):
     assert any("best-effort" in item for item in result["data"]["warnings"])
 
 
+def test_undo_last_reports_truncation_when_only_the_before_capture_was_truncated(monkeypatch):
+    """A step that crosses the sample limit must still be flagged.
+
+    The before-capture holds 4001 nodes (truncated) and the after-capture holds
+    4000 (complete), so the *final* fingerprint reports truncated = false. Only
+    tracking truncation per capture catches that the step was partly unverified.
+    """
+    runtime = _install_fake_pymxs(monkeypatch)
+    limit = _undo_utils.MAX_FINGERPRINT_NODES
+    # 4000 nodes in total before the recorded operation, 4001 after it.
+    runtime.objects.extend(_Node("filler_{}".format(index), 1000 + index) for index in range(limit - 2))
+    extra = _Node("extra_mesh", 99)
+    runtime.add_node(extra)
+    assert len(runtime.objects) == limit + 1
+
+    result = _load_action("action_undo_last.py").main()
+
+    assert result["success"] is True
+    assert result["data"]["applied"] == 1
+    assert len(runtime.objects) == limit
+    # The final fingerprint is complete, so a final-only check would miss this.
+    assert result["data"]["fingerprint"]["truncated"] is False
+    assert any("best-effort" in item for item in result["data"]["warnings"])
+    assert any("first {} nodes".format(limit) in item for item in result["data"]["warnings"])
+
+
 def test_undo_last_warns_on_a_partial_batch(monkeypatch):
     """Asking for three steps with two available must be explicit, not silent."""
     runtime = _install_fake_pymxs(monkeypatch)
@@ -646,7 +672,7 @@ def test_undo_metadata_matches_known_granularities():
             checked += 1
             exported = "{}__{}".format(skill_dir.name, tool["name"])
             assert exported in doc, exported
-    assert checked >= 19, checked
+    assert checked >= 29, checked
 
 
 def _declared_undo_blocks():
@@ -673,33 +699,92 @@ def test_every_declared_undo_block_uses_the_vocabulary():
         else:
             assert undo["supported"] is True, label
 
-    assert checked >= 19, checked
+    assert checked >= 29, checked
 
 
-# Reversing a batch write is the case an agent cannot answer from the tool list
-# alone: one call touches N nodes, and the host may or may not group them.
-BATCH_WRITE_TOOLS = {
+# The undo contract (docs/UNDO.md) requires an `undo` block for every destructive
+# tool and for every multi-node write path. A multi-node write path is a tool
+# that writes scene nodes and takes a plural node selection, i.e. an array-valued
+# `node_names` / `handles` property - one call can change N nodes, so the agent
+# cannot infer the undo count from the tool list. Single-node and settings-level
+# writes may declare one, but are not required to.
+UNDO_SCOPE_SKILLS = ("3dsmax-scene",)
+
+PLURAL_NODE_PROPERTIES = ("node_names", "handles", "nodes")
+
+
+def _is_multi_node_write_path(tool):
+    """True when one call can write more than one scene node."""
+    if tool.get("read_only") is True:
+        return False
+    side_effects = tool.get("side_effects") or {}
+    if not any(bool(side_effects.get(key)) for key in ("creates", "modifies", "deletes")):
+        return False
+    if "scene_nodes" not in (side_effects.get("targets") or []):
+        return False
+    properties = (tool.get("input_schema") or {}).get("properties") or {}
+    return any(
+        isinstance(properties.get(key), dict) and properties.get(key).get("type") == "array"
+        for key in PLURAL_NODE_PROPERTIES
+    )
+
+
+# Pinned so a granularity cannot change silently; the rule in
+# test_multi_node_write_paths_declare_undo_semantics decides which tools are in
+# scope, this map only fixes what each one declares.
+EXPECTED_WRITE_GRANULARITY = {
     "set_object_property": _undo_utils.GRANULARITY_SINGLE_CALL,
-    "batch_rename_objects": _undo_utils.GRANULARITY_BATCH_CALL,
     "create_object": _undo_utils.GRANULARITY_SINGLE_CALL,
+    "set_selection": _undo_utils.GRANULARITY_NONE,
+    "batch_rename_objects": _undo_utils.GRANULARITY_BATCH_CALL,
     "transform_object": _undo_utils.GRANULARITY_BATCH_CALL,
     "clone_objects": _undo_utils.GRANULARITY_BATCH_CALL,
+    "merge_file": _undo_utils.GRANULARITY_BATCH_CALL,
+    "duplicate_nodes": _undo_utils.GRANULARITY_BATCH_CALL,
+    "group_nodes": _undo_utils.GRANULARITY_BATCH_CALL,
+    "set_visibility": _undo_utils.GRANULARITY_BATCH_CALL,
+    "center_pivots": _undo_utils.GRANULARITY_BATCH_CALL,
+    "freeze_transforms": _undo_utils.GRANULARITY_BATCH_CALL,
 }
 
 
-def test_batch_write_tools_declare_their_undo_granularity():
-    """Non-destructive batch writes state how many undo entries one call leaves."""
+def test_multi_node_write_paths_declare_undo_semantics():
+    """Every multi-node write path in scope declares undo metadata.
+
+    This is the rule the undo doc states, derived from the declarations rather
+    than from a hand-maintained list, so a new multi-node writer cannot slip
+    through unannotated.
+    """
+    checked = 0
+    for skill_name in UNDO_SCOPE_SKILLS:
+        tools = yaml.safe_load((SKILLS_DIR / skill_name / "tools.yaml").read_text(encoding="utf-8"))["tools"]
+        for tool in tools:
+            if not _is_multi_node_write_path(tool):
+                continue
+            checked += 1
+            label = "{}__{}".format(skill_name, tool["name"])
+            undo = tool.get("undo")
+            assert isinstance(undo, dict), label
+            assert undo.get("granularity") in _undo_utils.VALID_GRANULARITIES, label
+            assert isinstance(undo.get("notes"), str) and undo["notes"].strip(), label
+
+    # Guards against the rule silently matching nothing.
+    assert checked >= 9, checked
+
+
+def test_write_tools_declare_their_expected_granularity():
+    """Non-destructive write paths state how many undo entries one call leaves."""
     tools = yaml.safe_load((SKILLS_DIR / "3dsmax-scene" / "tools.yaml").read_text(encoding="utf-8"))
     by_name = {tool["name"]: tool for tool in tools["tools"]}
 
-    for name, expected in BATCH_WRITE_TOOLS.items():
+    for name, expected in EXPECTED_WRITE_GRANULARITY.items():
         tool = by_name[name]
         # Declaring undo coverage does not reclassify the tool as destructive.
         assert tool["destructive"] is False, name
         undo = tool.get("undo")
         assert isinstance(undo, dict), name
-        assert undo["supported"] is True, name
         assert undo["granularity"] == expected, name
+        assert undo["supported"] is (expected != _undo_utils.GRANULARITY_NONE), name
         assert undo["notes"].strip(), name
 
 

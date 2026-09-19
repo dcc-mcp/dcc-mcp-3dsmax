@@ -263,10 +263,11 @@ def run_history_steps(
     stack rather than an undo that "worked" invisibly.
 
     On a scene larger than :data:`MAX_FINGERPRINT_NODES` the fingerprint only
-    samples part of the scene, so verification is best-effort. That caveat is
-    attached to *every* result - including the empty-stack failure and the
-    ``allow_no_op`` success - because it is exactly the case in which a real
-    undo can look like a no-op.
+    samples part of the scene, so verification is best-effort. The caveat fires
+    when *any* fingerprint taken during the request was truncated - a step whose
+    before-capture exceeded the limit still reports it, even when the step ended
+    below the limit - and it is attached to every result, including the
+    empty-stack failure and the ``allow_no_op`` success.
     """
     label = "undo" if direction == UNDO_DIRECTION else "redo"
     error = _validate_count(count)
@@ -291,15 +292,21 @@ def run_history_steps(
     warnings: List[str] = []
     applied = 0
     failure: Optional[str] = None
+    # Every fingerprint taken during this request, not just the last one. A step
+    # can start above the sample limit and end below it, in which case the final
+    # fingerprint looks complete even though part of the step went unobserved.
+    fingerprints: List[Dict[str, Any]] = []
 
     for index in range(count):
         before = scene_fingerprint(rt)
+        fingerprints.append(before)
         try:
             channel()
         except Exception as exc:  # noqa: BLE001 - a host rejection must become a result, not a traceback
             failure = "the host rejected {} step {}: {}".format(label, index + 1, exc)
             break
         after = scene_fingerprint(rt)
+        fingerprints.append(after)
         changed = before["digest"] != after["digest"]
         if changed:
             applied += 1
@@ -315,6 +322,9 @@ def run_history_steps(
         if not changed:
             break
 
+    final = scene_fingerprint(rt)
+    fingerprints.append(final)
+
     data: Dict[str, Any] = {
         "direction": direction,
         "requested": count,
@@ -322,15 +332,18 @@ def run_history_steps(
         "completed": applied == count,
         "channel": channel_name,
         "steps": steps,
-        "fingerprint": scene_fingerprint(rt),
+        "fingerprint": final,
     }
 
     # Attached before every exit below: a step that looks like a no-op may only
     # look that way because the fingerprint never sampled the nodes that moved.
-    if data["fingerprint"]["truncated"]:
+    # Any truncated fingerprint in the request counts, and the warning reports
+    # the smallest sample that was taken, since that is the weakest evidence.
+    truncated_samples = [int(entry["sampled_nodes"]) for entry in fingerprints if entry["truncated"]]
+    if truncated_samples:
         warnings.append(
             "the scene fingerprint sampled only the first {} nodes, so step verification is best-effort".format(
-                data["fingerprint"]["sampled_nodes"]
+                min(truncated_samples)
             )
         )
 
