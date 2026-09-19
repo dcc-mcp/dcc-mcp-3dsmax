@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from dcc_mcp_3dsmax._scene_utils import node_identity, resolve_node_object, resolve_node_objects
+from dcc_mcp_3dsmax._scene_utils import json_safe, node_identity, resolve_node_object, resolve_node_objects
 
 
 def mesh_success(message: str, **data: Any) -> Dict[str, Any]:
@@ -80,22 +80,43 @@ def smoothing_group_summary(runtime: Any, node: Any, face_indices: Optional[Sequ
     }
 
 
-def modifier_stack_summary(node: Any) -> Dict[str, Any]:
-    """Return modifier stack metadata for one node."""
+def modifier_stack_summary(
+    node: Any,
+    runtime: Any = None,
+    *,
+    property_names: Optional[Sequence[str]] = None,
+    include_parameters: bool = True,
+) -> Dict[str, Any]:
+    """Return modifier stack metadata for one node.
+
+    When a runtime is supplied and ``include_parameters`` is true, every stack
+    entry also carries a ``parameters`` mapping. Properties that cannot be read
+    are reported in ``unreadable`` so callers never mistake a partial read for
+    a complete one.
+    """
+    raw_modifiers, error = modifier_stack_entries(node)
+    if error:
+        return {"node": node_identity(node), "modifiers": [], "count": 0, "error": error}
     modifiers = []
-    try:
-        raw_modifiers = list(node.modifiers)
-    except Exception:  # noqa: BLE001
-        raw_modifiers = []
     for index, modifier in enumerate(raw_modifiers, start=1):
-        modifiers.append(
-            {
-                "index": index,
-                "name": str(getattr(modifier, "name", "") or type(modifier).__name__),
-                "type": type(modifier).__name__,
-                "enabled": bool(getattr(modifier, "enabled", True)),
-            }
-        )
+        entry = {
+            "index": index,
+            "name": str(getattr(modifier, "name", "") or type(modifier).__name__),
+            "type": type(modifier).__name__,
+            "enabled": bool(getattr(modifier, "enabled", True)),
+        }
+        for attribute, key in _MODIFIER_FLAG_KEYS:
+            value = getattr(modifier, attribute, None)
+            if value is not None:
+                entry[key] = bool(value)
+        if include_parameters and runtime is not None:
+            parameters, unreadable, parameter_error = modifier_parameters(runtime, modifier, property_names)
+            entry["parameters"] = parameters
+            if unreadable:
+                entry["unreadable"] = unreadable
+            if parameter_error:
+                entry["parameter_error"] = parameter_error
+        modifiers.append(entry)
     return {"node": node_identity(node), "modifiers": modifiers, "count": len(modifiers)}
 
 
@@ -307,6 +328,537 @@ def assign_smoothing_group(
     for face_index in faces:
         groups[int(face_index)] = int(smoothing_group)
     return warnings
+
+
+# ── Modifier stack CRUD ─────────────────────────────────────────────────
+#
+# Every write helper below is strict: a value that the target modifier does not
+# accept is reported as an error, never as a success. Writes are verified by
+# reading the value back before the tool reports success.
+
+# Upper bound on how many modifier parameters a single read will serialize.
+MODIFIER_PROPERTY_LIMIT = 64
+
+# Probed when the host cannot enumerate a modifier's own property names.
+_MODIFIER_DISCOVERY_PROPERTIES = (
+    "enabled",
+    "enabledInViews",
+    "enabledInRender",
+    "iterations",
+    "renderIterations",
+    "useRenderIterations",
+    "vertexPercent",
+    "VertexPercent",
+    "amount",
+    "angle",
+    "bendAngle",
+    "direction",
+    "axis",
+    "tension",
+    "segments",
+    "thickness",
+    "offset",
+    "height",
+    "width",
+    "length",
+    "radius",
+    "sides",
+    "smooth",
+    "strength",
+    "multiplier",
+    "decay",
+)
+
+_MODIFIER_FLAG_KEYS = (("enabledInViews", "enabled_in_views"), ("enabledInRender", "enabled_in_render"))
+
+
+def _node_label(node: Any) -> str:
+    """Return a human-readable label for one node."""
+    name = getattr(node, "name", None)
+    return str(name) if name else "<node>"
+
+
+def _modifier_label(modifier: Any, index: Any = None) -> str:
+    """Return a human-readable label for one modifier."""
+    name = getattr(modifier, "name", None)
+    if name:
+        return str(name)
+    label = type(modifier).__name__
+    return "{} #{}".format(label, index) if index is not None else label
+
+
+def _is_valid_property_name(name: Any) -> bool:
+    """Return True when ``name`` is a safe, public modifier property name."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name.startswith("_"):
+        return False
+    return name.isidentifier()
+
+
+def _coerce_property_name(value: Any) -> Optional[str]:
+    """Normalize a MAXScript ``Name`` or string into a property name."""
+    text = str(value).strip()
+    if text.startswith("#"):
+        text = text[1:].strip()
+    return text if _is_valid_property_name(text) else None
+
+
+def _values_equal(requested: Any, actual: Any) -> bool:
+    """Compare a requested value against a read-back value, tolerating coercion."""
+    if requested is None or actual is None:
+        return requested is None and actual is None
+    if isinstance(requested, bool) or isinstance(actual, bool):
+        return bool(requested) == bool(actual)
+    if isinstance(requested, (int, float)) and isinstance(actual, (int, float)):
+        try:
+            return abs(float(requested) - float(actual)) <= 1e-6
+        except (TypeError, ValueError):
+            return False
+    if isinstance(requested, str) and not isinstance(actual, str):
+        try:
+            return requested == str(actual)
+        except Exception:  # noqa: BLE001
+            return False
+    if isinstance(requested, Sequence) and not isinstance(requested, (str, bytes)):
+        if not isinstance(actual, Sequence) or isinstance(actual, (str, bytes)):
+            return False
+        if len(requested) != len(actual):
+            return False
+        return all(_values_equal(item, other) for item, other in zip(requested, actual))
+    try:
+        return bool(requested == actual)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def modifier_stack_entries(node: Any) -> Tuple[List[Any], Optional[str]]:
+    """Return ``(modifiers, error)`` for one node."""
+    try:
+        raw = getattr(node, "modifiers", None)
+        modifiers = [] if raw is None else list(raw)
+    except Exception as exc:  # noqa: BLE001
+        return [], "Could not read the modifier stack on {}: {}".format(_node_label(node), exc)
+    return modifiers, None
+
+
+def find_modifier(
+    node: Any, *, modifier_name: Optional[str] = None, modifier_index: Any = None
+) -> Tuple[Optional[int], Optional[Any], Optional[str]]:
+    """Return ``(index, modifier, error)`` for one stack entry.
+
+    ``index`` is 1-based, matching how agents read ``get_modifier_stack`` output.
+    """
+    if modifier_name is not None and modifier_index is not None:
+        return None, None, "Provide either modifier_name or modifier_index, not both"
+    if modifier_name is None and modifier_index is None:
+        return None, None, "modifier_name or modifier_index is required"
+
+    modifiers, error = modifier_stack_entries(node)
+    if error:
+        return None, None, error
+
+    if modifier_index is not None:
+        try:
+            wanted = int(modifier_index)
+        except (TypeError, ValueError):
+            return None, None, "modifier_index must be an integer, got {!r}".format(modifier_index)
+        if wanted < 1 or wanted > len(modifiers):
+            return (
+                None,
+                None,
+                "Modifier index {} is out of range: {} has {} modifier(s)".format(
+                    wanted, _node_label(node), len(modifiers)
+                ),
+            )
+        return wanted, modifiers[wanted - 1], None
+
+    wanted_name = str(modifier_name)
+    matches = [
+        (index, modifier)
+        for index, modifier in enumerate(modifiers, start=1)
+        if str(getattr(modifier, "name", "") or "").lower() == wanted_name.lower()
+    ]
+    if not matches:
+        available = ", ".join(str(getattr(modifier, "name", "") or type(modifier).__name__) for modifier in modifiers)
+        return (
+            None,
+            None,
+            "No modifier named '{}' on {} (available: {})".format(wanted_name, _node_label(node), available or "none"),
+        )
+    if len(matches) > 1:
+        return (
+            None,
+            None,
+            "Modifier name '{}' is ambiguous on {}: {} entries match, use modifier_index instead".format(
+                wanted_name, _node_label(node), len(matches)
+            ),
+        )
+    index, modifier = matches[0]
+    return index, modifier, None
+
+
+def _read_one_property(runtime: Any, modifier: Any, name: str) -> Tuple[bool, Any]:
+    """Return ``(ok, value)`` for one modifier property."""
+    getter = getattr(runtime, "getProperty", None)
+    if callable(getter):
+        try:
+            return True, getter(modifier, name)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return True, getattr(modifier, name)
+    except Exception:  # noqa: BLE001
+        return False, None
+
+
+def modifier_property_names(runtime: Any, modifier: Any) -> List[str]:
+    """Discover the readable property names exposed by one modifier."""
+    names: List[str] = []
+    prop_names = getattr(runtime, "getPropNames", None)
+    if callable(prop_names):
+        try:
+            for item in prop_names(modifier):
+                candidate = _coerce_property_name(item)
+                if candidate and candidate not in names:
+                    names.append(candidate)
+        except Exception:  # noqa: BLE001
+            names = []
+    if not names:
+        for candidate in _MODIFIER_DISCOVERY_PROPERTIES:
+            if candidate not in names and hasattr(modifier, candidate):
+                names.append(candidate)
+    if not names:
+        for candidate in dir(modifier):
+            if candidate in names or not _is_valid_property_name(candidate):
+                continue
+            try:
+                value = getattr(modifier, candidate)
+            except Exception:  # noqa: BLE001
+                continue
+            if not callable(value):
+                names.append(candidate)
+    return names[:MODIFIER_PROPERTY_LIMIT]
+
+
+def modifier_parameters(
+    runtime: Any, modifier: Any, property_names: Optional[Sequence[str]] = None
+) -> Tuple[Dict[str, Any], List[str], Optional[str]]:
+    """Return ``(parameters, unreadable, error)`` for one modifier."""
+    if property_names:
+        names: List[str] = []
+        for item in property_names:
+            candidate = _coerce_property_name(item)
+            if candidate is None:
+                return {}, [], "'{}' is not a valid modifier property name".format(item)
+            if candidate not in names:
+                names.append(candidate)
+    else:
+        names = modifier_property_names(runtime, modifier)
+
+    parameters: Dict[str, Any] = {}
+    unreadable: List[str] = []
+    for name in names:
+        ok, value = _read_one_property(runtime, modifier, name)
+        if ok:
+            parameters[name] = json_safe(value)
+        else:
+            unreadable.append(name)
+    return parameters, unreadable, None
+
+
+def set_modifier_property(runtime: Any, modifier: Any, name: Any, value: Any) -> Tuple[Any, Optional[str]]:
+    """Set one modifier property, verify it by read-back, and return ``(applied, error)``."""
+    candidate = _coerce_property_name(name)
+    if candidate is None:
+        return None, "'{}' is not a valid modifier property name".format(name)
+    try:
+        setattr(modifier, candidate, value)
+    except Exception as exc:  # noqa: BLE001
+        return None, "Modifier '{}' rejected property '{}': {}".format(_modifier_label(modifier), candidate, exc)
+    ok, actual = _read_one_property(runtime, modifier, candidate)
+    if not ok:
+        return (
+            None,
+            "Modifier '{}' accepted property '{}' but the value could not be read back".format(
+                _modifier_label(modifier), candidate
+            ),
+        )
+    if not _values_equal(value, actual):
+        return (
+            None,
+            "Modifier '{}' rejected property '{}': requested {!r} but it reports {!r}".format(
+                _modifier_label(modifier), candidate, value, actual
+            ),
+        )
+    return json_safe(actual), None
+
+
+def apply_modifier_properties(
+    runtime: Any, modifier: Any, properties: Optional[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Apply a mapping of modifier properties strictly. Return ``(applied, error)``."""
+    if not properties:
+        return {}, None
+    if not isinstance(properties, dict):
+        return {}, "properties must be an object mapping property names to values"
+    applied: Dict[str, Any] = {}
+    for key in properties:
+        candidate = _coerce_property_name(key)
+        if candidate is None:
+            return applied, "'{}' is not a valid modifier property name".format(key)
+        value, error = set_modifier_property(runtime, modifier, candidate, properties[key])
+        if error:
+            return applied, error
+        applied[candidate] = value
+    return applied, None
+
+
+def create_modifier(runtime: Any, modifier_class: Any) -> Tuple[Any, Optional[str]]:
+    """Instantiate a modifier class by name. Return ``(modifier, error)``."""
+    candidate = str(modifier_class or "").strip()
+    if not candidate:
+        return None, "modifier_class is required"
+    if not candidate.replace("_", "").isalnum():
+        return None, "'{}' is not a valid 3ds Max modifier class name".format(modifier_class)
+    factory = getattr(runtime, candidate, None)
+    if not callable(factory):
+        return None, "3ds Max does not expose a modifier class named '{}'".format(candidate)
+    try:
+        modifier = factory()
+    except Exception as exc:  # noqa: BLE001
+        return None, "Could not create modifier '{}': {}".format(candidate, exc)
+    if modifier is None:
+        return None, "Modifier constructor '{}' returned nothing".format(candidate)
+    return modifier, None
+
+
+def attach_modifier(runtime: Any, node: Any, modifier: Any) -> Tuple[Optional[int], Optional[str]]:
+    """Attach an instantiated modifier to a node and verify the stack grew.
+
+    Returns ``(index, error)`` where ``index`` is the 1-based stack position.
+    """
+    before, error = modifier_stack_entries(node)
+    if error:
+        return None, error
+    add = getattr(runtime, "addModifier", None)
+    if callable(add):
+        try:
+            add(node, modifier)
+        except Exception as exc:  # noqa: BLE001
+            return None, "Could not attach modifier to {}: {}".format(_node_label(node), exc)
+    else:
+        try:
+            node.modifiers.append(modifier)
+        except Exception as exc:  # noqa: BLE001
+            return None, "Could not attach modifier to {}: {}".format(_node_label(node), exc)
+
+    after, error = modifier_stack_entries(node)
+    if error:
+        return None, error
+    if len(after) == len(before) + 1:
+        return len(after), None
+    for index, existing in enumerate(after, start=1):
+        if existing is modifier:
+            return index, None
+    return (
+        None,
+        "Modifier was not attached to {}: the stack still has {} entr(ies), expected {}".format(
+            _node_label(node), len(after), len(before) + 1
+        ),
+    )
+
+
+def remove_modifier(runtime: Any, node: Any, index: int) -> Optional[str]:
+    """Remove one modifier by 1-based index and verify the stack shrank.
+
+    Returns an error message, or ``None`` on verified success.
+    """
+    before, error = modifier_stack_entries(node)
+    if error:
+        return error
+    if index < 1 or index > len(before):
+        return "Modifier index {} is out of range: {} has {} modifier(s)".format(index, _node_label(node), len(before))
+    target = before[index - 1]
+    label = _modifier_label(target, index)
+
+    deleter = getattr(runtime, "deleteModifier", None)
+    if callable(deleter):
+        for args in ((node, target), (node, index)):
+            try:
+                deleter(*args)
+            except Exception:  # noqa: BLE001
+                continue
+            after, read_error = modifier_stack_entries(node)
+            if read_error:
+                return read_error
+            if len(after) < len(before):
+                return None
+        return (
+            "Could not remove modifier '{}' from {}: the host reported no error "
+            "but the stack still has {} modifier(s)".format(label, _node_label(node), len(before))
+        )
+
+    try:
+        node.modifiers.remove(target)
+    except Exception as exc:  # noqa: BLE001
+        return "Could not remove modifier '{}' from {}: {}".format(label, _node_label(node), exc)
+    after, read_error = modifier_stack_entries(node)
+    if read_error:
+        return read_error
+    if len(after) >= len(before):
+        return "Could not remove modifier '{}' from {}: it is still on the stack".format(label, _node_label(node))
+    return None
+
+
+def set_modifier_state(
+    runtime: Any,
+    modifier: Any,
+    *,
+    enabled: Optional[bool] = None,
+    enabled_in_views: Optional[bool] = None,
+    enabled_in_render: Optional[bool] = None,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Toggle modifier enable state with separate viewport and render granularity."""
+    if enabled is None and enabled_in_views is None and enabled_in_render is None:
+        return {}, "At least one of enabled, enabled_in_views, or enabled_in_render is required"
+
+    applied: Dict[str, Any] = {}
+    if enabled is not None:
+        value, error = set_modifier_property(runtime, modifier, "enabled", bool(enabled))
+        if error:
+            return applied, error
+        applied["enabled"] = value
+
+    for attribute, requested in (("enabledInViews", enabled_in_views), ("enabledInRender", enabled_in_render)):
+        if requested is None:
+            continue
+        if not hasattr(modifier, attribute):
+            return (
+                applied,
+                "Modifier '{}' does not expose '{}', so viewport and render state cannot be "
+                "controlled separately; use the `enabled` argument instead".format(
+                    _modifier_label(modifier), attribute
+                ),
+            )
+        value, error = set_modifier_property(runtime, modifier, attribute, bool(requested))
+        if error:
+            return applied, error
+        applied[attribute] = value
+    return applied, None
+
+
+def collapse_modifier_stack(runtime: Any, node: Any) -> Dict[str, Any]:
+    """Collapse a node's whole modifier stack and verify it actually shrank."""
+    before, error = modifier_stack_entries(node)
+    if error:
+        return {"before": 0, "after": 0, "error": error, "warning": None}
+    if not before:
+        return {
+            "before": 0,
+            "after": 0,
+            "error": None,
+            "warning": "{} has no modifiers to collapse".format(_node_label(node)),
+        }
+
+    max_ops = getattr(runtime, "maxOps", None)
+    candidates = []
+    node_collapser = getattr(max_ops, "collapseNode", None) if max_ops is not None else None
+    if callable(node_collapser):
+        candidates.append(("maxOps.collapseNode", lambda: node_collapser(node, False)))
+        candidates.append(("maxOps.collapseNode", lambda: node_collapser(node)))
+    stack_collapser = getattr(runtime, "collapseStack", None)
+    if callable(stack_collapser):
+        candidates.append(("collapseStack", lambda: stack_collapser(node)))
+
+    if not candidates:
+        return {
+            "before": len(before),
+            "after": len(before),
+            "error": (
+                "Could not collapse the modifier stack of {}: this host exposes neither "
+                "maxOps.collapseNode nor collapseStack".format(_node_label(node))
+            ),
+            "warning": None,
+        }
+
+    attempts: List[str] = []
+    for name, call in candidates:
+        try:
+            call()
+        except Exception as exc:  # noqa: BLE001
+            attempts.append("{}: {}".format(name, exc))
+            continue
+        after, read_error = modifier_stack_entries(node)
+        if read_error:
+            return {"before": len(before), "after": len(before), "error": read_error, "warning": None}
+        if len(after) >= len(before):
+            return {
+                "before": len(before),
+                "after": len(after),
+                "error": (
+                    "Collapse ran on {} but the modifier stack still has {} entr(ies), was {}".format(
+                        _node_label(node), len(after), len(before)
+                    )
+                ),
+                "warning": None,
+            }
+        return {"before": len(before), "after": len(after), "error": None, "warning": None}
+
+    return {
+        "before": len(before),
+        "after": len(before),
+        "error": "Could not collapse the modifier stack of {} ({})".format(_node_label(node), "; ".join(attempts)),
+        "warning": None,
+    }
+
+
+def make_modifier_unique(runtime: Any, node: Any, modifier: Any) -> Dict[str, Any]:
+    """Break modifier instancing so one node's copy can be edited independently.
+
+    3ds Max exposes no return value that confirms a modifier became unique, so a
+    successful call is reported with an explicit ``warning`` instead of a bare
+    success. A host without any ``makeUnique`` entry point is reported as an error.
+    """
+    label = _modifier_label(modifier)
+    candidates: List[Tuple[str, Any]] = []
+    make_unique = getattr(runtime, "makeUnique", None)
+    if callable(make_unique):
+        candidates.append(("makeUnique(node, modifier)", lambda: make_unique(node, modifier)))
+        candidates.append(("makeUnique(modifier)", lambda: make_unique(modifier)))
+    max_ops = getattr(runtime, "maxOps", None)
+    ops_unique = getattr(max_ops, "makeUnique", None) if max_ops is not None else None
+    if callable(ops_unique):
+        candidates.append(("maxOps.makeUnique(node, modifier)", lambda: ops_unique(node, modifier)))
+        candidates.append(("maxOps.makeUnique(modifier)", lambda: ops_unique(modifier)))
+
+    if not candidates:
+        return {
+            "error": ("This host exposes no makeUnique entry point, so modifier '{}' was left instanced".format(label)),
+            "entry_point": None,
+            "warning": None,
+        }
+
+    failures: List[str] = []
+    for name, call in candidates:
+        try:
+            call()
+        except Exception as exc:  # noqa: BLE001
+            failures.append("{}: {}".format(name, exc))
+            continue
+        return {
+            "error": None,
+            "entry_point": name,
+            "warning": (
+                "Ran {} on modifier '{}'. 3ds Max returns no value here, so uniqueness cannot be "
+                "confirmed programmatically; re-read the modifier stack to verify.".format(name, label)
+            ),
+        }
+    return {
+        "error": "Could not make modifier '{}' unique ({})".format(label, "; ".join(failures)),
+        "entry_point": None,
+        "warning": None,
+    }
 
 
 def resolve_one(
