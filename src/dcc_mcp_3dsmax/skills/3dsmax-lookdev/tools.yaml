@@ -100,6 +100,33 @@ tools:
           type: number
           default: 100.0
           description: Distance from target for light rig placement.
+        renderer:
+          type: string
+          enum: [auto, vray, arnold, standard]
+          default: auto
+          description: Renderer family for the HDRI bitmap. 'auto' detects the active renderer.
+        use_renderer_bitmap:
+          type: boolean
+          description: Force (or skip) the renderer-native bitmap such as VRayBitmap. Defaults to the active renderer.
+        map_type:
+          type: string
+          enum: [angular, cubic, spherical, mirrored_ball, max_standard]
+          description: V-Ray HDRI projection type.
+        gamma:
+          type: number
+          minimum: 0
+          description: HDRI gamma override on the renderer bitmap.
+        color_space:
+          type: string
+          minLength: 1
+          description: HDRI color space on the renderer bitmap.
+        horizontal_rotation:
+          type: number
+          description: HDRI horizontal rotation in degrees on the renderer bitmap.
+        create_rig:
+          type: boolean
+          default: true
+          description: Create the supporting three-point light rig.
     output_schema:
       type: object
       additionalProperties: true
@@ -114,10 +141,10 @@ tools:
     idempotent: false
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
 
-    intent: "Set up HDR environment lighting and supporting light rig for look development."
+    intent: "Set up HDR environment lighting, renderer HDRI projection, and supporting light rig."
     tool_role: action
     risk: medium
-    search_aliases: ["setup_hdr_lighting", "setup hdr lighting", "hdr environment", "environment lighting"]
+    search_aliases: ["setup_hdr_lighting", "setup hdr lighting", "hdr environment", "environment lighting", "vray hdri", "vray dome"]
     side_effects:
       creates: true
       modifies: true

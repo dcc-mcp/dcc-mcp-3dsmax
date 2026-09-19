@@ -256,3 +256,83 @@ tools:
       render: false
       targets: []
     produces: ['scene_nodes']
+
+  - name: create_vray_light
+    description: >-
+      Create V-Ray lights (rectangle, environment/dome, sphere, disk, or mesh)
+      with photometric units, targeted placement, local U/V size, and an
+      optional VRayBitmap dome texture. Pass `lights` to build up to 32 lights
+      in one transaction; every requested control is read back from the host
+      and any mismatch rolls the whole call back.
+    source_file: action_create_vray_light.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        lights:
+          type: array
+          minItems: 1
+          maxItems: 32
+          description: One entry per light. Mutually exclusive with the flat single-light arguments.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name: {type: string, minLength: 1}
+              shape: {type: string, enum: [rectangle, environment, sphere, disk, mesh]}
+              position: *vector_schema
+              target_position: *vector_schema
+              targeted: {type: boolean}
+              units: {type: string, enum: [renderer, lm, cd_m2, w, radiance]}
+              multiplier: {type: number, minimum: 0}
+              color: *color_schema
+              cast_shadows: {type: boolean}
+              normalize_color: {type: boolean}
+              size_u: {type: number, minimum: 0}
+              size_v: {type: number, minimum: 0}
+              texture_path: {type: string, minLength: 1}
+              map_type: {type: string, enum: [angular, cubic, spherical, mirrored_ball, max_standard]}
+              gamma: {type: number, minimum: 0}
+              color_space: {type: string, minLength: 1}
+              horizontal_rotation: {type: number}
+        name: {type: string, minLength: 1}
+        shape: {type: string, enum: [rectangle, environment, sphere, disk, mesh]}
+        position: *vector_schema
+        target_position: *vector_schema
+        targeted: {type: boolean}
+        units: {type: string, enum: [renderer, lm, cd_m2, w, radiance]}
+        multiplier: {type: number, minimum: 0}
+        color: *color_schema
+        cast_shadows: {type: boolean}
+        normalize_color: {type: boolean}
+        size_u: {type: number, minimum: 0}
+        size_v: {type: number, minimum: 0}
+        texture_path: {type: string, minLength: 1}
+        map_type: {type: string, enum: [angular, cubic, spherical, mirrored_ball, max_standard]}
+        gamma: {type: number, minimum: 0}
+        color_space: {type: string, minLength: 1}
+        horizontal_rotation: {type: number}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Create verified V-Ray lights with shape, units, and HDRI dome controls."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_vray_light", "create vray light", "vray light", "vray dome", "vray hdri"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'light']
+    produces: ['scene_node:light']

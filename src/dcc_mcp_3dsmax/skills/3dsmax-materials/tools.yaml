@@ -437,6 +437,7 @@ tools:
         attributes:
           type: object
           additionalProperties: true
+        renderer: {type: string, enum: [auto, vray, arnold, physical, standard], default: auto}
     output_schema:
       type: object
       additionalProperties: true
@@ -451,10 +452,10 @@ tools:
     idempotent: true
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
 
-    intent: "Set common material attributes like base color, roughness, metalness."
+    intent: "Set common and renderer-native material attributes."
     tool_role: action
     risk: medium
-    search_aliases: ["set_material_attributes", "set material attributes", "material attributes"]
+    search_aliases: ["set_material_attributes", "set material attributes", "material attributes", "vray roughness"]
     side_effects:
       creates: false
       modifies: true
@@ -547,3 +548,77 @@ tools:
       render: false
       targets: ['materials']
     produces: ['texture_report']
+
+  - name: create_material_from_textures
+    description: >-
+      Build a PBR material from a texture-set directory or an explicit file
+      list and wire every recognised map into the renderer-native slot
+      (VRayMtl texmap_*, Arnold, Physical). Files are matched by filename
+      tokens (basecolor, roughness, metalness, normal, displacement, opacity,
+      ...). Unrecognised files are reported, and a slot the host refuses fails
+      the call and rolls the new material back.
+    source_file: action_create_material_from_textures.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Material name. Defaults to the texture directory name.
+        texture_dir:
+          type: string
+          minLength: 1
+          description: Directory holding one texture set.
+        texture_paths:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Explicit texture files. Used when texture_dir is omitted.
+        renderer:
+          type: string
+          enum: [auto, vray, arnold, physical, standard]
+          default: auto
+          description: Target renderer family. 'auto' detects the active renderer.
+        slots:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Restrict wiring to these canonical slots.
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Nodes to assign the new material to. Uses the current selection when omitted.
+        assign: {type: boolean, default: false}
+        recursive: {type: boolean, default: false}
+        allow_missing: {type: boolean, default: false}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Create a PBR material from a texture set and connect every recognised map."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_material_from_textures", "create material from textures", "texture set", "pbr textures"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ['materials', 'scene_node']
+    produces:
+      - 'material'

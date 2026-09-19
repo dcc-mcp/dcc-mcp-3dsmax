@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._render_utils import (
     artifact_info,
@@ -291,25 +292,58 @@ def _renderer_class_names(renderer_type: str) -> tuple:
 
 
 def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str, Any]:
-    """Apply generic renderer parameter overrides."""
-    applied = 0
-    warnings = []
+    """Apply generic renderer parameter overrides and verify each by readback."""
     renderer = current_renderer(runtime)
     if renderer is None:
         return render_error("No active renderer to configure")
+    applied: List[str] = []
+    verified: List[str] = []
+    errors: List[Dict[str, Any]] = []
+    warnings: List[str] = []
     for key, value in settings.items():
         try:
             setattr(renderer, key, value)
-            applied += 1
-        except Exception as exc:  # noqa: BLE001
-            warnings.append("Could not set {}: {}".format(key, exc))
-    return render_success(
-        "Configured renderer",
-        renderer_type=type(renderer).__name__,
-        settings_applied=applied,
-        settings_requested=len(settings),
-        warnings=warnings,
-    )
+        except Exception as exc:  # noqa: BLE001 - an explicit host rejection is a failure.
+            errors.append({"setting": key, "requested": value, "error": str(exc)})
+            continue
+        applied.append(key)
+        readback = _read_setting(renderer, key)
+        if readback is None:
+            warnings.append("Could not read back {} to verify the value".format(key))
+            continue
+        if not _setting_matches(readback, value):
+            errors.append({"setting": key, "requested": value, "actual": readback})
+            continue
+        verified.append(key)
+    data = {
+        "renderer_type": type(renderer).__name__,
+        "settings_applied": applied,
+        "settings_verified": verified,
+        "settings_requested": list(settings),
+        "errors": errors,
+        "warnings": warnings,
+    }
+    if errors:
+        return render_error("Could not apply every renderer setting", **data)
+    return render_success("Configured renderer", **data)
+
+
+def _read_setting(renderer: Any, key: str) -> Any:
+    try:
+        return getattr(renderer, key)
+    except Exception:  # noqa: BLE001 - unverifiable settings are reported as warnings.
+        return None
+
+
+def _setting_matches(readback: Any, value: Any) -> bool:
+    if isinstance(value, bool) or isinstance(readback, bool):
+        return bool(readback) == bool(value)
+    if isinstance(value, (int, float)):
+        try:
+            return math.isclose(float(readback), float(value), rel_tol=1e-6, abs_tol=1e-6)
+        except (TypeError, ValueError):
+            return False
+    return str(readback) == str(value)
 
 
 def _set_current_renderer(runtime: Any, renderer: Any) -> None:

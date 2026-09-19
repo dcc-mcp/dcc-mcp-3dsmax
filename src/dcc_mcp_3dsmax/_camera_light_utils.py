@@ -654,3 +654,20 @@ def _node_kind(node: Any, *, default: str) -> str:
         )
         or default
     )
+
+
+# ---------------------------------------------------------------------------
+# Public aliases for renderer-specific light modules in this package
+# ---------------------------------------------------------------------------
+
+set_supported_attrs = _set_supported_attrs
+read_first_attr = _read_first_attr
+host_has_property = _runtime_has_property
+construct_runtime_object = _construct_runtime_object
+owned_light = _owned_light
+rollback_owned_nodes = _rollback_owned_nodes
+rollback_summary = _rollback_summary
+float_matches = _float_matches
+runtime_color = _runtime_color
+point3_value = _point3
+vector_value = _vector

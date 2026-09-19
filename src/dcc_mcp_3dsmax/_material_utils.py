@@ -232,7 +232,7 @@ def assign_bitmap(material: Any, slot: str, bitmap: Any, *, runtime: Any = None)
     warnings = []
     assigned_map = bitmap
     if slot == "normal" and runtime is not None:
-        assigned_map, wrapper_warnings = _normal_map(runtime, bitmap)
+        assigned_map, wrapper_warnings = wrap_normal_map(runtime, bitmap)
         warnings.extend(wrapper_warnings)
     for attr in attrs:
         try:
@@ -243,7 +243,7 @@ def assign_bitmap(material: Any, slot: str, bitmap: Any, *, runtime: Any = None)
     return warnings
 
 
-def _normal_map(runtime: Any, bitmap: Any) -> Tuple[Any, List[str]]:
+def wrap_normal_map(runtime: Any, bitmap: Any) -> Tuple[Any, List[str]]:
     """Wrap a bitmap in Max's native Normal Bump texmap when available."""
     warnings = []
     for constructor_name in ("Normal_Bump", "NormalBump"):

@@ -16,6 +16,13 @@ def main(
     rotation: float = 0.0,
     target_position: Optional[Sequence[float]] = None,
     distance: float = 100.0,
+    renderer: str = "auto",
+    use_renderer_bitmap: Optional[bool] = None,
+    map_type: Optional[str] = None,
+    gamma: Optional[float] = None,
+    color_space: Optional[str] = None,
+    horizontal_rotation: Optional[float] = None,
+    create_rig: bool = True,
 ) -> Dict[str, Any]:
     """Configure HDR environment lighting and an optional three-point rig."""
     return setup_hdr_lighting(
@@ -26,4 +33,11 @@ def main(
         rotation=rotation,
         target_position=target_position,
         distance=distance,
+        renderer=renderer,
+        use_renderer_bitmap=use_renderer_bitmap,
+        map_type=map_type,
+        gamma=gamma,
+        color_space=color_space,
+        horizontal_rotation=horizontal_rotation,
+        create_rig=create_rig,
     )
