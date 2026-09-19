@@ -206,7 +206,7 @@ def build_startup_script(*, source: str, repo_root: Path) -> str:
         + repo_env
         + "from dcc_mcp_core import capture_bootstrap_errors\n"
         + "bootstrap_error_dir = base64.b64decode({!r}).decode('utf-8')\n".format(encoded_log_dir)
-        + "min_core_version = '0.20.22'\n"
+        + "min_core_version = '0.20.24'\n"
         + "max_core_version = '1.0.0'\n"
         + "min_server_version = '0.20.22'\n"
         + "max_server_version = '1.0.0'\n"
@@ -241,7 +241,7 @@ def build_startup_script(*, source: str, repo_root: Path) -> str:
         + "    if not (_release_version(min_server_version) <= server < _release_version(max_server_version)):\n"
         + "        raise RuntimeError('unsupported dcc-mcp-server version')\n"
         + "with capture_bootstrap_errors(\n"
-        + "    '3dsmax', adapter_version='0.2.2', min_core_version='0.20.22',\n"
+        + "    '3dsmax', adapter_version='0.2.2', min_core_version='0.20.24',\n"
         + "    phase='startup', log_dir=bootstrap_error_dir):\n"
         + "    _require_runtime_versions()\n"
         + "    import dcc_mcp_3dsmax\n"

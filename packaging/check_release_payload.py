@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 ASSET_SOURCE_ACTION = "3dsmax_asset_source__search_assets"
 PACKAGE_NAME = "dcc-mcp-3dsmax"
 TARGET_PLATFORM = "win64"
-MIN_CORE_VERSION = "0.20.22"
+MIN_CORE_VERSION = "0.20.24"
 MAX_CORE_VERSION = "1.0.0"
 MIN_SERVER_VERSION = "0.20.22"
 MAX_SERVER_VERSION = "1.0.0"

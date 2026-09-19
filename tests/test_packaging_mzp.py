@@ -716,14 +716,14 @@ def _write_distribution_metadata(root, distribution, version, *, suffix=""):
 
 def test_release_payload_checker_executes_strict_runtime_version_contract(tmp_path):
     checker = _load_payload_checker()
-    _write_distribution_metadata(tmp_path, "dcc-mcp-core", "0.20.22")
+    _write_distribution_metadata(tmp_path, "dcc-mcp-core", "0.20.24")
     _write_distribution_metadata(tmp_path, "dcc-mcp-server", "0.20.22")
 
     checker.verify_runtime_dependency_versions(tmp_path)
 
     core_metadata = next(tmp_path.glob("dcc_mcp_core-*.dist-info/METADATA"))
     core_metadata.write_text(
-        "Metadata-Version: 2.1\nName: dcc-mcp-core\nVersion: 0.20.22rc1\n",
+        "Metadata-Version: 2.1\nName: dcc-mcp-core\nVersion: 0.20.24rc1\n",
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="invalid dcc-mcp-core version"):
@@ -1319,12 +1319,12 @@ def test_runtime_and_bootstrap_dependency_range_matches_project_metadata():
     install_template = (TEMPLATES_DIR / "install.ms").read_text(encoding="utf-8")
     startup_template = (TEMPLATES_DIR / "dcc_mcp_3dsmax_startup.ms").read_text(encoding="utf-8")
 
-    assert cli.MIN_CORE_VERSION == "0.20.22"
+    assert cli.MIN_CORE_VERSION == "0.20.24"
     assert cli.MIN_SERVER_VERSION == "0.20.22"
     assert cli.MAX_CORE_VERSION == "1.0.0"
     assert cli.MAX_SERVER_VERSION == "1.0.0"
     for template in (install_template, startup_template):
-        assert "min_core_version='0.20.22'" in template
+        assert "min_core_version='0.20.24'" in template
         assert "min_server_version = '0.20.22'" in template
         assert "max_server_version = '1.0.0'" in template
 
@@ -1345,7 +1345,7 @@ def test_runtime_and_bootstrap_dependency_range_matches_project_metadata():
             {
                 "python_version": "3.7.9",
                 "host_version": "2022",
-                "core_version": "0.20.22",
+                "core_version": "0.20.24",
                 "server_version": "0.20.21",
             },
             "server_version_too_old",
@@ -1354,7 +1354,7 @@ def test_runtime_and_bootstrap_dependency_range_matches_project_metadata():
             {
                 "python_version": "3.7.9",
                 "host_version": "2022",
-                "core_version": "0.20.22",
+                "core_version": "0.20.24",
                 "server_version": "1.0.0",
             },
             "server_version_unsupported",

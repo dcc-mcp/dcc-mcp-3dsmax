@@ -184,7 +184,7 @@ of disappearing into a generic `PermissionError`.
 
 - 3ds Max 2017 or later (Python 3.x with pymxs support)
 - Python >= 3.7
-- dcc-mcp-core >= 0.20.22
+- dcc-mcp-core >= 0.20.24
 - dcc-mcp-server >= 0.20.22
 
 ## License
