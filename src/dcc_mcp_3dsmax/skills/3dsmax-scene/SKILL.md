@@ -13,8 +13,8 @@ metadata:
     version: "1.0.0"
     layer: domain
     stage: scene
-    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze"
-    tags: "3dsmax, scene, lifecycle, open, save, merge, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation"
+    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch"
+    tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
     search_aliases: ["scene", "scene io", "open max", "save max", "merge max"]
@@ -36,7 +36,7 @@ metadata:
       file_output: true
       render: false
       targets: ["scene", "scene_file", "scene_node", "group", "selection", "pivot"]
-    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report"]
+    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report", "max_file_info", "max_file_matches"]
 ---
 
 # 3ds Max Scene and Object Skill
@@ -83,6 +83,27 @@ creatable-class predicate, no symbol can be proven, so the tool refuses every
 call rather than leaving an ungated symbol-call path. A symbol that is proven
 to be a creatable class stays available regardless of the variable, because
 the variable gates arbitrary script execution, not typed class construction.
+
+External `.max` files are inspected without opening them. `inspect_max_file`
+reports the objects and metadata of one file, `batch_file_info` does the same
+for up to 50 files, and `search_max_files` finds objects by name pattern
+across a batch of files. All three fail closed: a file that is missing,
+unreadable, or not a scene file is reported as an explicit per-file error with
+a stable reason, never as an empty object list. Host functions used to read
+external files are probed rather than assumed, so a host that lacks a reader
+reports `external_scene_reader_unavailable` instead of returning no objects.
+
+`merge_from_file` merges objects selected by exact name or by name pattern
+from an external `.max` file. The selection is resolved against the source
+file before anything is merged, so a name or pattern that matches nothing
+fails the call, and names that could not be resolved are always returned in
+`unresolved_object_names`; pass `require_all=true` to make them fail the call.
+It shares the verified readback and the fixed no-prompt conflict policies of
+`merge_file`, so use `merge_file` when the exact source node names are already
+known and `merge_from_file` when the selection has to be resolved by pattern.
+One call is one host undo entry, so `undo_last(count=1)` reverts it; re-read
+the reported `merged_nodes` afterwards because a partial revert means the host
+split the merge into more than one entry.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.
