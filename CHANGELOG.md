@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.5...v0.2.6) (2026-09-19)
+
+
+### Features
+
+* add general modifier stack CRUD tools ([8691ede](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8691ede6854d1d7d437b3e88cae130445c531075))
+
 ## [0.2.5](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.4...v0.2.5) (2026-09-19)
 
 
