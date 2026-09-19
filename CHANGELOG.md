@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.5](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.4...v0.2.5) (2026-09-19)
+
+
+### Features
+
+* add V-Ray materials, texture-set wiring, lights, and HDRI controls ([#178](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/178)) ([6a4da89](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/6a4da897d40cb2f5a94aac60dfe5b88041e9022c))
+
+
+### Code Refactoring
+
+* drop the jsonschema runtime dependency ([#179](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/179)) ([6e2f9eb](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/6e2f9ebec8f6aa8d38b86aef652d8f2d2d9761b3))
+
 ## [0.2.4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.3...v0.2.4) (2026-09-14)
 
 
