@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.6...v0.2.7) (2026-09-19)
+
+
+### Features
+
+* add generic object property access and batch operations ([#182](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/182)) ([5c9be1f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5c9be1fa85f6fb0c5e23b0c0e5bbbb3860524b09))
+
 ## [0.2.6](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.5...v0.2.6) (2026-09-19)
 
 
