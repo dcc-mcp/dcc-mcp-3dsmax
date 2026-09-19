@@ -126,6 +126,12 @@ tools:
       render: false
       targets: ['scene_nodes', 'uv_channels']
     produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per node in the response.
+
   - name: copy_uv_channel
     description: Copy UV data from one channel to another on explicit targets.
     source_file: action_copy_uv_channel.py

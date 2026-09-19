@@ -251,6 +251,8 @@ server.shutdown()                  # stop and cleanup
 
 `3dsmax-scripting` (8): `execute_python`, `execute_maxscript`, `run_python_check`, `list_runtime_symbols`, `inspect_runtime_symbol`, `list_macros`, `resolve_node_reference`, `reload_adapter_module`
 
+`3dsmax-undo` (3): `undo_last`, `redo_last`, `get_undo_status`
+
 ---
 
 ## Common Workflow Chains
@@ -313,7 +315,7 @@ just test-e2e     # E2E tests (requires 3ds Max)
 | `src/dcc_mcp_3dsmax/server.py` | MaxMcpServer |
 | `src/dcc_mcp_3dsmax/_env.py` | Environment variable resolution |
 | `src/dcc_mcp_3dsmax/api.py` | Skill authoring helpers |
-| `src/dcc_mcp_3dsmax/skills/` | 15 bundled skill packages |
+| `src/dcc_mcp_3dsmax/skills/` | 16 bundled skill packages |
 | `skills/dcc-mcp-3dsmax-setup/` | Agent-facing setup skill |
 | `tests/` | 24 test files |
 | `justfile` | Task runner |

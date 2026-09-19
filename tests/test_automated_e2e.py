@@ -150,6 +150,7 @@ EXPECTED_SKILLS = {
     "3dsmax-scene",
     "3dsmax-scripting",
     "3dsmax-transform",
+    "3dsmax-undo",
     "3dsmax-uv-atlas",
     "3dsmax-validation",
     "3dsmax-viewport",

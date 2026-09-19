@@ -102,7 +102,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 
 ---
 
-## Bundled Skills (15 families, ~130 tools)
+## Bundled Skills (16 families, ~133 tools)
 
 | Skill | Stage | Tools |
 |-------|-------|-------|
@@ -117,6 +117,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 | `3dsmax-rigging` | authoring | `create_helper_node`, `create_bone_node`, `create_joint_chain`, `create_path_helper`, `list_rig_state`, `apply_deformer_modifier`, `remove_deformer_modifier`, `set_constraint_target`, `get_character_system_availability`, `get_skin_weights`, `set_skin_weights`, `copy_weights`, `export_skin_weights`, `import_skin_weights`, `save_pose`, `load_pose`, `create_control`, `create_constraint` |
 | `3dsmax-render` | authoring | `capture_viewport`, `create_preview`, `get_render_settings`, `get_scene_render_statistics`, `set_render_output_options`, `set_frame_range`, `set_render_resolution`, `set_render_camera`, `set_render_quality_preset` |
 | `3dsmax-transform` | authoring | `set_node_position`, `move_nodes` |
+| `3dsmax-undo` | authoring | `undo_last`, `redo_last`, `get_undo_status` |
 | `3dsmax-viewport` | authoring | `capture_viewport` |
 | `3dsmax-validation` | authoring | `validate_naming`, `validate_transforms`, `validate_pivots`, `validate_mesh_topology`, `validate_smoothing_groups`, `validate_material_assignments`, `validate_texture_paths`, `validate_uv_channels`, `validate_uv_overlaps`, `run_asset_readiness_checks` |
 | `3dsmax-display` | authoring | `list_layers`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property` |
@@ -152,13 +153,14 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 | `install.md` | Agent-facing install instructions |
 | `docs/API.md` | Python API reference |
 | `docs/BUNDLED_SKILLS.md` | Complete tool inventory |
+| `docs/UNDO.md` | Undo/redo semantics and destructive-tool undo metadata |
 | `docs/SIDECAR.md` | Runtime bridge protocol |
 | `docs/SKILL_DEVELOPMENT.md` | Skill authoring guide |
 | `src/dcc_mcp_3dsmax/__init__.py` | Public API exports |
 | `src/dcc_mcp_3dsmax/server.py` | `MaxMcpServer` — lifecycle, discovery |
 | `src/dcc_mcp_3dsmax/_env.py` | `DCC_MCP_3DSMAX_*` env-var helpers |
 | `src/dcc_mcp_3dsmax/api.py` | Skill authoring helpers |
-| `src/dcc_mcp_3dsmax/skills/` | 15 bundled skill packages |
+| `src/dcc_mcp_3dsmax/skills/` | 16 bundled skill packages |
 | `skills/dcc-mcp-3dsmax-setup/` | Agent-facing setup skill |
 | `.github/workflows/ci.yml` | CI pipeline (lint + test + build) |
 | `packaging/assemble_mzp.py` | MZP installer builder |

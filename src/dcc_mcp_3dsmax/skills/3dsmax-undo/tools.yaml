@@ -1,0 +1,183 @@
+tools:
+  - name: undo_last
+    description: >-
+      Undo the most recent 3ds Max operations and verify each step.
+      When to use: after a destructive or mutating tool call that needs to be
+      reversed, including batch tools that touched several nodes.
+      How to use: pass count equal to the number of host undo entries the
+      reversed tool created - 1 for a single_call tool, one per node for a
+      per_node tool (see docs/UNDO.md); a step the host accepted but that left
+      the scene unchanged fails the call unless allow_no_op is true.
+    source_file: action_undo_last.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          description: Number of host undo entries to reverse in this call.
+        allow_no_op:
+          type: boolean
+          default: false
+          description: >-
+            Report an undo that produced no scene change as a warning instead of
+            a failure.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Reverse the most recent 3ds Max operations through the host undo stack."
+    tool_role: action
+    risk: medium
+    search_aliases: ["undo_last", "undo last", "undo", "revert last operation", "history back"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes', 'history']
+    produces: ['undo_state']
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        One call reverses one host undo entry; undoing this tool means calling
+        redo_last the same number of times.
+  - name: redo_last
+    description: >-
+      Redo the most recently undone 3ds Max operations and verify each step.
+      When to use: after undo_last when the reversal was a mistake.
+      How to use: the redo stack is cleared by any new edit, so call it
+      immediately after the undo; a step with no scene change fails the call
+      unless allow_no_op is true.
+    source_file: action_redo_last.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          description: Number of host redo entries to replay in this call.
+        allow_no_op:
+          type: boolean
+          default: false
+          description: >-
+            Report a redo that produced no scene change as a warning instead of
+            a failure.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Replay the most recently undone 3ds Max operations."
+    tool_role: action
+    risk: medium
+    search_aliases: ["redo_last", "redo last", "redo", "re-apply last operation", "history forward"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes', 'history']
+    produces: ['undo_state']
+    undo:
+      supported: true
+      granularity: single_call
+      notes: "Reversed by undo_last with the same count."
+  - name: get_undo_status
+    description: >-
+      Report which undo and redo entry points this 3ds Max host exposes, plus
+      the current scene fingerprint.
+      When to use: before relying on undo, or to compare the scene before and
+      after a destructive call.
+      How to use: the host exposes no history depth, so this reports capability
+      only - an empty undo stack is discovered by calling undo_last.
+    source_file: action_get_undo_status.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties: {}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Inspect undo and redo capability and the current scene fingerprint."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_undo_status", "undo status", "undo capability", "can i undo", "history state"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ['undo_state']
+    undo:
+      supported: false
+      granularity: none
+      notes: "Read-only; it reads the scene to build a fingerprint but changes nothing to reverse."
