@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.7...v0.2.8) (2026-09-19)
+
+
+### Features
+
+* add verified undo and redo tools with destructive-tool undo metadata ([#185](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/185)) ([3d85ce7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/3d85ce73c2650ed5c469406a0a57b1cfd1e38d4d))
+
 ## [0.2.7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.6...v0.2.7) (2026-09-19)
 
 
