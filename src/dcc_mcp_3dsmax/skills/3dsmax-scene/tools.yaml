@@ -1335,9 +1335,10 @@ tools:
   - name: create_object
     description: >-
       Create one node from a creatable 3ds Max class and report its name,
-      transform, and bounding box as placement feedback. Bare global functions
-      are rejected; with DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT set, any
-      symbol that cannot be proven to be a creatable class is refused.
+      transform, and bounding box as placement feedback. The symbol must
+      always be provable as a creatable class, so bare global functions are
+      rejected regardless of DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT; that
+      variable neither tightens nor loosens the check.
     source_file: action_create_object.py
     execution: sync
     affinity: main

@@ -72,17 +72,17 @@ relationship matters. `set_visibility` also covers freeze and unfreeze.
 `analyze_node_orientation` reports pivot, local axis drift, and the world
 matrix for orientation checks.
 
-`create_object` calls a runtime symbol, so it is guarded in three layers: a
-denylist of destructive global functions, a positive check that the symbol is
-a creatable 3ds Max class (`superClassOf` succeeds for classes and fails for
-bare global functions), and a fail-closed rule tied to
-`DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT`. When that variable is set, any
-symbol that cannot be proven to be a creatable class is refused, and if the
-runtime exposes no creatable-class predicate at all the tool refuses
-everything rather than leaving an ungated symbol-call path. A symbol that
-*is* proven to be a creatable class stays available even with the variable
-set, because the variable gates arbitrary script execution, not typed class
-construction.
+`create_object` calls a runtime symbol, so it always requires that symbol to
+be provable as a creatable 3ds Max class: `superClassOf` succeeds for classes
+and fails for bare global functions. This requirement is unconditional and
+independent of `DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT` — that variable
+neither tightens nor loosens the check, and is named in the rejection message
+only so operators can locate the refusal. A denylist of destructive global
+functions remains as defense in depth. When the runtime exposes no
+creatable-class predicate, no symbol can be proven, so the tool refuses every
+call rather than leaving an ungated symbol-call path. A symbol that is proven
+to be a creatable class stays available regardless of the variable, because
+the variable gates arbitrary script execution, not typed class construction.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

@@ -263,6 +263,24 @@ class _MaxClass:
         return self._factory(**kwargs)
 
 
+class _SuperClassValue:
+    """Callable stand-in for a MAXScript superclass such as GeometryClass.
+
+    Depending on the pymxs mapping, ``superClassOf`` returns either a wrapper
+    instance or the generated class object. A Python class is always callable,
+    so this shape is what catches a ``callable()`` based rejection.
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        return None
+
+    def __str__(self):
+        return self.name
+
+
 class _FakeRuntime:
     def __init__(self):
         self.hero = _FakeNode("hero_box", 42)
@@ -722,6 +740,39 @@ def test_create_object_rejects_bare_global_function(monkeypatch):
     assert "not a creatable" in result["message"]
     assert result["data"]["object_type"] == "unlistedGlobalFunc"
     assert result["data"]["evidence"]["predicate"] == "superClassOf"
+
+
+def test_create_object_accepts_class_when_superclass_is_callable(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    # A real host can map superClassOf onto a class object, which is callable.
+    # Rejecting on callable() would break every legitimate creatable class.
+    def _super_class_of(symbol):
+        if isinstance(symbol, _MaxClass):
+            return _SuperClassValue(symbol.superclass)
+        raise RuntimeError("superClassOf() requires a MAXWrapper")
+
+    monkeypatch.setattr(runtime, "superClassOf", _super_class_of, raising=False)
+
+    result = _load_action("action_create_object.py").main(object_type="Teapot", name="real_host_teapot")
+
+    assert result["success"] is True, result["message"]
+    assert result["data"]["node"]["node_name"] == "real_host_teapot"
+    assert result["data"]["creatable_class_evidence"]["superclass"] == "GeometryClass"
+    assert result["data"]["creatable_class_evidence"]["superclass_callable"] is True
+    assert runtime.creations[-1][0] == "Teapot"
+
+
+def test_create_object_rejects_unproven_symbol_even_when_flag_unset(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+    monkeypatch.delenv("DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT", raising=False)
+
+    # The class gate is unconditional; it must not depend on the flag.
+    result = _load_action("action_create_object.py").main(object_type="unlistedGlobalFunc")
+
+    assert result["success"] is False
+    assert "not a creatable" in result["message"]
+    assert result["data"]["arbitrary_script_disabled"] is False
 
 
 def test_create_object_rejects_blacklisted_destructive_global(monkeypatch):

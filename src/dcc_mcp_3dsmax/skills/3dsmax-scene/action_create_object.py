@@ -55,6 +55,14 @@ def _prove_creatable_class(runtime: Any, symbol: Any) -> Tuple[bool, bool, Dict[
     structural check closes the whole "arbitrary runtime symbol" surface
     without maintaining an unbounded list of dangerous function names.
 
+    A symbol is proven as soon as the call returns anything other than
+    ``None``. The return shape is deliberately not inspected any further:
+    depending on the pymxs mapping it is either a wrapper instance or the
+    generated class object, and every Python class is callable, so testing
+    ``callable()`` would reject the very value that proves the symbol is a
+    class. Bare global functions are already rejected by the ``except``
+    branch below.
+
     Returns ``(proven, predicate_available, evidence)``.
     """
     predicate = getattr(runtime, "superClassOf", None)
@@ -74,14 +82,25 @@ def _prove_creatable_class(runtime: Any, symbol: Any) -> Tuple[bool, bool, Dict[
             },
         )
 
-    if value is None or callable(value):
+    if value is None:
         return (
             False,
             True,
-            {"predicate": "superClassOf", "available": True, "superclass": None, "symbol_type": type(value).__name__},
+            {"predicate": "superClassOf", "available": True, "superclass": None},
         )
 
-    return True, True, {"predicate": "superClassOf", "available": True, "superclass": str(value)}
+    return (
+        True,
+        True,
+        {
+            "predicate": "superClassOf",
+            "available": True,
+            "superclass": str(value),
+            # Diagnostic only, never a rejection signal: a real host maps the
+            # superclass onto a class object, which is always callable.
+            "superclass_callable": callable(value),
+        },
+    )
 
 
 @with_max
@@ -132,16 +151,19 @@ def main(
     arbitrary_script_disabled = resolve_arbitrary_script_disabled()
     proven, predicate_available, evidence = _prove_creatable_class(rt, factory)
     if not proven:
-        if arbitrary_script_disabled:
-            message = "Refusing to call an unproven runtime symbol because {} is set".format(
-                ENV_DISABLE_ARBITRARY_SCRIPT
-            )
-        else:
+        # The gate is unconditional: an unprovable symbol is refused whether or
+        # not the variable below is set. It neither tightens nor loosens this
+        # check and is named only so operators can locate the refusal.
+        if predicate_available:
             message = "Runtime symbol is not a creatable 3ds Max class"
-        if not predicate_available:
-            message = "{}: this runtime exposes no creatable-class predicate, so no symbol can be proven".format(
-                message
+        else:
+            message = (
+                "Runtime symbol is not a creatable 3ds Max class: this runtime exposes "
+                "no creatable-class predicate, so no symbol can be proven"
             )
+        message = "{} ({} neither tightens nor loosens this check)".format(
+            message, ENV_DISABLE_ARBITRARY_SCRIPT
+        )
         return {
             "success": False,
             "message": message,
