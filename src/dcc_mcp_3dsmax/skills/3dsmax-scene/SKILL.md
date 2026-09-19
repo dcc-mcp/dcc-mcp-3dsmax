@@ -13,8 +13,8 @@ metadata:
     version: "1.0.0"
     layer: domain
     stage: scene
-    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms"
-    tags: "3dsmax, scene, lifecycle, open, save, merge, nodes, cameras, selection, visibility, transforms"
+    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze"
+    tags: "3dsmax, scene, lifecycle, open, save, merge, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
     search_aliases: ["scene", "scene io", "open max", "save max", "merge max"]
@@ -36,7 +36,7 @@ metadata:
       file_output: true
       render: false
       targets: ["scene", "scene_file", "scene_node", "group", "selection", "pivot"]
-    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state"]
+    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report"]
 ---
 
 # 3ds Max Scene and Object Skill
@@ -60,6 +60,17 @@ tool opens a file dialog or falls back to UI automation or arbitrary scripts.
 Use the remaining tools to inspect nodes and cameras and perform targeted
 selection, duplication, deletion, grouping, parenting, visibility, pivot, and
 transform operations.
+
+Use `get_object_properties` and `set_object_property` for generic property
+access instead of falling back to `execute_python` or `execute_maxscript`.
+`set_object_property` writes one property and confirms it by readback, so a
+value the host rejected is reported as a failure rather than a success. Use
+`batch_rename_objects` for bulk naming, `create_object` for classes beyond
+the four modeling primitives, `transform_object` for rotate and scale in
+world or local space, and `clone_objects` when a copy, instance, or reference
+relationship matters. `set_visibility` also covers freeze and unfreeze.
+`analyze_node_orientation` reports pivot, local axis drift, and the world
+matrix for orientation checks.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

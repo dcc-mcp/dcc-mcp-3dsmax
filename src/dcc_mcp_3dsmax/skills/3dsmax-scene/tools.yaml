@@ -980,19 +980,23 @@ tools:
     produces: ['scene_nodes']
   - name: set_visibility
     description: >-
-      Set visibility for nodes by names or object handles.
+      Show, hide, freeze, or unfreeze nodes by names or object handles. The
+      boolean visible parameter maps to show/hide and stays supported.
     source_file: action_set_visibility.py
     execution: sync
     affinity: main
     enforce_thread_affinity: true
     input_schema:
       type: object
-      required: [visible]
       additionalProperties: false
       properties:
         visible:
           type: boolean
-          description: Desired visibility state.
+          description: Legacy visibility flag; true maps to show, false to hide.
+        state:
+          type: string
+          enum: [show, hide, freeze, unfreeze]
+          description: Explicit visibility or freeze state.
         node_names:
           type: array
           items: {type: string, minLength: 1}
@@ -1135,3 +1139,434 @@ tools:
       render: false
       targets: ['scene_nodes']
     produces: ['scene_nodes']
+  - name: get_object_properties
+    description: >-
+      Read a compact property snapshot for one node. Unknown properties are
+      reported separately instead of being silently dropped.
+    source_file: action_get_object_properties.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          description: Node name to inspect.
+        handle:
+          type: integer
+          description: Stable object handle to inspect.
+        properties:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: {type: string, minLength: 1, maxLength: 256}
+          description: Optional property names; omit for the default compact set.
+        include_bounding_box:
+          type: boolean
+          default: true
+          description: Include the node bounding box when true.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Read a compact property snapshot for one node by name or handle."
+    tool_role: read_only
+    risk: low
+    search_aliases:
+      ["get_object_properties", "get object properties", "object properties"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["object_properties", "bounding_box"]
+  - name: set_object_property
+    description: >-
+      Write one property on a node and verify it by readback. Fails when the
+      property is missing, the value type is rejected, or the readback differs.
+    source_file: action_set_object_property.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [property, value]
+      properties:
+        property:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Property name to write, for example name, pos, or wirecolor.
+        value:
+          description: New property value; arrays or x/y/z objects become Point3 or Color.
+        node_name:
+          type: string
+          minLength: 1
+          description: Node name to update.
+        handle:
+          type: integer
+          description: Stable object handle to update.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Write one verified node property by name or handle."
+    tool_role: action
+    risk: medium
+    search_aliases:
+      ["set_object_property", "set object property", "set property"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["object_properties"]
+  - name: batch_rename_objects
+    description: >-
+      Rename many nodes with one prefix, suffix, replace, or numbered pattern
+      rule. New names are validated before any write, then read back.
+    source_file: action_batch_rename_objects.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Node names to rename.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles to rename.
+        mode:
+          type: string
+          enum: [suffix, prefix, replace, pattern]
+          default: suffix
+          description: Naming rule to apply.
+        base:
+          type: string
+          maxLength: 256
+          description: Prefix, suffix, replacement, or pattern text.
+        search:
+          type: string
+          maxLength: 256
+          description: Substring to replace when mode is replace.
+        start_index:
+          type: integer
+          minimum: 0
+          default: 1
+          description: First number used by pattern mode.
+        padding:
+          type: integer
+          minimum: 1
+          maximum: 12
+          default: 3
+          description: Zero padding width for pattern mode numbering.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Rename nodes in one verified batch using a naming rule."
+    tool_role: action
+    risk: medium
+    search_aliases:
+      ["batch_rename_objects", "batch rename", "rename objects"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes"]
+  - name: create_object
+    description: >-
+      Create one node from an arbitrary creatable 3ds Max class and report its
+      name, transform, and bounding box as placement feedback.
+    source_file: action_create_object.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [object_type]
+      properties:
+        object_type:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Creatable 3ds Max class name, for example Teapot or Tube.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Optional node name.
+        position:
+          description: Optional [x, y, z] or x/y/z object world position.
+        rotation:
+          description: Optional [x, y, z] euler rotation in degrees.
+        scale:
+          description: Optional [x, y, z] scale factor.
+        params:
+          type: object
+          maxProperties: 64
+          additionalProperties: true
+          description: Optional constructor keyword arguments for the class.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Create one object from a creatable class with placement readback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_object", "create object", "create geometry"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes", "bounding_box"]
+  - name: transform_object
+    description: >-
+      Move, rotate, and scale nodes in world or local space. Offsets are
+      relative by default; every write is confirmed by readback.
+    source_file: action_transform_object.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Node names to transform.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles to transform.
+        move:
+          description: Optional [x, y, z] or x/y/z object translation.
+        rotate:
+          description: Optional [x, y, z] euler rotation in degrees.
+        scale:
+          description: Optional [x, y, z] per-axis scale multiplier.
+        space:
+          type: string
+          enum: [world, local]
+          default: world
+          description: Coordinate space for move and rotate.
+        relative:
+          type: boolean
+          default: true
+          description: Treat move and rotate as offsets when true.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Apply a verified move, rotate, or scale transform to nodes."
+    tool_role: action
+    risk: medium
+    search_aliases: ["transform_object", "transform object", "rotate scale move"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes"]
+  - name: clone_objects
+    description: >-
+      Clone nodes as copies, instances, or references and verify the resulting
+      geometry sharing relationship.
+    source_file: action_clone_objects.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Node names to clone.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles to clone.
+        mode:
+          type: string
+          enum: [copy, instance, reference]
+          default: copy
+          description: Clone relationship to create.
+        name_suffix:
+          type: string
+          default: _clone
+          description: Suffix applied to clone node names.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Clone nodes with a verified copy, instance, or reference mode."
+    tool_role: action
+    risk: medium
+    search_aliases: ["clone_objects", "clone objects", "instance reference clone"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes"]
+  - name: analyze_node_orientation
+    description: >-
+      Report pivot, bounding box, local axis directions and drift, and the
+      world matrix for one node.
+    source_file: action_analyze_node_orientation.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          description: Node name to analyze.
+        handle:
+          type: integer
+          description: Stable object handle to analyze.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Analyze node orientation, pivot, local axes, and world transform."
+    tool_role: read_only
+    risk: low
+    search_aliases:
+      ["analyze_node_orientation", "node orientation", "orientation"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["orientation_report", "bounding_box"]
