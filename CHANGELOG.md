@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.9...v0.2.10) (2026-09-20)
+
+
+### Features
+
+* add atomic scene_patch batch node edits in one undo step ([#191](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/191)) ([4639cb4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4639cb411e780b330981a9536214cf03b11661b2))
+
 ## [0.2.9](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.8...v0.2.9) (2026-09-20)
 
 
