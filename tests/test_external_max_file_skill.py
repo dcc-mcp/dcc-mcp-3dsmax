@@ -52,6 +52,9 @@ class _FakeRuntime:
         self.object_names_raises = {}
         self.reject_quiet_flag = False
         self.object_names_calls = []
+        self.readback_calls = 0
+        self.readback_raises = False
+        self.readback_ok_calls = 0
         if with_reader:
             self.getMAXFileObjectNames = self._get_max_file_object_names
         if with_version:
@@ -76,6 +79,9 @@ class _FakeRuntime:
         return "2024 - 26.0"
 
     def _get_last_merged_nodes(self):
+        self.readback_calls += 1
+        if self.readback_raises and self.readback_calls > self.readback_ok_calls:
+            raise RuntimeError("readback is not available")
         return list(self.last_merged_nodes)
 
     def _get_max_file_object_names(self, file_path, *args, **kwargs):
@@ -619,6 +625,73 @@ def test_merge_file_refuses_a_host_without_readback_before_merging(monkeypatch, 
     assert result["success"] is False
     assert result["data"]["failure_reason"] == "merge_readback_unavailable"
     assert runtime.merged == []
+
+
+def test_merge_from_file_refuses_a_failing_readback_probe_before_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]})
+    runtime.maxFilePath = str(tmp_path)
+    runtime.readback_raises = True  # the entry point exists but raises when called
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_from_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "precondition"
+    assert result["data"]["failure_reason"] == "merge_readback_unavailable"
+    assert result["data"]["scene_modified"] is False
+    assert runtime.merged == []
+
+
+def test_merge_file_refuses_a_failing_readback_probe_before_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]})
+    runtime.maxFilePath = str(tmp_path)
+    runtime.readback_raises = True
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "merge_readback_unavailable"
+    assert runtime.merged == []
+
+
+def test_merge_from_file_reports_a_readback_failure_after_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]})
+    runtime.maxFilePath = str(tmp_path)
+    runtime.readback_raises = True
+    runtime.readback_ok_calls = 1  # preflight succeeds, the post-merge read fails
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_from_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "verify"
+    assert result["data"]["failure_reason"] == "scene_merge_readback_mismatch"
+    assert result["data"]["verified"] is False
+    assert result["data"]["scene_modified"] is True
+    assert result["data"]["readback_error"]
+    assert runtime.merged, "the merge did happen"
+    assert any("undo_last" in warning for warning in result["data"]["warnings"])
+
+
+def test_merge_file_reports_a_readback_failure_after_merging(monkeypatch, tmp_path):
+    source = _write_max(tmp_path)
+    runtime = _FakeRuntime({str(source): ["hero"]})
+    runtime.maxFilePath = str(tmp_path)
+    runtime.readback_raises = True
+    runtime.readback_ok_calls = 1
+    _install(monkeypatch, runtime)
+
+    result = _run("action_merge_file.py", {"file_path": str(source)})
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "scene_merge_readback_mismatch"
+    assert result["data"]["scene_modified"] is True
+    assert result["data"]["readback_error"]
+    assert any("undo_last" in warning for warning in result["data"]["warnings"])
 
 
 def test_merge_from_file_flags_an_unverified_scene_change(monkeypatch, tmp_path):

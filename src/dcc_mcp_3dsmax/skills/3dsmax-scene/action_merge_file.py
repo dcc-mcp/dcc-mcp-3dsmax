@@ -9,20 +9,11 @@ from dcc_mcp_3dsmax._max_file_io import (
     MaxFileReadError,
     MaxMergeReadbackError,
     is_max_file,
+    merge_failure_warnings,
     merge_nodes_from_file,
 )
 from dcc_mcp_3dsmax._scene_lifecycle import normalize_scene_path
 from dcc_mcp_3dsmax.api import get_runtime, with_max
-
-
-def _retry_warnings(scene_modified: bool) -> List[str]:
-    """Tell a caller how to retry only when the scene already changed."""
-    if not scene_modified:
-        return []
-    return [
-        "the host accepted the merge call; call undo_last(count=1) before retrying "
-        "so the merged objects are not duplicated"
-    ]
 
 
 def _validated_node_names(node_names: Optional[List[str]]) -> Optional[List[str]]:
@@ -127,7 +118,8 @@ def main(
                 "merged_nodes": outcome["merged_nodes"],
                 "verified": False,
                 "scene_modified": outcome["scene_modified"],
-                "warnings": _retry_warnings(outcome["scene_modified"]),
+                "readback_error": outcome["readback_error"],
+                "warnings": merge_failure_warnings(outcome),
             },
         }
     return {

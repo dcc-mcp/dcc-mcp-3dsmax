@@ -63,6 +63,15 @@ BATCH_SIZE_WARNING = (
     "split it into batches of {} paths or fewer"
 )
 
+UNVERIFIED_RETRY_WARNING = (
+    "the host accepted the merge call; call undo_last(count=1) before retrying "
+    "so the merged objects are not duplicated"
+)
+READBACK_FAILED_WARNING = (
+    "the merge happened but the host failed to report the merged nodes ({}); "
+    "call undo_last(count=1) before retrying so the merged objects are not duplicated"
+)
+
 
 class MaxFileReadError(Exception):
     """Raised when an external .max file cannot be read at all."""
@@ -303,6 +312,20 @@ def validate_merge_options(
     )
 
 
+def merge_failure_warnings(outcome: Dict[str, Any]) -> List[str]:
+    """Warnings that tell a caller how to retry a merge that was not confirmed.
+
+    The merge already happened in both cases, so the only safe retry is one
+    that undoes first; without this a caller cannot tell "nothing merged" from
+    "merged, retrying duplicates".
+    """
+    if outcome.get("readback_error"):
+        return [READBACK_FAILED_WARNING.format(outcome["readback_error"])]
+    if outcome.get("scene_modified"):
+        return [UNVERIFIED_RETRY_WARNING]
+    return []
+
+
 def _node_records(nodes: Any) -> List[Dict[str, Any]]:
     return [
         {"node_name": str(getattr(node, "name", "")), "handle": int(getattr(node, "handle", 0))} for node in list(nodes)
@@ -323,8 +346,15 @@ def merge_nodes_from_file(
 
     Raises ``ValueError`` for unsupported options and ``MaxMergeReadbackError``
     when the host cannot report a merge, so callers always fail before touching
-    the scene. The returned dict reports both the native return value and the
-    readback verdict; callers must treat ``verified`` as the outcome.
+    the scene. The readback is therefore **called** during the preflight, not
+    only looked up: a host that exposes the entry point but fails when it runs
+    would otherwise surface the failure after the scene was already modified.
+
+    A readback that fails *after* the merge is reported, not raised: the scene
+    is already modified at that point, so the caller needs the verdict and the
+    undo guidance instead of an exception. The returned dict reports both the
+    native return value and the readback verdict; callers must treat
+    ``verified`` as the outcome.
     """
     duplicate_flag, material_flag, reparent_flag = validate_merge_options(
         duplicate_names, material_duplicates, reparent, select_merged
@@ -336,6 +366,10 @@ def merge_nodes_from_file(
     readback = getattr(rt, "getLastMergedNodes", None)
     if readback is None:
         raise MaxMergeReadbackError()
+    try:
+        readback()
+    except Exception as exc:  # noqa: BLE001 - any failure means no usable readback.
+        raise MaxMergeReadbackError(str(exc))
 
     before = scene_status(rt)
     before_handles = {int(getattr(node, "handle", 0)) for node in list(rt.objects)}
@@ -350,7 +384,14 @@ def merge_nodes_from_file(
     merge_returned = rt.mergeMAXFile(str(path), *args, quiet=True)
     after = scene_status(rt)
 
-    merged_nodes = _node_records(readback())
+    # The scene is already modified here, so a readback failure is reported as an
+    # unverified result with undo guidance rather than an escaping exception.
+    readback_error = ""
+    try:
+        merged_nodes = _node_records(readback())
+    except Exception as exc:  # noqa: BLE001
+        merged_nodes = []
+        readback_error = str(exc) or exc.__class__.__name__
     merged_handles = {item["handle"] for item in merged_nodes if item["handle"]}
     after_handles = {int(getattr(node, "handle", 0)) for node in list(rt.objects)}
 
@@ -370,4 +411,5 @@ def merge_nodes_from_file(
         "merge_returned": bool(merge_returned),
         "verified": bool(verified),
         "scene_modified": bool(merge_returned) or after["object_count"] > before["object_count"],
+        "readback_error": readback_error or None,
     }

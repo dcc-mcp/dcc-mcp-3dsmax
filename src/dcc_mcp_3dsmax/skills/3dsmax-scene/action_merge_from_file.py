@@ -12,6 +12,7 @@ from dcc_mcp_3dsmax._max_file_io import (
     MaxMergeReadbackError,
     is_max_file,
     match_object_names,
+    merge_failure_warnings,
     merge_nodes_from_file,
     read_object_names,
     resolve_max_file_path,
@@ -217,11 +218,7 @@ def main(
         "warnings": warnings,
     }
     data.update(selection)
-    if outcome["scene_modified"] and not outcome["verified"]:
-        data["warnings"].append(
-            "the host accepted the merge call; call undo_last(count=1) before retrying "
-            "so the merged objects are not duplicated"
-        )
+    data["warnings"].extend(merge_failure_warnings(outcome))
     if not outcome["verified"]:
         return {
             "success": False,
@@ -231,6 +228,7 @@ def main(
                 failure_stage="verify",
                 failure_reason="scene_merge_readback_mismatch",
                 scene_modified=outcome["scene_modified"],
+                readback_error=outcome["readback_error"],
             ),
         }
     return {
