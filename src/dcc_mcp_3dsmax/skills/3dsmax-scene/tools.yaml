@@ -1980,6 +1980,5 @@ tools:
       supported: true
       granularity: batch_call
       notes: >-
-        One call merges N nodes from an external .max file. 3ds Max may or may not group the merge into a
-        single undo entry and the adapter cannot query the grouping: undo once, re-read the reported
-        merged_nodes, then repeat while merged nodes are still present.
+        Merges N nodes in one call. Undo once and re-check the node list; repeat while merged
+        nodes are still present, because 3ds Max may or may not group them into a single entry.
