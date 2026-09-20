@@ -34,16 +34,20 @@ UNDO_TOOL = "3dsmax-undo__undo_last"
 REDO_TOOL = "3dsmax-undo__redo_last"
 
 # Undo granularity vocabulary. These are the only values allowed in the
-# ``undo.granularity`` metadata of a destructive tool declaration, so agents
-# can reason about how many ``undo_last`` calls reverse one tool call.
+# ``undo.granularity`` metadata of a tool declaration, so agents can reason
+# about how many ``undo_last`` calls reverse one tool call. Destructive tools
+# must declare one of these; write paths that are not destructive may declare
+# one to state how a batch collapses onto the host undo stack.
 GRANULARITY_SINGLE_CALL = "single_call"
 GRANULARITY_PER_NODE = "per_node"
+GRANULARITY_BATCH_CALL = "batch_call"
 GRANULARITY_SCRIPT_DEFINED = "script_defined"
 GRANULARITY_NONE = "none"
 
 VALID_GRANULARITIES = (
     GRANULARITY_SINGLE_CALL,
     GRANULARITY_PER_NODE,
+    GRANULARITY_BATCH_CALL,
     GRANULARITY_SCRIPT_DEFINED,
     GRANULARITY_NONE,
 )
@@ -51,6 +55,10 @@ VALID_GRANULARITIES = (
 GRANULARITY_DESCRIPTIONS = {
     GRANULARITY_SINGLE_CALL: "One host undo entry per tool call; one undo_last call reverses it.",
     GRANULARITY_PER_NODE: "One host undo entry per node touched; call undo_last once per reported node.",
+    GRANULARITY_BATCH_CALL: (
+        "One call writes N nodes. The host usually groups the batch into a single undo entry, but the "
+        "grouping cannot be queried: undo once, re-read the nodes, then repeat while the scene still differs."
+    ),
     GRANULARITY_SCRIPT_DEFINED: "Undo coverage is decided by the script body and cannot be verified by the adapter.",
     GRANULARITY_NONE: "Not reversible through the host undo stack; back up the scene before calling it.",
 }
@@ -253,6 +261,13 @@ def run_history_steps(
     leaves the scene byte-identical is treated as a no-op: the loop stops there
     and the no-op is surfaced, because the usual cause is an exhausted history
     stack rather than an undo that "worked" invisibly.
+
+    On a scene larger than :data:`MAX_FINGERPRINT_NODES` the fingerprint only
+    samples part of the scene, so verification is best-effort. The caveat fires
+    when *any* fingerprint taken during the request was truncated - a step whose
+    before-capture exceeded the limit still reports it, even when the step ended
+    below the limit - and it is attached to every result, including the
+    empty-stack failure and the ``allow_no_op`` success.
     """
     label = "undo" if direction == UNDO_DIRECTION else "redo"
     error = _validate_count(count)
@@ -277,15 +292,21 @@ def run_history_steps(
     warnings: List[str] = []
     applied = 0
     failure: Optional[str] = None
+    # Every fingerprint taken during this request, not just the last one. A step
+    # can start above the sample limit and end below it, in which case the final
+    # fingerprint looks complete even though part of the step went unobserved.
+    fingerprints: List[Dict[str, Any]] = []
 
     for index in range(count):
         before = scene_fingerprint(rt)
+        fingerprints.append(before)
         try:
             channel()
         except Exception as exc:  # noqa: BLE001 - a host rejection must become a result, not a traceback
             failure = "the host rejected {} step {}: {}".format(label, index + 1, exc)
             break
         after = scene_fingerprint(rt)
+        fingerprints.append(after)
         changed = before["digest"] != after["digest"]
         if changed:
             applied += 1
@@ -301,6 +322,9 @@ def run_history_steps(
         if not changed:
             break
 
+    final = scene_fingerprint(rt)
+    fingerprints.append(final)
+
     data: Dict[str, Any] = {
         "direction": direction,
         "requested": count,
@@ -308,10 +332,23 @@ def run_history_steps(
         "completed": applied == count,
         "channel": channel_name,
         "steps": steps,
-        "fingerprint": scene_fingerprint(rt),
+        "fingerprint": final,
     }
 
+    # Attached before every exit below: a step that looks like a no-op may only
+    # look that way because the fingerprint never sampled the nodes that moved.
+    # Any truncated fingerprint in the request counts, and the warning reports
+    # the smallest sample that was taken, since that is the weakest evidence.
+    truncated_samples = [int(entry["sampled_nodes"]) for entry in fingerprints if entry["truncated"]]
+    if truncated_samples:
+        warnings.append(
+            "the scene fingerprint sampled only the first {} nodes, so step verification is best-effort".format(
+                min(truncated_samples)
+            )
+        )
+
     if failure:
+        data["warnings"] = warnings
         return undo_error(failure, **data)
 
     if applied == 0:
@@ -333,13 +370,6 @@ def run_history_steps(
         warnings.append(
             "only {} of {} {} step(s) changed the scene; the history stack was exhausted".format(
                 applied, count, label
-            )
-        )
-
-    if data["fingerprint"]["truncated"]:
-        warnings.append(
-            "the scene fingerprint sampled only the first {} nodes, so step verification is best-effort".format(
-                data["fingerprint"]["sampled_nodes"]
             )
         )
 
@@ -442,6 +472,7 @@ def undo_capabilities(rt: Any) -> Dict[str, Any]:
 
 
 __all__ = [
+    "GRANULARITY_BATCH_CALL",
     "GRANULARITY_DESCRIPTIONS",
     "GRANULARITY_NONE",
     "GRANULARITY_PER_NODE",

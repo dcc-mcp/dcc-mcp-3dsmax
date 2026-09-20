@@ -1,10 +1,32 @@
 # Undo semantics for 3ds Max tools
 
-The adapter exposes destructive tools, so every one of them has to answer two
-questions up front: *can this be reversed?* and *how many undo entries does one
-call create?* This document is the contract. It is enforced by
-`tests/test_undo_skill.py`, which fails when a `destructive: true` tool declares
-no `undo` block or uses a granularity outside the vocabulary below.
+Tools that write to the scene have to answer two questions up front: *can this
+be reversed?* and *how many undo entries does one call create?* This document is
+the contract, and it is enforced by `tests/test_undo_skill.py`.
+
+## Who has to declare an `undo` block
+
+The requirement is the same in the docs, in the tests and in the tool tables:
+
+| Kind of tool | `undo` block | Enforced by |
+| --- | --- | --- |
+| `destructive: true` | **required** | `test_every_destructive_tool_declares_undo_semantics` |
+| Multi-node write path - writes `scene_nodes` and takes a plural node selection (array `node_names` / `handles`) | **required** | `test_multi_node_write_paths_declare_undo_semantics` |
+| Any other write | optional, but must use the vocabulary when declared | `test_every_declared_undo_block_uses_the_vocabulary` |
+
+The multi-node rule exists because an agent cannot infer the undo count from the
+tool list for those calls: one invocation can change N nodes and the host may or
+may not group them. A single-node write such as `parent_node` and a
+settings-level write such as `set_render_resolution` are easy to reason about
+without metadata, so they are not required to declare one.
+
+The multi-node rule is enforced for the skills listed in `UNDO_SCOPE_SKILLS` in
+`tests/test_undo_skill.py` - currently `3dsmax-scene`, the primary entry point
+for scene writes. Extend that tuple as further skills are brought onto the
+contract; destructive tools in every skill are already covered regardless.
+
+Every tool that declares `undo` metadata must also appear in the tables in this
+file (`test_undo_metadata_matches_known_granularities`).
 
 ## The tools
 
@@ -39,6 +61,19 @@ The result is explicit in every case:
 | No step changed the scene | `false` | `applied: 0`; pass `allow_no_op: true` to get a warning instead |
 | The host raised on the command | `false` | The host error text is returned |
 
+The fingerprint samples at most 4000 nodes. On a larger scene the result
+therefore carries a `the scene fingerprint sampled only the first N nodes`
+warning, and that warning is attached to **every** outcome - including the
+empty-stack failure and the `allow_no_op` success - because a real undo that
+only moved nodes outside the sample is exactly the case that would otherwise be
+reported as a bare no-op.
+
+When that warning is present, an `applied: 0` result means **unverified**, not
+"nothing happened", so do not stop on it. Re-read what the call changed and keep
+undoing while it still differs; stop when the re-read matches the state you
+want, or when a result arrives **without** the sampling warning, which means the
+verification was complete and the history stack really is exhausted.
+
 Channels are probed, not assumed. `max undo` / `max redo` are the documented
 user-level commands and take priority; the SDK hold manager
 (`theHold.Restore()` / `theHold.Redo()`) is the fallback. Only one channel fires
@@ -62,10 +97,52 @@ undo:
 | --- | --- |
 | `single_call` | One host undo entry per tool call. One `undo_last` reverses it. |
 | `per_node` | One host undo entry per node touched. Call `undo_last` with `count` equal to the number of nodes the tool reported. |
+| `batch_call` | One call writes N nodes. The host usually groups the batch into a single undo entry, but the grouping cannot be queried: undo once, re-read the nodes, then repeat while the scene still differs. |
 | `script_defined` | Arbitrary script. Undo coverage depends on the script body and cannot be verified by the adapter. |
-| `none` | Not reversible through the host stack. `supported` must be `false`. |
+| `none` | Not reversible through the host stack. `supported` must be `false`; do not rely on `undo_last` to reverse the call. |
 
-`supported: false` always goes with `granularity: none`.
+`supported: false` always goes with `granularity: none`, and every other
+granularity goes with `supported: true`.
+
+## Write paths that are not destructive
+
+`destructive: true` means *this call can destroy data the caller cannot
+recreate*. It says nothing about undo coverage, so a non-destructive write can
+still be reversible through the host undo stack. The multi-node write paths in
+`3dsmax-scene` therefore carry an `undo` block, using the same vocabulary, and
+their `destructive` / `risk` classification is unchanged.
+
+| Tool | Reversible | Granularity | Notes |
+| --- | --- | --- | --- |
+| `3dsmax-scene__set_object_property` | yes | `single_call` | One property write on one node. |
+| `3dsmax-scene__create_object` | yes | `single_call` | Creates one node. |
+| `3dsmax-scene__set_selection` | no | `none` | Selection is editor state. Re-select explicitly. |
+| `3dsmax-scene__merge_file` | yes | `batch_call` | One call merges N nodes from a file. |
+| `3dsmax-scene__duplicate_nodes` | yes | `batch_call` | One call duplicates N nodes. |
+| `3dsmax-scene__group_nodes` | yes | `batch_call` | One call groups N nodes. |
+| `3dsmax-scene__batch_rename_objects` | yes | `batch_call` | One call renames N nodes. |
+| `3dsmax-scene__transform_object` | yes | `batch_call` | One call transforms N nodes. |
+| `3dsmax-scene__clone_objects` | yes | `batch_call` | One call clones N nodes. |
+| `3dsmax-scene__set_visibility` | yes | `batch_call` | One call sets visibility on N nodes. |
+| `3dsmax-scene__center_pivots` | yes | `batch_call` | One call centres pivots on N nodes. |
+| `3dsmax-scene__freeze_transforms` | yes | `batch_call` | One call freezes N nodes. |
+
+### Undo counts for a batch write
+
+3ds Max exposes no API for the depth of the history stack and no API for how it
+grouped a batch of writes onto it. A call that touched N nodes may therefore be
+one host entry *or* N entries, and the adapter cannot tell which. The procedure
+is the same either way:
+
+1. Call `undo_last` with `count=1`.
+2. Re-read what the tool reported - the `renamed` list for
+   `batch_rename_objects`, or the affected nodes for `transform_object` and
+   `clone_objects`.
+3. If the batch is only partly reverted, call `undo_last` again. Stop when a
+   step reports `applied: 0`, which means the history stack is exhausted.
+
+Do not jump straight to `undo_last(count=N)`: when the host *did* group the
+batch, those extra steps consume undo entries that belong to earlier work.
 
 ## Destructive tools
 

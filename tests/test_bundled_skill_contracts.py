@@ -102,6 +102,34 @@ def test_bundled_skill_metadata_and_tools_are_ci_validatable():
             assert isinstance(annotations["open_world_hint"], bool), tool_name
 
 
+# Tools that predate the `produces` convention. They are also missing
+# `side_effects` and `intent`, so they are tracked here rather than being given
+# invented values; do not add to this list.
+LEGACY_TOOLS_WITHOUT_PRODUCES = frozenset(
+    {
+        "3dsmax-lookdev__get_color_management",
+        "3dsmax-lookdev__set_color_management",
+        "3dsmax-lookdev__set_hdri_rotation",
+    }
+)
+
+
+def test_every_bundled_tool_declares_produces():
+    """Guard `produces` against silent removal.
+
+    `produces` is the only place a tool states what it returns, so dropping the
+    key (or folding its values into `side_effects.targets`) is a metadata
+    regression that no other assertion catches. Require it on every tool.
+    """
+    for skill_dir in _skill_dirs():
+        for tool in _tools(skill_dir):
+            exported = _exported_tool_name(skill_dir.name, tool["name"])
+            if exported in LEGACY_TOOLS_WITHOUT_PRODUCES:
+                continue
+            produces = tool.get("produces")
+            assert isinstance(produces, list) and produces, exported
+
+
 def test_asset_source_loads_one_registered_handler_through_the_real_core_loader():
     """The minimum supported Core must accept the shipped asset-source manifest."""
     from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions

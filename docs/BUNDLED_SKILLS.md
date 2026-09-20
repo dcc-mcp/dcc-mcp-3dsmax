@@ -33,8 +33,9 @@ Every bundled tool declares:
 - explicit `input_schema` and `output_schema` objects
 - `execution`, `affinity`, and `timeout_hint_secs`
 - MCP safety annotations for read-only, destructive, idempotent, and open-world behavior
-- an `undo` block stating whether it is reversible and at what granularity
-  (see [UNDO.md](UNDO.md) for the vocabulary and the destructive-tool table)
+- an `undo` block stating whether it is reversible and at what granularity,
+  when it is `destructive: true` or when one call writes several nodes
+  (see [UNDO.md](UNDO.md) for the vocabulary and the per-tool tables)
 
 The bundled skill contract is enforced by the test suite and does not require
 an interactive 3ds Max session.
