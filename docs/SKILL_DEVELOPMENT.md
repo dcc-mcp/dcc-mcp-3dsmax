@@ -272,9 +272,17 @@ See `src/dcc_mcp_3dsmax/skills/3dsmax-materials/` for a complete example.
    - **Required** on every tool declared `destructive: true`.
    - **Required** on every multi-node write path: a tool that writes
      `scene_nodes` and takes a plural node selection (an array `node_names` /
-     `handles` property), so one call can change N nodes. Use
-     `granularity: batch_call` there, because the host may or may not group the
-     batch and the adapter cannot query the grouping.
+     `handles` property), so one call can change N nodes.
+
+   The **granularity must reflect what the host actually does**, not the fact
+   that a call took several nodes:
+
+   - `batch_call` when one call writes N nodes and the grouping cannot be
+     queried, which is the common case.
+   - `single_call` when the host records the whole call as one entry, as
+     `delete_nodes` does.
+   - `none` when the call does not change scene content and so is not reliably
+     recorded at all, as `set_selection` is.
    - **Optional** on single-node and settings-level writes, but a declared
      block must use the vocabulary either way.
 

@@ -660,9 +660,24 @@ def test_every_destructive_tool_declares_undo_semantics():
     assert checked >= 14, checked
 
 
+def _doc_table_rows(doc):
+    """Return the first cell of every Markdown table row, lowercased."""
+    rows = []
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        # Skip the separator row of a table.
+        if set(stripped.replace("|", "").replace("-", "").replace(":", "").strip()) == set():
+            continue
+        rows.append(stripped.strip("|").split("|")[0].strip().strip("`"))
+    return rows
+
+
 def test_undo_metadata_matches_known_granularities():
-    """Every tool with an undo block - destructive or not - is in the undo doc."""
+    """Every tool with an undo block - destructive or not - is in the undo doc tables."""
     doc = (Path(__file__).resolve().parents[1] / "docs" / "UNDO.md").read_text(encoding="utf-8")
+    rows = _doc_table_rows(doc)
     checked = 0
     for skill_dir in sorted(path for path in SKILLS_DIR.iterdir() if path.is_dir()):
         tools = yaml.safe_load((skill_dir / "tools.yaml").read_text(encoding="utf-8"))["tools"]
@@ -671,7 +686,8 @@ def test_undo_metadata_matches_known_granularities():
                 continue
             checked += 1
             exported = "{}__{}".format(skill_dir.name, tool["name"])
-            assert exported in doc, exported
+            # A prose mention is not documentation: the tool needs its own row.
+            assert exported in rows, exported
     assert checked >= 29, checked
 
 

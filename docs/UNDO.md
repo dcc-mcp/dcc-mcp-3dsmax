@@ -66,8 +66,13 @@ therefore carries a `the scene fingerprint sampled only the first N nodes`
 warning, and that warning is attached to **every** outcome - including the
 empty-stack failure and the `allow_no_op` success - because a real undo that
 only moved nodes outside the sample is exactly the case that would otherwise be
-reported as a bare no-op. When the warning is present, treat `applied: 0` as
-"unverified", not as "nothing happened".
+reported as a bare no-op.
+
+When that warning is present, an `applied: 0` result means **unverified**, not
+"nothing happened", so do not stop on it. Re-read what the call changed and keep
+undoing while it still differs; stop when the re-read matches the state you
+want, or when a result arrives **without** the sampling warning, which means the
+verification was complete and the history stack really is exhausted.
 
 Channels are probed, not assumed. `max undo` / `max redo` are the documented
 user-level commands and take priority; the SDK hold manager
