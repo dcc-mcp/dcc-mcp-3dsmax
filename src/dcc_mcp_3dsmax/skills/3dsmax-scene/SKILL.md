@@ -112,9 +112,9 @@ the caller to undo once before retrying.
 It shares the verified readback and the fixed no-prompt conflict policies of
 `merge_file`, so use `merge_file` when the exact source node names are already
 known and `merge_from_file` when the selection has to be resolved by pattern.
-One call is one host undo entry, so `undo_last(count=1)` reverts it; re-read
-the reported `merged_nodes` afterwards because a partial revert means the host
-split the merge into more than one entry.
+One call merges N nodes and the host grouping cannot be queried, so undo once,
+re-read the reported `merged_nodes`, then repeat while merged nodes are still
+present.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

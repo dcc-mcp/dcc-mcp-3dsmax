@@ -118,7 +118,7 @@ their `destructive` / `risk` classification is unchanged.
 | `3dsmax-scene__create_object` | yes | `single_call` | Creates one node. |
 | `3dsmax-scene__set_selection` | no | `none` | Selection is editor state. Re-select explicitly. |
 | `3dsmax-scene__merge_file` | yes | `batch_call` | One call merges N nodes from a file. |
-| `3dsmax-scene__merge_from_file` | yes | `single_call` | One call merges N nodes from an external .max file. |
+| `3dsmax-scene__merge_from_file` | yes | `batch_call` | One call merges N nodes from an external .max file. |
 | `3dsmax-scene__duplicate_nodes` | yes | `batch_call` | One call duplicates N nodes. |
 | `3dsmax-scene__group_nodes` | yes | `batch_call` | One call groups N nodes. |
 | `3dsmax-scene__batch_rename_objects` | yes | `batch_call` | One call renames N nodes. |

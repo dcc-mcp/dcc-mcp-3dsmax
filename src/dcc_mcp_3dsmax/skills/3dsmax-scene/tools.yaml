@@ -1978,8 +1978,8 @@ tools:
     produces: ["scene_nodes", "scene_status"]
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        mergeMAXFile is one host operation, so one undo entry covers the whole merge; undo_last(count=1)
-        removes the merged nodes. Re-read the reported merged_nodes afterwards, because a partial revert
-        means the host split the merge and needs another undo_last step.
+        One call merges N nodes from an external .max file. 3ds Max may or may not group the merge into a
+        single undo entry and the adapter cannot query the grouping: undo once, re-read the reported
+        merged_nodes, then repeat while merged nodes are still present.
