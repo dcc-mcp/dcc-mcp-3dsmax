@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.9](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.8...v0.2.9) (2026-09-20)
+
+
+### Features
+
+* add external .max file inspect, search, and merge tools ([#188](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/188)) ([7ed2633](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/7ed263397a067d33ee52311e7adf80db4edb824c))
+
+
+### Bug Fixes
+
+* use batch_call undo granularity for merge_from_file and document it ([#190](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/190)) ([c8ecb75](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/c8ecb758b9727edfbba9fca761174871b79fda7e))
+
 ## [0.2.8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.7...v0.2.8) (2026-09-19)
 
 
