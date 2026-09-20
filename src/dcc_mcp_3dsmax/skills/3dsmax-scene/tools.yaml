@@ -1481,7 +1481,8 @@ tools:
       imports: false
       file_output: false
       render: false
-      targets: ["scene_nodes", "bounding_box"]
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes", "bounding_box"]
     undo:
       supported: true
       granularity: single_call
