@@ -1674,3 +1674,312 @@ tools:
       render: false
       targets: ["scene_nodes"]
     produces: ["orientation_report", "bounding_box"]
+  - name: inspect_max_file
+    description: >-
+      Read the objects and metadata stored in an external .max file without
+      opening it in the current scene. A missing, unreadable, or invalid file
+      is reported as an explicit failure instead of an empty object list.
+    source_file: action_inspect_max_file.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Existing absolute .max path to inspect.
+        name_filter:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Optional case-insensitive substring filter for object names.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 200
+          description: Maximum number of object names to return.
+        include_object_names:
+          type: boolean
+          default: true
+          description: Return object names when true; else counts and metadata only.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Inspect the objects and metadata of an external 3ds Max file."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["inspect_max_file", "inspect max file", "external max objects"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["max_file_info", "object_names"]
+  - name: batch_file_info
+    description: >-
+      Read metadata for a batch of up to 20 external .max files in one call.
+      Every file gets a per-file status; a file that cannot be read is
+      reported as an explicit error and fails the call rather than being
+      skipped silently. Paths are read serially on the 3ds Max main thread,
+      so keep batches small: a batch above 10 paths returns a warning asking
+      for a smaller batch instead of one long call.
+    source_file: action_batch_file_info.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_paths]
+      properties:
+        file_paths:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 4096}
+          description: >-
+            Existing absolute .max paths to read, at most 20 per call. Paths are
+            read serially on the 3ds Max main thread.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 200
+          description: Maximum number of object names to return per file.
+        include_object_names:
+          type: boolean
+          default: false
+          description: Return object names per file when true.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Read metadata for several external 3ds Max files at once."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["batch_file_info", "batch max file info", "max file metadata"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["max_file_info"]
+  - name: search_max_files
+    description: >-
+      Search a batch of up to 20 external .max files for objects whose name
+      matches a substring or glob pattern. Files that cannot be read are
+      reported as explicit per-file errors and fail the call. Paths are read
+      serially on the 3ds Max main thread, so keep batches small: a batch
+      above 10 paths returns a warning asking for a smaller batch instead of
+      one long call.
+    source_file: action_search_max_files.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_paths, name_pattern]
+      properties:
+        file_paths:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {type: string, minLength: 1, maxLength: 4096}
+          description: >-
+            Existing absolute .max paths to search, at most 20 per call. Paths
+            are read serially on the 3ds Max main thread.
+        name_pattern:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Substring or glob pattern to match against object names.
+        match_mode:
+          type: string
+          enum: [contains, glob]
+          default: contains
+          description: Match object names by substring or by glob wildcard.
+        case_sensitive:
+          type: boolean
+          default: false
+          description: Match case-sensitively when true.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 200
+          description: Maximum number of matches to return.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Find objects by name pattern across several 3ds Max files."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["search_max_files", "search max files", "find objects in max files"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["max_file_matches"]
+  - name: merge_from_file
+    description: >-
+      Merge objects selected by exact name or by name pattern from an external
+      .max file into the current scene, using fixed no-prompt duplicate,
+      material, and reparent policies. The selection is resolved against the
+      source file first: an unmatched name or pattern fails the call instead of
+      merging an arbitrary subset, and unresolved names are always reported.
+    source_file: action_merge_from_file.py
+    execution: async
+    job_strategy: monolithic
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Existing absolute .max source path.
+        object_names:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: {type: string, minLength: 1, maxLength: 256}
+          description: >-
+            Exact source object names to merge. Mutually exclusive with
+            name_pattern; omit both to merge every object in the file.
+        name_pattern:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: >-
+            Substring or glob pattern selecting the source objects to merge.
+            Mutually exclusive with object_names.
+        match_mode:
+          type: string
+          enum: [contains, glob]
+          default: contains
+          description: Match source object names by substring or by glob wildcard.
+        case_sensitive:
+          type: boolean
+          default: false
+          description: Match source object names case-sensitively when true.
+        require_all:
+          type: boolean
+          default: false
+          description: >-
+            Fail without merging when any requested object name is missing from
+            the source file.
+        duplicate_names:
+          type: string
+          enum: [rename, skip, merge]
+          default: rename
+        material_duplicates:
+          type: string
+          enum: [rename, use_scene, use_merged]
+          default: rename
+        reparent:
+          type: string
+          enum: [never, always]
+          default: never
+        select_merged:
+          type: boolean
+          default: false
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 120
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+      deferred_hint: true
+    intent: "Merge named or pattern-matched objects from one 3ds Max file."
+    tool_role: action
+    risk: medium
+    search_aliases: ["merge_from_file", "merge objects from max file", "merge max objects"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: true
+      file_output: false
+      render: false
+      targets: ["scene_nodes"]
+    produces: ["scene_nodes", "scene_status"]
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        mergeMAXFile is one host operation, so one undo entry covers the whole merge; undo_last(count=1)
+        removes the merged nodes. Re-read the reported merged_nodes afterwards, because a partial revert
+        means the host split the merge and needs another undo_last step.
