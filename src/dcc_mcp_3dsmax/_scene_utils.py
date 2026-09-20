@@ -378,6 +378,30 @@ def scalar_equal(left: Any, right: Any, tolerance: float = 1e-6) -> bool:
         return str(left) == str(right)
 
 
+def property_values_match(current: Any, expected: Any) -> bool:
+    """Compare a readback property value with the value that was written.
+
+    Shared by every property write path so a rename, a single-property write
+    and a batched patch all accept exactly the same evidence that a write took
+    effect. The comparison is driven by the *expected* value: booleans compare
+    by identity, numbers with a tolerance, Point3/Color component by component,
+    and everything else by string form.
+    """
+    if isinstance(expected, bool) or isinstance(current, bool):
+        return bool(current) is bool(expected)
+    if isinstance(expected, (int, float)) and isinstance(current, (int, float)):
+        return scalar_equal(current, expected)
+    if isinstance(expected, str):
+        return str(current) == expected
+    serialized_expected = serialize_property_value(expected)
+    if isinstance(serialized_expected, list):
+        return vector_equal(current, expected)
+    rows = serialize_property_value(expected)
+    if isinstance(rows, list) and rows and isinstance(rows[0], list):
+        return matrix_equal(current, expected)
+    return str(current) == str(expected)
+
+
 def _build_scalar(current: Any, value: Any, name: str) -> Any:
     if isinstance(current, bool):
         if isinstance(value, bool):

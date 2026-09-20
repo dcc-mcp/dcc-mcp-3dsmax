@@ -160,25 +160,27 @@ batch, those extra steps consume undo entries that belong to earlier work.
 | `3dsmax-scene__save_scene` | no | `none` | File writes are outside the host undo stack. |
 | `3dsmax-scene__save_scene_as` | no | `none` | File writes are outside the host undo stack. |
 | `3dsmax-scene__delete_nodes` | yes | `single_call` | One host call; the per-node fallback leaves one entry per node. |
+| `3dsmax-scene__scene_patch` | yes | `single_call` | Every edit in the batch is written inside one host undo hold, so one `undo_last` reverses the whole call. `undo.grouped` is `false` only when the host could not open a hold. |
 | `3dsmax-scripting__execute_python` | depends | `script_defined` | Prefer typed tools. |
 | `3dsmax-scripting__execute_maxscript` | depends | `script_defined` | Prefer typed tools. |
 | `3dsmax-uv-atlas__delete_uv_channel` | yes | `per_node` | One entry per node in the response. |
 
-## Single-step grouping for future atomic batches
+## Single-step grouping for atomic batches
 
-A future atomic batch tool (`scene_patch`) needs N edits to collapse into one
-undo entry — the MAXScript equivalent of `undo "label" ( ... )`.
+`3dsmax-scene__scene_patch` needs N edits to collapse into one undo entry —
+the MAXScript equivalent of `undo "label" ( ... )`.
 `dcc_mcp_3dsmax._undo_utils.undo_step()` provides that on the Python side: it
 opens a hold with `theHold.Begin()`, and closes it with `theHold.Accept(label)`
-on success or `theHold.Cancel()` on an exception.
+on success or `theHold.Cancel()` on an exception. Because the whole batch runs
+inside that hold, one call leaves one host entry and therefore one `undo_last`
+step — the same contract as a `single_call` tool.
 
-It is **not** wired into any shipped tool yet. That is deliberate: every
-existing tool keeps its own host undo entries, which is the conservative
-behaviour, and the semantics above stay correct either way. When the batch tool
-lands, one of its calls will produce one host entry and therefore one
-`undo_last` step — the same contract as a `single_call` tool, so nothing here
-has to change.
+Grouping is a capability, not a given. `undo_step()` reports instead of
+guessing: the yielded dict carries `engaged` and `reason`, and the caller must
+surface a non-engaged hold rather than assume the batch was grouped.
+`scene_patch` refuses to apply an ungrouped batch unless `allow_ungrouped` is
+true, so an agent never ends up with a silently half-reversible batch.
 
-`undo_step()` reports instead of guessing: the yielded dict carries `engaged`
-and `reason`, and a caller must surface a non-engaged hold rather than assume
-the batch was grouped.
+Every other tool still keeps its own host undo entries, which is the
+conservative behaviour: the semantics above are unchanged for them, and a
+`scene_patch` failure that cancels the hold only ever rolls back its own edits.
