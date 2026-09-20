@@ -13,7 +13,7 @@ metadata:
     version: "1.0.0"
     layer: domain
     stage: scene
-    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch"
+    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch scene patch atomic preflight undo"
     tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
@@ -115,6 +115,16 @@ known and `merge_from_file` when the selection has to be resolved by pattern.
 One call merges N nodes: undo once and re-check the node list, then repeat
 while merged nodes are still present, because 3ds Max may or may not group
 them into a single entry.
+
+`scene_patch` is the batch write path: it applies up to 256 mechanical node
+edits (set a property, rename, set position, set visibility) in one call.
+Every edit is resolved and validated before the first write, so a rejected
+batch leaves the scene untouched, and the accepted edits are written inside a
+single host undo hold — one call leaves one undo entry, and an edit that fails
+to verify cancels the hold so the whole batch is rolled back. Use `dry_run` to
+check a batch first. Hosts that cannot open an undo hold refuse the batch
+unless `allow_ungrouped=true`, in which case the result reports
+`undo.grouped=false` and each edit may leave its own undo entry.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

@@ -6,33 +6,14 @@ from typing import Any, Dict, Optional
 
 from dcc_mcp_3dsmax._scene_utils import (
     build_property_value,
-    matrix_equal,
+    property_values_match,
     read_property,
     resolve_node_object,
-    scalar_equal,
     serialize_property_value,
-    vector_equal,
 )
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 RESERVED_PROPERTIES = frozenset({"handle", "inode"})
-
-
-def _values_match(current: Any, expected: Any) -> bool:
-    """Compare the readback value with the value that was requested."""
-    if isinstance(expected, bool) or isinstance(current, bool):
-        return bool(current) is bool(expected)
-    if isinstance(expected, (int, float)) and isinstance(current, (int, float)):
-        return scalar_equal(current, expected)
-    if isinstance(expected, str):
-        return str(current) == expected
-    serialized_expected = serialize_property_value(expected)
-    if isinstance(serialized_expected, list):
-        return vector_equal(current, expected)
-    rows = serialize_property_value(expected)
-    if isinstance(rows, list) and rows and isinstance(rows[0], list):
-        return matrix_equal(current, expected)
-    return str(current) == str(expected)
 
 
 @with_max
@@ -145,7 +126,7 @@ def main(
             "data": {"node": result.get("node"), "property": name, "error": str(exc)},
         }
 
-    if not _values_match(readback, target):
+    if not property_values_match(readback, target):
         return {
             "success": False,
             "message": "Property write did not take effect",
