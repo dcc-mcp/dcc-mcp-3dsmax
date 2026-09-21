@@ -258,6 +258,13 @@ class LoftObject:
     def createPath(self, node):  # noqa: N802 - mirrors the native method name.
         self.path = node
 
+    def deleteShape(self, index):  # noqa: N802 - mirrors the native method name.
+        """Take a registered cross-section back off the loft."""
+        if index < 1 or index > len(self.shapes):
+            raise RuntimeError("no cross-section at index {}".format(index))
+        del self.shapes[index - 1]
+        self.numShapes = len(self.shapes)
+
     def __setattr__(self, name, value):
         if name in ("shape_steps", "path_steps") and getattr(self, "reject_steps", False):
             raise RuntimeError("surface parameter rejected by the host")
@@ -2009,3 +2016,144 @@ def test_edit_curve_rollback_restores_the_knot_type(monkeypatch):
     knot = after["data"]["splines"][0]["knots"][1]
     # The rollback must have put the type back, not left "bezier" behind.
     assert knot["knot_type"] == "corner"
+
+
+# ── Regression tests for the third review round ───────────────────────
+
+
+def _loft_with_two_sections(module, model, name="duct_loft"):
+    model.main(action="create", name="second_section", profile="circle", radius=8, segments=12)
+    model.main(action="create", name="third_section", profile="circle", radius=6, segments=12)
+    created = module.main(action="create", name=name, cross_sections=["profile_a", "profile_b"])
+    assert created["success"] is True, created
+    return created
+
+
+def test_loft_update_takes_partial_sections_back_off_on_failure(monkeypatch):
+    """An update that half-registers must not leave the caller's loft modified."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+    _loft_with_two_sections(module, model)
+    loft = runtime.getNodeByName("duct_loft")
+
+    model.main(action="create", name="fourth_section", profile="circle", radius=4, segments=12)
+
+    original_add = loft.addShape
+
+    def failing_second_add(node, param=None):
+        if len(loft.shapes) >= 3:
+            raise RuntimeError("host refused the third cross-section")
+        return original_add(node, param)
+
+    monkeypatch.setattr(loft, "addShape", failing_second_add)
+    result = module.main(
+        action="update", node_name="duct_loft", cross_sections=["second_section", "fourth_section"]
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
+    # The loft the caller already owned is back to its two original sections.
+    assert result["data"]["restored"] is True
+    assert result["data"]["observed_shape_count"] == 2
+    assert result["data"]["expected_shape_count"] == 2
+    assert len(loft.shapes) == 2
+
+
+def test_loft_update_reports_an_unrestorable_partial_add(monkeypatch):
+    """When the host offers no removal call, the partial state is still reported."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+    _loft_with_two_sections(module, model)
+    loft = runtime.getNodeByName("duct_loft")
+
+    model.main(action="create", name="fourth_section", profile="circle", radius=4, segments=12)
+
+    def no_removal_api(*_args, **_kwargs):
+        raise AttributeError("deleteShape")
+
+    monkeypatch.setattr(loft, "deleteShape", no_removal_api, raising=False)
+    original_add = loft.addShape
+
+    def failing_second_add(node, param=None):
+        if len(loft.shapes) >= 3:
+            raise RuntimeError("host refused the third cross-section")
+        return original_add(node, param)
+
+    monkeypatch.setattr(loft, "addShape", failing_second_add)
+    result = module.main(
+        action="update", node_name="duct_loft", cross_sections=["second_section", "fourth_section"]
+    )
+
+    assert result["success"] is False
+    # Never claim a clean rollback: the caller is told the loft is still dirty.
+    assert result["data"]["restored"] is False
+    assert result["data"]["observed_shape_count"] == 3
+    assert result["data"]["expected_shape_count"] == 2
+
+
+def test_loft_update_preserves_the_previous_path_and_surface_metadata(monkeypatch):
+    """A cumulative update must not drop fields this call did not supply."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    draw.main(points=[[0, 0, 0], [0, 0, 100]], name="duct_path")
+
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+    created = module.main(
+        action="create",
+        name="duct_loft",
+        cross_sections=["profile_a", "profile_b"],
+        path_node="duct_path",
+        shape_steps=4,
+        cap_start=True,
+    )
+    assert created["success"] is True, created
+
+    # A later update touches only one surface flag.
+    updated = module.main(action="update", node_name="duct_loft", cap_end=True)
+    assert updated["success"] is True, updated
+
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["data"]["path_node"] == "duct_path"
+    assert read["data"]["surface_params"]["shape_steps"] == 4
+    assert read["data"]["surface_params"]["cap_start"] is True
+    assert read["data"]["surface_params"]["cap_end"] is True
+    assert read["data"]["cross_sections"] == ["profile_a", "profile_b"]
+
+
+def test_loft_update_records_a_repeated_cross_section_per_registration(monkeypatch):
+    """A repeated section is a real extra shape, so it is recorded each time."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+    _loft_with_two_sections(module, model)
+
+    updated = module.main(
+        action="update", node_name="duct_loft", cross_sections=["profile_a", "profile_a"]
+    )
+    assert updated["success"] is True, updated
+    assert updated["data"]["registered_shape_count"] == 4
+
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["data"]["cross_sections"] == [
+        "profile_a",
+        "profile_b",
+        "profile_a",
+        "profile_a",
+    ]
+    assert read["data"]["cross_section_count"] == 4
+
+
+def test_boolean_operation_row_is_in_the_destructive_undo_table():
+    """A destructive tool's undo row belongs in the destructive table."""
+    doc = (ROOT / "docs" / "UNDO.md").read_text(encoding="utf-8")
+    destructive = doc.split("## Destructive tools", 1)[1]
+    non_destructive = doc.split("## Destructive tools", 1)[0]
+
+    assert "`3dsmax-mesh-ops__boolean_operation`" in destructive
+    assert "`3dsmax-mesh-ops__boolean_operation`" not in non_destructive

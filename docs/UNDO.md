@@ -112,6 +112,12 @@ still be reversible through the host undo stack. The multi-node write paths in
 `3dsmax-scene` therefore carry an `undo` block, using the same vocabulary, and
 their `destructive` / `risk` classification is unchanged.
 
+The `3dsmax-modeling` tools below are not destructive, but each one performs
+several host writes - one `addKnot` per spline point, one write per edited knot
+field, one `addShape` per loft cross-section - with no undo hold opened. The
+host may group them into one entry or keep them separate, and the adapter
+cannot query which, so they are declared `batch_call`.
+
 | Tool | Reversible | Granularity | Notes |
 | --- | --- | --- | --- |
 | `3dsmax-scene__set_object_property` | yes | `single_call` | One property write on one node. |
@@ -131,7 +137,6 @@ their `destructive` / `risk` classification is unchanged.
 | `3dsmax-modeling__edit_curve` | yes | `batch_call` | One write per edited knot field; grouping is not queryable. |
 | `3dsmax-modeling__curve_model` | yes | `batch_call` | Spline construction, optional sweep, and stored parameters. |
 | `3dsmax-modeling__loft_mesh` | yes | `batch_call` | One addShape per cross-section, plus the surface parameters. |
-| `3dsmax-mesh-ops__boolean_operation` | yes | `batch_call` | Node creation, mode write, and one registration per operand. |
 
 ### Undo counts for a batch write
 
@@ -159,6 +164,7 @@ batch, those extra steps consume undo entries that belong to earlier work.
 | `3dsmax-display__delete_custom_property` | yes | `per_node` | Pass `changed_property_count` as `count`. |
 | `3dsmax-mesh-ops__remove_modifier` | yes | `per_node` | One entry per node in the response. |
 | `3dsmax-mesh-ops__collapse_modifier_stack` | yes | `per_node` | Recoverable only through the host stack, and only until the session ends. |
+| `3dsmax-mesh-ops__boolean_operation` | yes | `batch_call` | Node creation, mode write, and one registration per operand. `remove_operand` drops an operand. |
 | `3dsmax-rigging__remove_deformer_modifier` | yes | `per_node` | One entry per node in the response. |
 | `3dsmax-scene__new_scene` | no | `none` | File > New clears the history stack. |
 | `3dsmax-scene__open_scene` | no | `none` | File > Open clears the history stack. |
