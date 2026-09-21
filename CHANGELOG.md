@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.10...v0.2.11) (2026-09-21)
+
+
+### Features
+
+* add spline, curve-model, loft, and boolean modelling tools ([ebef538](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ebef53871baca7136b9ab4d3d60e661cd25a743a))
+
 ## [0.2.10](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.9...v0.2.10) (2026-09-20)
 
 
