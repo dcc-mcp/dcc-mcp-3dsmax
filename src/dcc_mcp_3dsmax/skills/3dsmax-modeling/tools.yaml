@@ -505,11 +505,11 @@ tools:
           type: object
     timeout_hint_secs: 20
     read_only: false
-    destructive: false
+    destructive: true
     idempotent: false
     annotations:
       read_only_hint: false
-      destructive_hint: false
+      destructive_hint: true
       idempotent_hint: false
       open_world_hint: false
     intent: "Draw a spline shape from world-space points and verify it by readback."
@@ -519,7 +519,7 @@ tools:
     side_effects:
       creates: true
       modifies: true
-      deletes: false
+      deletes: true
       exports: false
       imports: false
       file_output: false
@@ -528,10 +528,12 @@ tools:
     produces: ['scene_nodes', 'spline_knots']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        One host undo entry per call. One undo_last reverses the whole spline,
-        including the node this call created.
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One addKnot per point; the host may or may not group them.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
     call_examples:
       - arguments:
           points: [[0, 0, 0], [50, 0, 40], [100, 0, 0]]
@@ -721,9 +723,12 @@ tools:
     produces: ['spline_knots']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        One host undo entry per call, whatever the number of edited knots.
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One write per edited knot field; count is not queryable.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
     call_examples:
       - arguments:
           node_name: guide_spline
@@ -860,11 +865,11 @@ tools:
           type: object
     timeout_hint_secs: 25
     read_only: false
-    destructive: false
+    destructive: true
     idempotent: false
     annotations:
       read_only_hint: false
-      destructive_hint: false
+      destructive_hint: true
       idempotent_hint: false
       open_world_hint: false
     intent: "Build a named parametric curve model and store its parameters on the node."
@@ -874,7 +879,7 @@ tools:
     side_effects:
       creates: true
       modifies: true
-      deletes: false
+      deletes: true
       exports: false
       imports: false
       file_output: false
@@ -883,10 +888,12 @@ tools:
     produces: ['scene_nodes', 'spline_knots', 'curve_params']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        One host undo entry per call. The stored parameters are part of the
-        node state and are restored with it.
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. Spline construction, optional sweep, and stored parameters.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
     call_examples:
       - arguments:
           action: create
@@ -1013,10 +1020,12 @@ tools:
     produces: ['scene_nodes', 'loft_params']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        One host undo entry per call, including the cross-sections registered
-        on a newly created loft node.
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One addShape per cross-section, plus the surface parameters.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
     call_examples:
       - arguments:
           action: create

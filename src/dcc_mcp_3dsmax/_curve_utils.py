@@ -788,11 +788,11 @@ def create_spline_shape(
 
     add_new_spline = getattr(runtime, "addNewSpline", None)
     if not callable(add_new_spline):
-        return None, "3ds Max does not expose addNewSpline"
+        return node, "3ds Max does not expose addNewSpline"
     try:
         add_new_spline(node)
     except Exception as exc:  # noqa: BLE001 - surface the host rejection.
-        return None, "addNewSpline failed: {}".format(exc)
+        return node, "addNewSpline failed: {}".format(exc)
 
     local_points: List[Any] = []
     for point in world_points:

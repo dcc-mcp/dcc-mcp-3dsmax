@@ -233,6 +233,8 @@ def main(
             )
         removed_node = remove_scene_node(rt, node)
         entry.update({"removed": removed_node, "delete_node": True})
+        if not removed_node:
+            return curve_error("the curve model node could not be deleted", **entry)
         return curve_success("Deleted the curve model node", **entry)
 
     # create / update

@@ -89,6 +89,7 @@ class _BooleanAdapter(object):
 
     name = "Boolean"
     constructor_names: Sequence[str] = ()
+    class_names: Sequence[str] = ()
     namespace: Optional[str] = None
     operation_codes: Dict[str, int] = {}
     operation_getters: Sequence[str] = ()
@@ -250,6 +251,7 @@ class _ProBooleanAdapter(_BooleanAdapter):
 
     name = "ProBoolean"
     constructor_names = ("ProBoolean",)
+    class_names = ("proboolean",)
     namespace = "ProBoolean"
     # ProBoolean.SetBoolOp takes the 0-based radio state and has no cut mode;
     # 3 is Merge, not a cut, so it is deliberately absent.
@@ -269,6 +271,9 @@ class _Boolean2Adapter(_BooleanAdapter):
 
     name = "Boolean2"
     constructor_names = ("Boolean2", "Boolean")
+    # "Boolean" is the legacy class name and is matched exactly, so it never
+    # collides with the ProBoolean adapter.
+    class_names = ("boolean2", "boolean")
     # Boolean2 setBoolOp is 1-based: 3 is Subtraction (A-B) and 5 is Cut.
     operation_codes = {"union": 1, "intersection": 2, "subtraction": 3, "cut": 5}
     operation_getters = ("getBoolOp", "GetBoolOp")
@@ -329,12 +334,13 @@ def _resolve_operand(runtime: Any, reference: Any) -> tuple:
 
 def _class_name(runtime: Any, boolean: Any) -> str:
     """Return the node's class name when the host reports one."""
-    class_of = getattr(runtime, "classOf", None)
-    if callable(class_of):
-        try:
-            return str(class_of(boolean))
-        except Exception:  # noqa: BLE001 - fall through to the reported attribute.
-            pass
+    for source in ("classOf", "getClassId"):
+        getter = getattr(runtime, source, None)
+        if callable(getter):
+            try:
+                return str(getter(boolean))
+            except Exception:  # noqa: BLE001 - fall through to the next probe.
+                continue
     return str(getattr(boolean, "class_name", "") or "")
 
 
@@ -342,15 +348,24 @@ def _detect_adapter(runtime: Any, boolean: Any) -> Tuple[Optional[_BooleanAdapte
     """Pick the adapter whose interface the node actually answers to.
 
     Both classes share the operand-count property, so the count alone cannot
-    tell them apart. Three signals are tried in order of strength: the reported
-    class name, a mode that only one class's code map explains (Boolean2 is
-    1-based and owns 5 for cut; ProBoolean starts at 0 and has no cut), and
-    finally the presence of any readable operand count.
+    tell them apart. Two signals are trusted, and ambiguity is reported rather
+    than guessed:
+
+    1. the class name, matched **exactly** against each adapter's own
+       ``class_names``. Substring matching would let "Boolean2" match the
+       ProBoolean adapter whenever that adapter came first;
+    2. a mode code that only one class's map explains. Boolean2 is 1-based
+       (0 is meaningless there) and owns 5 for cut; ProBoolean starts at 0 and
+       has no cut.
+
+    A code that both maps explain - 1 and 2 are union/intersection on Boolean2
+    but intersection/subtraction on ProBoolean - decides nothing. Guessing
+    there writes the wrong mode and reports success, so the call fails instead.
     """
-    class_name = _class_name(runtime, boolean)
+    class_name = _class_name(runtime, boolean).strip().lower()
     if class_name:
         for adapter in _ADAPTERS:
-            if adapter.name.lower() in class_name.lower():
+            if class_name in adapter.class_names:
                 return adapter, None
 
     distinctive = []
@@ -360,8 +375,15 @@ def _detect_adapter(runtime: Any, boolean: Any) -> Tuple[Optional[_BooleanAdapte
             distinctive.append(adapter)
     if len(distinctive) == 1:
         return distinctive[0], None
-    if distinctive:
-        return distinctive[0], None
+    if len(distinctive) > 1:
+        return None, (
+            "the boolean mode {} is ambiguous: it is valid for {}, and the node reports no "
+            "class name the adapters recognise, so the operation codes cannot be resolved. "
+            "Use a node whose class the host reports, or re-create the boolean with this tool".format(
+                distinctive[0].get_operation(runtime, boolean),
+                " and ".join(adapter.name for adapter in distinctive),
+            )
+        )
 
     for adapter in _ADAPTERS:
         count, _error = adapter.operand_count(runtime, boolean)

@@ -1018,11 +1018,11 @@ tools:
           type: object
     timeout_hint_secs: 30
     read_only: false
-    destructive: false
+    destructive: true
     idempotent: false
     annotations:
       read_only_hint: false
-      destructive_hint: false
+      destructive_hint: true
       idempotent_hint: false
       open_world_hint: false
     intent: "Run a native boolean and re-adjust its operands with verified readback."
@@ -1033,7 +1033,7 @@ tools:
     side_effects:
       creates: true
       modifies: true
-      deletes: false
+      deletes: true
       exports: false
       imports: false
       file_output: false
@@ -1042,10 +1042,12 @@ tools:
     produces: ['scene_nodes']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        One host undo entry per call. A created boolean node is removed again
-        when the call fails, and one undo_last reverses a successful one.
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. Node creation, mode write, and one registration per operand.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
     call_examples:
       - arguments:
           action: create

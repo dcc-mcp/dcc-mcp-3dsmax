@@ -54,6 +54,9 @@ def _restore(runtime: Any, node: Any, spline_index: int, snapshot: Sequence[Dict
             position=make_point(*[float(component) for component in knot["local_position"]]),
             in_vec=make_point(*[float(component) for component in knot["in_vec"]]),
             out_vec=make_point(*[float(component) for component in knot["out_vec"]]),
+            # The knot type is part of the captured state: restoring positions
+            # but not types would leave a half-rolled-back spline.
+            knot_type=knot.get("knot_type"),
         )
         if error:
             restored = False

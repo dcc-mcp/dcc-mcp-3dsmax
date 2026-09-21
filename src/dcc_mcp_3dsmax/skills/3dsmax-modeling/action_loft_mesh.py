@@ -137,6 +137,20 @@ def main(
                 )
             created_node = True
 
+        # numShapes is cumulative, so an update needs the pre-state to compare
+        # against; a freshly created loft starts from zero.
+        count_before = 0
+        if sections:
+            baseline, baseline_verified = read_count(rt, loft, _SHAPE_COUNTS)
+            if not baseline_verified:
+                rolled_back = delete_node(rt, loft) if created_node else False
+                return curve_error(
+                    "the loft shape count cannot be read, so the cross-sections cannot be "
+                    "confirmed (tried {})".format(", ".join(_SHAPE_COUNTS)),
+                    rolled_back=rolled_back,
+                )
+            count_before = baseline
+
         added: List[Dict[str, Any]] = []
         for offset, section_name in enumerate(sections):
             section, error = resolve_shape(rt, node_name=section_name)
@@ -149,103 +163,106 @@ def main(
                 owner_label="the Loft object",
             )
             if not ok:
-                if created_node:
-                    delete_node(rt, loft)
+                rolled_back = delete_node(rt, loft) if created_node else False
                 return curve_error(
                     error,
                     cross_section=node_identity(section),
-                    rolled_back=created_node,
+                    rolled_back=rolled_back,
                 )
             added.append({"node": node_identity(section), "method": used_method})
 
+        # numShapes is cumulative: read it before adding so an update on a loft
+        # that already holds sections is compared against the right baseline.
         count = None
         if sections:
             count, verified = read_count(rt, loft, _SHAPE_COUNTS)
         else:
             verified = True
         if not verified:
-            if created_node:
-                delete_node(rt, loft)
+            rolled_back = delete_node(rt, loft) if created_node else False
             return curve_error(
                 "the loft shape count cannot be read, so the cross-sections cannot be confirmed",
                 requested_cross_sections=len(sections),
-                rolled_back=created_node,
+                rolled_back=rolled_back,
             )
-        if count is not None and count != len(sections):
-            if created_node:
-                delete_node(rt, loft)
+        if count is not None and count != count_before + len(sections):
+            rolled_back = delete_node(rt, loft) if created_node else False
             return curve_error(
-                "the loft registered {} of {} cross-sections".format(count, len(sections)),
+                "the loft registered {} cross-sections instead of the expected {}".format(
+                    count, count_before + len(sections)
+                ),
+                registered_before=count_before,
                 requested_cross_sections=len(sections),
                 registered_shape_count=count,
-                rolled_back=created_node,
+                rolled_back=rolled_back,
             )
 
         path_summary: Dict[str, Any] = {"node": None, "verified": False}
         if path_node:
             path_object, error = resolve_shape(rt, node_name=str(path_node))
             if error:
-                if created_node:
-                    delete_node(rt, loft)
                 return error
             ok, used_method, error = call_first(
                 loft, _PATH_CREATORS, ((path_object,),), owner_label="the Loft object"
             )
             if not ok:
-                if created_node:
-                    delete_node(rt, loft)
-                return curve_error(error, rolled_back=created_node)
+                rolled_back = delete_node(rt, loft) if created_node else False
+                return curve_error(error, rolled_back=rolled_back)
             path_summary = {"node": node_identity(path_object), "method": used_method, "verified": True}
 
         applied, rejected = apply_properties(loft, surface, owner_label="the Loft object")
         if rejected and created_node:
-            delete_node(rt, loft)
             return curve_error(
                 "the loft did not accept every surface parameter",
                 rejected_surface_params=rejected,
                 applied_surface_params=applied,
-                rolled_back=True,
+                rolled_back=delete_node(rt, loft),
             )
 
         if normalized_name is not None:
             try:
                 loft.name = normalized_name
             except Exception as exc:  # noqa: BLE001 - a naming failure is a hard failure.
-                if created_node:
-                    delete_node(rt, loft)
-                return curve_error("could not name the loft node: {}".format(exc))
+                return curve_error(
+                    "could not name the loft node: {}".format(exc),
+                    rolled_back=delete_node(rt, loft) if created_node else False,
+                )
 
         # An update that supplies no cross-sections is a surface-parameter
         # edit; the loft object still holds the previously registered shapes,
         # so the stored record must not be overwritten with an empty list.
         previous = load_params(rt, loft, LOFT_PARAM_PROPERTY) or {}
+        merged_sections = list(previous.get("cross_sections") or [])
+        for entry in added:
+            name = entry["node"]["node_name"]
+            if name not in merged_sections:
+                merged_sections.append(name)
         persisted: Dict[str, Any] = {
             "name": normalized_name or str(getattr(loft, "name", "")),
-            "cross_sections": [entry["node"]["node_name"] for entry in added]
-            or previous.get("cross_sections", []),
+            # The node holds the union of every registered section, so the
+            # stored record has to match it rather than list only this call.
+            "cross_sections": merged_sections,
             "surface_params": applied,
         }
-        persisted["cross_section_count"] = len(persisted["cross_sections"])
+        persisted["cross_section_count"] = len(merged_sections)
         if path_node:
             persisted["path_node"] = str(path_node)
 
         stored, store_error = store_params(rt, loft, LOFT_PARAM_PROPERTY, persisted)
         if not stored:
-            if created_node:
-                delete_node(rt, loft)
             return curve_error(
                 "the loft parameters could not be stored on the node",
                 node=node_identity(loft),
                 store_error=store_error,
+                rolled_back=delete_node(rt, loft) if created_node else False,
             )
     except Exception as exc:  # noqa: BLE001 - host failures roll the new node back.
-        if created_node and loft is not None:
-            delete_node(rt, loft)
+        rolled_back = delete_node(rt, loft) if (created_node and loft is not None) else False
         return curve_error(
             "loft_mesh failed",
             exception_type=type(exc).__name__,
             exception=str(exc),
-            rolled_back=created_node,
+            rolled_back=rolled_back,
         )
 
     data: Dict[str, Any] = {
@@ -254,6 +271,7 @@ def main(
         "cross_sections": added,
         "cross_section_count": len(added),
         "registered_shape_count": count,
+        "registered_before": count_before,
         "path": path_summary,
         "applied_surface_params": applied,
         "params_stored": True,

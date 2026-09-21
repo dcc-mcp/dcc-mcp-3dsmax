@@ -1408,7 +1408,9 @@ def test_modeling_curve_tools_declare_bounded_main_thread_contracts(tool_name):
         assert key in tool, key
     if tool_name != "inspect_curve":
         assert isinstance(tool.get("undo"), dict), tool_name
-        assert tool["undo"]["granularity"] == "single_call"
+        # Each of these performs several host writes with no undo hold, so the
+        # grouping is not queryable: batch_call, never single_call.
+        assert tool["undo"]["granularity"] == "batch_call"
         assert tool["undo"]["supported"] is True
 
 
@@ -1422,8 +1424,12 @@ def test_boolean_operation_declares_a_bounded_high_risk_contract():
     assert tool["risk"] == "high"
     assert tool["input_schema"]["additionalProperties"] is False
     assert (MESH_OPS_DIR / tool["source_file"]).is_file()
-    assert tool["undo"]["granularity"] == "single_call"
+    assert tool["undo"]["granularity"] == "batch_call"
     assert tool["undo"]["supported"] is True
+    # remove_operand drops an operand, so the tool is destructive.
+    assert tool["destructive"] is True
+    assert tool["annotations"]["destructive_hint"] is True
+    assert tool["side_effects"]["deletes"] is True
 
 
 def test_edit_curve_requires_a_token_and_bounded_knot_edits():
@@ -1770,3 +1776,236 @@ def test_curve_model_update_replaces_only_after_the_profile_is_verified(monkeypa
         [0.0, 200.0, 0.0],
         [10.0, 200.0, 0.0],
     ]
+
+
+# ── Regression tests for the exact-head review findings ───────────────
+
+
+def _create_cut_boolean(module, runtime, name="cut_solid"):
+    """Build a Boolean2-backed boolean via the `cut` operation."""
+    return module.main(
+        action="create",
+        operation="cut",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name=name,
+    )
+
+
+def test_loft_update_with_new_cross_sections_extends_the_loft(monkeypatch):
+    """Update supplies sections on top of the ones the node already holds."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    model = _load(MODELING_DIR, "action_curve_model.py")
+    model.main(action="create", name="second_section", profile="circle", radius=8, segments=12)
+    model.main(action="create", name="third_section", profile="circle", radius=6, segments=12)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create", name="duct_loft", cross_sections=["profile_a", "profile_b"]
+    )
+    assert created["success"] is True, created
+
+    updated = module.main(
+        action="update", node_name="duct_loft", cross_sections=["second_section", "third_section"]
+    )
+
+    assert updated["success"] is True, updated
+    assert updated["data"]["registered_before"] == 2
+    assert updated["data"]["registered_shape_count"] == 4
+    assert updated["data"]["cross_section_count"] == 2
+
+    # The stored record is the union, not just the sections from this call.
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["data"]["cross_sections"] == [
+        "profile_a",
+        "profile_b",
+        "second_section",
+        "third_section",
+    ]
+    assert read["data"]["cross_section_count"] == 4
+
+
+def test_loft_rollback_reports_an_unconfirmed_delete(monkeypatch):
+    """A cleanup the host ignores must not be reported as a completed rollback."""
+    runtime = _install(monkeypatch, FakeRuntime(loft_rejects_shapes=True, delete_is_noop=True))
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    result = module.main(action="create", cross_sections=["profile_a", "profile_b"])
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
+    assert not isinstance(result["message"], bool)
+
+
+def test_detect_adapter_uses_boolean2_codes_for_the_legacy_class_name(monkeypatch):
+    """A node reported as "Boolean" must not be read through the ProBoolean map."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = _create_cut_boolean(module, runtime)
+    assert created["success"] is True, created
+    boolean_node = runtime.getNodeByName("cut_solid")
+    assert boolean_node.class_name == "Boolean2"
+
+    # Boolean2 union is 1; the ProBoolean map would call the same code
+    # "intersection". Both must be resolved through the Boolean2 map.
+    set_result = module.main(
+        action="set_operation", node_name="cut_solid", operation="union"
+    )
+    assert set_result["success"] is True, set_result
+    assert set_result["data"]["boolean_class"] == "Boolean2"
+    assert set_result["data"]["operation_code"] == 1
+
+    read = module.main(action="read", node_name="cut_solid")
+    assert read["success"] is True
+    assert read["data"]["operation"] == "union"
+    assert read["data"]["operation_code"] == 1
+
+
+def test_detect_adapter_reports_ambiguity_instead_of_guessing(monkeypatch):
+    """An unrecognisable class plus an ambiguous code is an error, not a coin flip."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = _create_cut_boolean(module, runtime)
+    assert created["success"] is True, created
+    boolean_node = runtime.getNodeByName("cut_solid")
+    # A class the adapters do not recognise, with a mode code (2) both maps own.
+    boolean_node.class_name = "SomeFutureBoolean"
+    boolean_node.bool_op = 2
+
+    read = module.main(action="read", node_name="cut_solid")
+    assert read["success"] is False
+    assert "ambiguous" in read["message"]
+
+    set_result = module.main(
+        action="set_operation", node_name="cut_solid", operation="subtraction"
+    )
+    assert set_result["success"] is False
+    assert "ambiguous" in set_result["message"]
+    # Guessing would have written code 2, which is intersection on Boolean2.
+    assert boolean_node.bool_op == 2
+
+
+def test_detect_adapter_falls_back_to_the_operand_count_without_a_mode(monkeypatch):
+    """A node with no readable mode still resolves through its operand count."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = _create_cut_boolean(module, runtime)
+    assert created["success"] is True, created
+    boolean_node = runtime.getNodeByName("cut_solid")
+    boolean_node.hide_operation = True
+
+    result = module.main(action="add_operands", node_name="cut_solid", operands=["second_opening"])
+
+    assert result["success"] is True, result
+    assert result["data"]["operand_count"] == 3
+
+
+def test_operation_label_is_resolved_per_adapter(monkeypatch):
+    """The reverse mode map must follow the class, not a shared table."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    # ProBoolean: 0 union, 1 intersection, 2 subtraction.
+    union = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="pb_union",
+    )
+    assert union["success"] is True, union
+    assert union["data"]["boolean_class"] == "ProBoolean"
+    assert union["data"]["operation_code"] == 0
+    assert module.main(action="read", node_name="pb_union")["data"]["operation"] == "union"
+
+    intersection = module.main(
+        action="create",
+        operation="intersection",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="pb_intersection",
+    )
+    assert intersection["success"] is True, intersection
+    assert intersection["data"]["operation_code"] == 1
+    assert (
+        module.main(action="read", node_name="pb_intersection")["data"]["operation"]
+        == "intersection"
+    )
+
+    # Boolean2: 1 union, 2 intersection, 3 subtraction, 5 cut.
+    cut = _create_cut_boolean(module, runtime, name="b2_cut")
+    assert cut["data"]["boolean_class"] == "Boolean2"
+    assert cut["data"]["operation_code"] == 5
+    assert module.main(action="read", node_name="b2_cut")["data"]["operation"] == "cut"
+
+
+def test_curve_model_delete_fails_when_the_node_cannot_be_removed(monkeypatch):
+    """An unconfirmed node deletion must not be reported as deleted."""
+    runtime = _install(monkeypatch, FakeRuntime(delete_is_noop=True))
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+    result = module.main(action="delete", node_name="duct_profile", delete_node=True)
+
+    assert result["success"] is False
+    assert result["data"]["removed"] is False
+    assert runtime.getNodeByName("duct_profile") is not None
+
+
+def test_create_spline_shape_returns_a_built_node_for_rollback(monkeypatch):
+    """A node built before the failure has to reach the caller for cleanup."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    monkeypatch.delattr(FakeRuntime, "addNewSpline", raising=True)
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    result = module.main(
+        action="create", name="leaked_profile", profile="rectangle", width=10, height=10
+    )
+
+    assert result["success"] is False
+    assert "addNewSpline" in result["message"]
+    # The shape is created before addNewSpline is missed, so it must be gone.
+    assert runtime.nodes == []
+
+
+def test_edit_curve_rollback_restores_the_knot_type(monkeypatch):
+    """A rollback has to restore the knot type, not just the positions."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    draw.main(points=[[0, 0, 0], [25, 0, 10], [50, 0, 0]], name="curve_a")
+    token = inspect.main(node_name="curve_a")["data"]["token"]
+    assert inspect.main(node_name="curve_a")["data"]["splines"][0]["knots"][1][
+        "knot_type"
+    ] == "corner"
+
+    original = runtime.setOutVec
+
+    def failing_setter(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runtime, "setOutVec", failing_setter)
+    # Change the type and the handle together so the failure happens mid-write.
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "knot_type": "bezier", "out_vec": [1, 0, 0]}],
+    )
+
+    assert result["success"] is False
+    assert original is not None
+    after = inspect.main(node_name="curve_a")
+    knot = after["data"]["splines"][0]["knots"][1]
+    # The rollback must have put the type back, not left "bezier" behind.
+    assert knot["knot_type"] == "corner"
