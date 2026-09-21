@@ -1232,6 +1232,52 @@ def test_pick_component_resolves_vertex_and_edge_targets(monkeypatch):
     assert edge["data"]["component"]["edge_index"] is not None
 
 
+def test_pick_component_rejects_normalized_image_coordinates(monkeypatch):
+    """Normalized 0..1 input must fail, not be passed through as pixels.
+
+    The adapter cannot query the viewport size, so a 0..1 pair handed to the
+    host mapping unchanged would land near the top-left corner and return a
+    wrong component with every check passing.
+    """
+    runtime = _install(monkeypatch)
+    _quad(runtime)
+
+    result = _load_action("action_pick_component.py").main(
+        node_name="quad", image_x=0.5, image_y=0.5, image_space="normalized"
+    )
+
+    assert result["success"] is False
+    assert "not supported" in result["message"]
+    assert "pixels" in result["message"]
+
+
+def test_pick_component_accepts_explicit_pixels_space(monkeypatch):
+    """Declaring the unit the host expects is still allowed."""
+    runtime = _install(monkeypatch)
+    _quad(runtime, translation=(0.0, 0.0, 0.0))
+    calls = []
+    runtime.screen_ray_factory = lambda x, y: (
+        calls.append((x, y)) or Ray(Point3(-0.5, -0.5, 5.0), Point3(0.0, 0.0, -1.0))
+    )
+
+    result = _load_action("action_pick_component.py").main(
+        node_name="quad", image_x=320, image_y=240, image_space="pixels"
+    )
+
+    assert result["success"] is True, result
+    # Passed through unconverted: the host entry point gets exactly what was asked for.
+    assert calls == [(320.0, 240.0)]
+
+
+def test_pick_component_image_space_schema_only_allows_pixels():
+    """The schema must not advertise a unit the tool cannot honour."""
+    tools = yaml.safe_load((SKILL_DIR / "tools.yaml").read_text(encoding="utf-8"))["tools"]
+    pick = next(tool for tool in tools if tool["name"] == "pick_component")
+
+    image_space = pick["input_schema"]["properties"]["image_space"]
+    assert image_space["enum"] == ["pixels"]
+
+
 def test_pick_component_rejects_conflicting_and_incomplete_input(monkeypatch):
     runtime = _install(monkeypatch)
     _quad(runtime)
@@ -1265,6 +1311,187 @@ def test_pick_component_picks_the_nearest_hit_across_nodes(monkeypatch):
     assert result["data"]["hit"] is True
     assert result["data"]["hits"] == 2
     assert result["data"]["node"]["node_name"] == "near"
+
+
+# ── review findings (P3) ───────────────────────────────────────────────
+
+
+def test_edit_vertices_is_not_idempotent_because_move_accumulates(monkeypatch):
+    """Two identical move calls move twice, so the hint must not say idempotent."""
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    for _ in range(2):
+        result = _load_action("action_edit_vertices.py").main(
+            action="move", node_name="quad", vertex_indices=[1], offset=[0, 0, 1]
+        )
+        assert result["success"] is True, result
+
+    assert node.verts[0].z == 2.0
+
+    tools = yaml.safe_load((SKILL_DIR / "tools.yaml").read_text(encoding="utf-8"))["tools"]
+    tool = next(item for item in tools if item["name"] == "edit_vertices")
+    assert tool["idempotent"] is False
+    assert tool["annotations"]["idempotent_hint"] is False
+
+
+def test_mesh_edit_rejects_an_index_that_only_becomes_invalid_mid_batch(monkeypatch):
+    """Preflight tracks the counts an op will see, not one snapshot.
+
+    Face 2 is valid on the 2-face quad, but after deleting a face only one
+    remains, so re-shading "face 2" has to be rejected before the hold opens.
+    """
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_faces", "indices": [1]},
+            {"op": "set_face_smoothing_group", "indices": [2], "smoothing_group": 3},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "failed preflight" in result["message"]
+    assert result["data"]["applied"] == 0
+    # Nothing was written, so the first - valid - op did not delete a face.
+    assert len(node.faces) == 2
+    assert "at this point in the batch" in result["data"]["errors"][0]["message"]
+
+
+def test_mesh_edit_tightens_the_edge_bound_across_edge_deletions(monkeypatch):
+    """Deleting edges lowers the bound a later edge op is checked against.
+
+    The quad has 5 edges. Removing four of them leaves at most one, so a later
+    "edge 3" is definitely invalid and must be rejected up front.
+    """
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_edges", "indices": [1, 2, 3, 4]},
+            {"op": "delete_edges", "indices": [3]},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "failed preflight" in result["message"]
+    assert result["data"]["applied"] == 0
+    assert "at this point in the batch" in result["data"]["errors"][0]["message"]
+    assert len(node.faces) == 2
+
+
+def test_mesh_edit_rejects_a_face_op_after_a_cascading_deletion(monkeypatch):
+    """A count an earlier op makes unpredictable is not guessed at.
+
+    Deleting edges can remove whole faces as a side effect, so the face count
+    afterwards is unknown and a later face op cannot be range-checked at all.
+    """
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_edges", "indices": [1]},
+            {"op": "set_face_material_id", "indices": [1], "material_id": 2},
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["applied"] == 0
+    assert "split the batch" in result["data"]["errors"][0]["message"]
+    assert len(node.faces) == 2
+
+
+def test_mesh_edit_still_accepts_a_batch_that_stays_in_range(monkeypatch):
+    """Tracking the counts must not reject a batch that is genuinely valid."""
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_faces", "indices": [2]},
+            {"op": "set_face_smoothing_group", "indices": [1], "smoothing_group": 2},
+        ],
+    )
+
+    assert result["success"] is True, result
+    assert len(node.faces) == 1
+    assert node.smoothing_groups[1] == 2
+
+
+def test_mesh_edit_reports_an_unsupported_op_as_a_clean_failure(monkeypatch):
+    """An op with no apply branch must fail as an _EditFailure, not KeyError."""
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "move_vertices", "indices": [1], "offset": [0, 0, 4]},
+            {"op": "set_face_smoothing_group", "indices": [1], "smoothing_group": 1},
+        ],
+    )
+    assert node.verts[0].z == 4.0
+    assert result["success"] is True, result
+
+    # Reach _apply directly with an op the schema would accept but that has no
+    # branch, which is the state a half-finished new op would land in.
+    module = _load_action("action_mesh_edit.py")
+    try:
+        module._apply(runtime, node, {"position": 0, "op": "tessellate", "indices": [1]})
+    except module._EditFailure as exc:
+        assert "no apply branch" in exc.message
+    else:  # pragma: no cover - the guard is the point of the finding
+        raise AssertionError("an unhandled op must raise _EditFailure, not fall through")
+
+
+def test_delete_edges_verifies_the_full_count_dropped(monkeypatch):
+    """A host that removes only some of the edges must fail."""
+    runtime = _install(monkeypatch)
+    _quad(runtime)
+
+    # A host that reports no error but leaves every edge in place.
+    monkeypatch.setattr(runtime.polyOp, "deleteEdges", lambda node, indices: True)
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad", ops=[{"op": "delete_edges", "indices": [1, 2]}]
+    )
+
+    assert result["success"] is False
+    assert "instead of at most" in result["message"]
+
+
+def test_edit_vertices_read_reports_what_it_could_not_read(monkeypatch):
+    """A read that partially fails must be directly comparable, not incidental."""
+    runtime = _install(monkeypatch)
+    _quad(runtime)
+
+    original = _PolyOp.getVert
+
+    def _partially_broken(self, node, index):
+        if index == 2:
+            raise RuntimeError("vertex is unavailable")
+        return original(self, node, index)
+
+    monkeypatch.setattr(_PolyOp, "getVert", _partially_broken)
+
+    result = _load_action("action_edit_vertices.py").main(
+        action="read", node_name="quad", vertex_indices=[1, 2, 3]
+    )
+
+    assert result["success"] is True
+    assert result["data"]["requested_count"] == 3
+    assert result["data"]["vertex_count"] == 2
+    # The gap is stated in the result, not left for the caller to infer from
+    # `vertex_count` being smaller than the list it passed in.
+    assert "1 of 3" in result["data"]["message_note"]
+    assert len(result["data"]["warnings"]) == 1
+    assert "getVert" in result["data"]["warnings"][0]
 
 
 # ── tools.yaml / docs contract ─────────────────────────────────────────

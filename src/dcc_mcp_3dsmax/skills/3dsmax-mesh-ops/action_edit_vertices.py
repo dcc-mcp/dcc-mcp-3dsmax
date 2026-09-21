@@ -228,9 +228,17 @@ def main(
             "space": normalized_space,
             "vertices": rows,
             "vertex_count": len(rows),
+            # Reported alongside the returned count so a caller can see that a
+            # vertex was requested but could not be read, instead of having to
+            # notice that `vertex_count` is smaller than the list it passed in.
+            "requested_count": len(resolved),
         }
         if warnings:
             payload["warnings"] = warnings
+            payload["message_note"] = (
+                "{} of {} requested vertice(s) could not be read; "
+                "vertex_count is what was actually returned".format(len(warnings), len(resolved))
+            )
         return mesh_success("Read {} vertice(s)".format(len(rows)), **payload)
 
     # ── writes ────────────────────────────────────────────────────────

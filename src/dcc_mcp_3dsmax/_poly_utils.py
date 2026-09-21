@@ -330,7 +330,10 @@ def face_edges(runtime: Any, node: Any, index: int) -> Tuple[Optional[List[int]]
     ok, value, detail = _invoke(poly_op, ("getFaceEdges",), ((node, index),))
     if not ok:
         return None, detail
-    return _index_list_to_list(value), detail if False else None
+    indices = _index_list_to_list(value)
+    if not indices:
+        return None, "polyOp.getFaceEdges returned {!r}, which is not an edge index list".format(value)
+    return indices, None
 
 
 def edge_verts(runtime: Any, node: Any, index: int) -> Tuple[Optional[List[int]], Optional[str]]:
@@ -451,7 +454,15 @@ def delete_verts(runtime: Any, node: Any, indices: Sequence[int]) -> Optional[st
 
 
 def delete_edges(runtime: Any, node: Any, indices: Sequence[int]) -> Optional[str]:
-    """Delete edges and verify the edge count dropped."""
+    """Delete edges and verify the edge count dropped by at least that many.
+
+    The bound is one-sided, unlike :func:`delete_verts` and
+    :func:`delete_faces`. Removing an edge also removes every face that used it,
+    and each of those takes its own edges with it, so the exact result depends
+    on the topology. The count of *requested* edges is still a lower bound on
+    what disappears, which is enough to catch the failure that matters: a host
+    that removed only some of them.
+    """
     poly_op, error = _poly_op(runtime)
     if error:
         return error
@@ -465,8 +476,12 @@ def delete_edges(runtime: Any, node: Any, indices: Sequence[int]) -> Optional[st
     after, error = num_edges(runtime, node)
     if error:
         return error
-    if after >= before:
-        return "deleting {} edge(s) left {} edges, was {}".format(len(wanted), after, before)
+    # Each requested edge is gone, so `before - len(wanted)` is the most that
+    # can remain; anything above it means the host did not remove them all.
+    if after > before - len(wanted):
+        return "deleting {} edge(s) left {} edges instead of at most {}".format(
+            len(wanted), after, before - len(wanted)
+        )
     return None
 
 

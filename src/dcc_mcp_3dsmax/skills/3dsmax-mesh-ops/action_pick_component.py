@@ -10,16 +10,23 @@ A pick is the bridge between "the agent is looking at a rendered viewport" and
    because fabricating a projection would return a plausible ray and therefore a
    plausible but wrong component. Supplying the ray explicitly always works.
 
+   An image position is **viewport pixel coordinates**, the unit the host's
+   mapping entry point expects, and it is passed through unconverted. Normalized
+   0..1 input is rejected rather than scaled, because the viewport size cannot
+   be queried here and a 0..1 pair passed as pixels would land near the
+   top-left corner and return a wrong component with every check passing.
+
 2. **A ray cast.** ``intersectRayEx`` reports the face it hit, which is exactly
    what a component pick needs; ``intersectRay`` reports only a point, and the
    face is then resolved by proximity and flagged ``face_reported: false`` so the
    caller knows the index was inferred rather than named by the host.
 
 The result is then **verified**: the hit point is checked against the reported
-face's plane and bounding radius. A host that names a face the point does not
-lie on produces ``face_verified: false`` plus a warning instead of a confident
-answer. A clean miss is reported as ``hit: false`` - a miss is information, not
-an error, so it is a successful result that says nothing was hit.
+face's plane and its polygon outline. A host that names a face the point does
+not lie on produces ``face_verified: false`` plus a warning instead of a
+confident answer. A clean miss is reported as ``hit: false`` - a miss is
+information, not an error, so it is a successful result that says nothing was
+hit.
 """
 
 from __future__ import annotations
@@ -54,8 +61,17 @@ COMPONENT_KINDS = ("face", "vertex", "edge")
 # Upper bound on candidate nodes for an unscoped pick.
 MAX_CANDIDATES = 256
 
-# Image-space units accepted for the position.
-IMAGE_SPACES = ("pixels", "normalized")
+# The only image-space unit this tool can honour. ``image_x`` / ``image_y`` are
+# handed to the host's screen-to-ray entry point unchanged, so they must be in
+# the unit that entry point expects: viewport pixels. Normalized 0..1 input is
+# rejected rather than passed through - the adapter cannot query the viewport
+# size, so a 0..1 pair would be aimed at the top-left corner of the viewport and
+# would return a self-consistent but wrong component.
+IMAGE_SPACES = ("pixels",)
+
+# Named explicitly so the failure says which substitution was refused, not just
+# what happens to be accepted.
+REJECTED_IMAGE_SPACES = ("normalized", "uv", "relative")
 
 
 def _validation_error(message: str) -> Dict[str, Any]:
@@ -145,9 +161,17 @@ def main(
     """Resolve an image position or a world ray to a face, vertex, or edge."""
     try:
         normalized_name = validated_name(node_name, "node_name")
-        normalized_space = str(image_space or "pixels").strip().lower()
-        if normalized_space not in IMAGE_SPACES:
-            raise ValueError("image_space must be one of {}".format(", ".join(IMAGE_SPACES)))
+        if image_space is not None:
+            normalized_space = str(image_space).strip().lower()
+            if normalized_space in REJECTED_IMAGE_SPACES:
+                raise ValueError(
+                    "image_space '{}' is not supported: image_x/image_y are viewport pixel "
+                    "coordinates and this tool cannot query the viewport size, so they are not "
+                    "converted. Pass pixels, or use ray_origin/ray_direction, which needs no "
+                    "unit.".format(normalized_space)
+                )
+            if normalized_space not in IMAGE_SPACES:
+                raise ValueError("image_space must be one of {}".format(", ".join(IMAGE_SPACES)))
         normalized_kind = str(component or "face").strip().lower()
         if normalized_kind not in COMPONENT_KINDS:
             raise ValueError("component must be one of {}".format(", ".join(COMPONENT_KINDS)))

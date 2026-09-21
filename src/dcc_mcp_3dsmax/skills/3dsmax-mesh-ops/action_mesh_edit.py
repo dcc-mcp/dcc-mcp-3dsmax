@@ -250,12 +250,54 @@ def _normalize_ops(ops: Any) -> List[Dict[str, Any]]:
 # ── preflight ──────────────────────────────────────────────────────────
 
 
+# How each op changes the component counts a later op is range-checked
+# against. ``None`` means "the host decides, so the count can only be bounded"
+# and the entry is the largest number of components that can remain:
+# deletions remove at least what was asked for, and may cascade.
+_COUNT_EFFECTS = {
+    OP_MOVE_VERTICES: {},
+    OP_SET_VERTICES: {},
+    OP_ALIGN_VERTICES: {},
+    OP_WELD_VERTICES: {"vertices": lambda removed: -removed},
+    OP_DELETE_VERTICES: {"vertices": lambda removed: -removed, "edges": None, "faces": None},
+    OP_DELETE_EDGES: {"edges": lambda removed: -removed, "faces": None},
+    OP_DELETE_FACES: {"faces": lambda removed: -removed},
+    OP_DETACH_FACES: {"faces": lambda removed: -removed, "edges": None},
+    OP_SET_FACE_MATERIAL_ID: {},
+    OP_SET_FACE_SMOOTHING_GROUP: {},
+}
+
+
+def _advance_limits(limits: Dict[str, Optional[int]], record: Dict[str, Any]) -> None:
+    """Move the tracked counts past one accepted op, in place.
+
+    A count that an op makes unpredictable is set to ``None``, and a later op
+    that needs it is then rejected during preflight rather than checked against
+    a number that is known to be stale.
+    """
+    removed = {
+        OP_WELD_VERTICES: len(record["indices"]) - 1,
+    }.get(record["op"], len(record["indices"]))
+    for kind, effect in _COUNT_EFFECTS[record["op"]].items():
+        current = limits.get(kind)
+        if effect is None or current is None:
+            limits[kind] = None
+            continue
+        limits[kind] = current + effect(removed)
+
+
 def _preflight(
     rt: Any, node: Any, ops: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Range-check every op against the live node. Returns ``(plan, errors)``."""
+    """Range-check every op and return ``(plan, errors)``.
+
+    Indices are checked against the counts the node will have *at the point the
+    op runs*, not against one snapshot taken before the batch. A batch that
+    deletes a face and then re-shades "face 6" of what is now a five-face mesh
+    is rejected here instead of failing once the hold is already open.
+    """
     counts = component_counts(rt, node)
-    limits = {
+    limits: Dict[str, Optional[int]] = {
         "vertices": counts.get("vertex_count"),
         "edges": counts.get("edge_count"),
         "faces": counts.get("face_count"),
@@ -268,11 +310,18 @@ def _preflight(
         limit = limits.get(kind)
         position = record["position"]
         if limit is None:
+            if counts.get("errors"):
+                reason = "the {} count cannot be read".format(kind)
+            else:
+                reason = (
+                    "an earlier op in this batch deletes {} as a side effect, so the count is not "
+                    "known here".format(kind)
+                )
             errors.append(
                 {
                     "position": position,
                     "op": record["op"],
-                    "message": "the {} count cannot be read, so indices cannot be range-checked".format(kind),
+                    "message": "{}; indices cannot be range-checked, so split the batch".format(reason),
                 }
             )
             continue
@@ -282,7 +331,7 @@ def _preflight(
                 {
                     "position": position,
                     "op": record["op"],
-                    "message": "indices {} are out of range: the node has {} {}".format(
+                    "message": "indices {} are out of range: the node has {} {} at this point in the batch".format(
                         out_of_range[:5], limit, kind
                     ),
                 }
@@ -299,6 +348,7 @@ def _preflight(
                 }
             )
             continue
+        _advance_limits(limits, record)
         plan.append(record)
     return plan, errors
 
@@ -458,16 +508,25 @@ def _apply(rt: Any, node: Any, record: Dict[str, Any]) -> Dict[str, Any]:
             "material_id": record["material_id"],
         }
 
-    error = set_face_smoothing_group(rt, node, record["indices"], record["smoothing_group"])
-    if error:
-        raise _EditFailure(error, {"position": record["position"]})
-    return {
-        "position": record["position"],
-        "op": op,
-        "component": "faces",
-        "indices": list(record["indices"]),
-        "smoothing_group": record["smoothing_group"],
-    }
+    if op == OP_SET_FACE_SMOOTHING_GROUP:
+        error = set_face_smoothing_group(rt, node, record["indices"], record["smoothing_group"])
+        if error:
+            raise _EditFailure(error, {"position": record["position"]})
+        return {
+            "position": record["position"],
+            "op": op,
+            "component": "faces",
+            "indices": list(record["indices"]),
+            "smoothing_group": record["smoothing_group"],
+        }
+
+    # Explicit rather than a fall-through: an op added to OPERATIONS without an
+    # apply branch has to fail as an _EditFailure while the hold is open, not
+    # raise a KeyError out of the hold and leave the batch half-applied.
+    raise _EditFailure(
+        "op {!r} is accepted by the request schema but has no apply branch".format(op),
+        {"position": record["position"]},
+    )
 
 
 # ── entry point ────────────────────────────────────────────────────────
