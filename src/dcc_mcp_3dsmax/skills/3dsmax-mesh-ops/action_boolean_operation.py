@@ -333,14 +333,19 @@ def _resolve_operand(runtime: Any, reference: Any) -> tuple:
 
 
 def _class_name(runtime: Any, boolean: Any) -> str:
-    """Return the node's class name when the host reports one."""
-    for source in ("classOf", "getClassId"):
-        getter = getattr(runtime, source, None)
-        if callable(getter):
-            try:
-                return str(getter(boolean))
-            except Exception:  # noqa: BLE001 - fall through to the next probe.
-                continue
+    """Return the node's class name when the host reports one.
+
+    Only ``classOf`` is probed. A second probe such as ``getClassId`` reads
+    like a fallback but answers with a class id rather than a name, so once it
+    is reached it replaces a usable name with a string no adapter matches and
+    the exact-match lookup below silently stops working.
+    """
+    class_of = getattr(runtime, "classOf", None)
+    if callable(class_of):
+        try:
+            return str(class_of(boolean))
+        except Exception:  # noqa: BLE001 - fall through to the attribute below.
+            pass
     return str(getattr(boolean, "class_name", "") or "")
 
 

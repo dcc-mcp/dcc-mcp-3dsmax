@@ -92,8 +92,9 @@ def main(
     Every cross-section has to register on the loft: the shape count is read
     back, and a call that cannot confirm the count fails instead of reporting
     a loft the agent would assume is complete. Surface parameters are applied
-    one by one and read back, so a parameter the host ignores is returned in
-    ``rejected_surface_params`` rather than being reported as applied.
+    one by one and read back, so a parameter the host ignores fails the call
+    on every action path and is returned in ``rejected_surface_params`` rather
+    than being reported as applied.
     """
     try:
         normalized_action = str(action or "create").strip().lower()
@@ -291,10 +292,16 @@ def main(
                 applied_surface_params=applied,
                 rolled_back=delete_node(rt, loft),
             )
-        if rejected and added:
-            # The sections are already registered on a loft the caller owns, so
-            # they have to come back off before the rejection is reported.
-            restored, observed = _discard_added_sections(rt, loft, count_before)
+        if rejected:
+            # A rejected surface parameter fails on every action path, so an
+            # agent never has to know whether it called create or update. The
+            # difference is only in what can be taken back: a create removes
+            # its own new node above, while an update leaves the caller's node
+            # in place and only takes the sections this call added back off it.
+            restored = True
+            observed = count_before
+            if added:
+                restored, observed = _discard_added_sections(rt, loft, count_before)
             return curve_error(
                 "the loft did not accept every surface parameter",
                 rejected_surface_params=rejected,
@@ -403,11 +410,6 @@ def main(
         "applied_surface_params": applied,
         "params_stored": True,
     }
-    if rejected:
-        data["rejected_surface_params"] = rejected
-        data["warnings"] = [
-            "{} surface parameter(s) were not accepted; the node was kept".format(len(rejected))
-        ]
     return curve_success(
         "{} loft: {}".format("Created" if normalized_action == "create" else "Updated", str(loft.name)),
         **data

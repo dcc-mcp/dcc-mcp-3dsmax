@@ -76,8 +76,12 @@ them, and `list` enumerates every stored curve model in the scene.
 `loft_mesh` lofts two to sixty-four matching cross-section splines,
 optionally along a path spline, into a quad loft. The registered shape count
 is read back and must match; surface parameters are applied one by one and
-read back, so a parameter the host ignored is returned in
-`rejected_surface_params` rather than being reported as applied.
+read back, so a parameter the host ignored fails the call and is returned in
+`rejected_surface_params` rather than being reported as applied. The rule is
+the same on `create` and on `update`: what differs is only what can be taken
+back. A `create` removes the node it just made, while an `update` keeps the
+caller's node - the accepted parameters stay on it - and takes only the
+cross-sections this call added back off.
 
 ## Stored parameters
 
