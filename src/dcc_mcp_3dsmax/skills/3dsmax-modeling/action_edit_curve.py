@@ -196,9 +196,14 @@ def main(
         if error:
             raise RuntimeError(error)
     except Exception as exc:  # noqa: BLE001 - host failures restore the captured state.
+        # Edits are applied knot by knot, so a failure part-way through leaves
+        # earlier knots written. Say what the restore actually achieved rather
+        # than claiming the scene is untouched.
         restored = _restore(rt, node, normalized_index, snapshot)
         return curve_error(
-            "edit_curve failed before the scene was changed",
+            "edit_curve failed; the captured knot state was {}restored".format(
+                "" if restored else "not "
+            ),
             failure_stage="apply_edits",
             exception_type=type(exc).__name__,
             exception=str(exc),

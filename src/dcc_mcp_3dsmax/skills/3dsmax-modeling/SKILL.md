@@ -74,10 +74,20 @@ profile are stored on the node, so `read` and `update` work without repeating
 them, and `list` enumerates every stored curve model in the scene.
 
 `loft_mesh` lofts two to sixty-four matching cross-section splines,
-opitionally along a path spline, into a quad loft. The registered shape count
+optionally along a path spline, into a quad loft. The registered shape count
 is read back and must match; surface parameters are applied one by one and
 read back, so a parameter the host ignored is returned in
 `rejected_surface_params` rather than being reported as applied.
+
+## Stored parameters
+
+`curve_model` and `loft_mesh` persist their control parameters on the node. The
+only channel they use is 3ds Max's user property API
+(`setUserPropVal` / `getUserPropVal`): a Python attribute on the node wrapper
+is not the scene, so a round-trip through one proves nothing. Each write is
+read back through the same API, and a host that does not expose it - or that
+rejects the write, or returns something else - fails the call instead of
+reporting `params_stored: true`.
 
 ## No silent success
 

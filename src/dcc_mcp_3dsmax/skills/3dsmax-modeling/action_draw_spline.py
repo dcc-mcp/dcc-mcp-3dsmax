@@ -128,6 +128,11 @@ def main(
                 if not callable(add_new_spline):
                     return curve_error("3ds Max does not expose addNewSpline")
                 add_new_spline(node)
+                # deleteSpline shifts every higher index down and addNewSpline
+                # appends at the end, so the rebuilt spline lands at index
+                # `count` - writing to the original index would scribble over a
+                # spline the caller never asked to change.
+                target_spline = count
 
         stage = "map_world_points"
         local_points: List[Any] = []

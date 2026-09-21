@@ -113,8 +113,43 @@ class Mesh:
     objectTransform = None
 
 
+class ProBooleanSymbol:
+    """The ``ProBoolean`` runtime symbol: a constructor and an interface struct.
+
+    3ds Max exposes the same name both as the compound-object constructor and
+    as the interface struct that drives it, so the fake models both - the
+    adapter has to reach the struct for ``SetBoolOp``/``SetOperandB`` while
+    construction goes through calling the symbol.
+    """
+
+    def __init__(self, runtime: "FakeRuntime") -> None:
+        self.runtime = runtime
+
+    def __call__(self):
+        if self.runtime.no_boolean:
+            raise RuntimeError("no ProBoolean constructor")
+        return self.runtime._new_boolean()
+
+    def SetBoolOp(self, boolean, code):  # noqa: N802 - mirrors the native method name.
+        if self.runtime.boolean_rejects_operation:
+            raise RuntimeError("operation rejected by the host")
+        boolean.bool_op = 0 if self.runtime.boolean_coerces_op else int(code)
+        return None
+
+    def GetBoolOp(self, boolean):  # noqa: N802 - mirrors the native method name.
+        if self.runtime.boolean_hides_operation:
+            return None
+        return boolean.bool_op
+
+    def SetOperandB(self, boolean, node, add_method=0, mat_method=0):  # noqa: N802
+        return boolean.add_operand(node)
+
+    def GetOp(self, boolean, index):  # noqa: N802 - mirrors the native method name.
+        return boolean.operands[index - 1]
+
+
 class BooleanObject:
-    """A ProBoolean-like node with an ``op`` property and operand slots."""
+    """A Boolean-like node with an operand list and a readable mode."""
 
     _next_handle = 900
 
@@ -122,13 +157,18 @@ class BooleanObject:
         BooleanObject._next_handle += 1
         self.name = "Boolean001"
         self.handle = BooleanObject._next_handle
-        self.op = 0
+        self.bool_op = 0
         self.operands: list = []
         self.modifiers: list = []
         self.user_properties: dict = {}
         self.isHidden = False
         self.parent = None
+        self.class_name = "ProBoolean"
+        self.accepted_adds: list = []
         self.reject_operands = False
+        self.reject_operation = False
+        self.hide_operation = False
+        self.coerce_op = False
 
     @property
     def baseObject(self):  # noqa: N802 - mirrors the native node interface.
@@ -141,10 +181,28 @@ class BooleanObject:
     def NumOps(self):  # noqa: N802 - mirrors the native property name.
         return len(self.operands)
 
-    def AddOp(self, node):  # noqa: N802 - mirrors the native method name.
+    def add_operand(self, node):
+        """Register one operand, honouring the reject switch."""
         if self.reject_operands:
             raise RuntimeError("operand rejected by the host")
         self.operands.append(node)
+        self.accepted_adds.append(getattr(node, "name", None))
+
+    # Boolean2 exposes its mode as object methods rather than through a
+    # namespaced interface struct, so both shapes exist on the fake node.
+    def getBoolOp(self):  # noqa: N802 - mirrors the native method name.
+        if self.hide_operation:
+            return None
+        return self.bool_op
+
+    def setBoolOp(self, code):  # noqa: N802 - mirrors the native method name.
+        if self.reject_operation:
+            raise RuntimeError("operation rejected by the host")
+        self.bool_op = 0 if self.coerce_op else int(code)
+        return None
+
+    def setOperandB(self, node, add_method=0, mat_method=0):  # noqa: N802 - native naming.
+        return self.add_operand(node)
 
     def SetOp(self, index, node):  # noqa: N802 - mirrors the native method name.
         self.operands[index - 1] = node
@@ -236,6 +294,11 @@ class FakeRuntime:
         self.no_boolean = bool(options.get("no_boolean", False))
         self.boolean_rejects_operands = bool(options.get("boolean_rejects_operands", False))
         self.boolean_coerces_op = bool(options.get("boolean_coerces_op", False))
+        self.boolean_rejects_operation = bool(options.get("boolean_rejects_operation", False))
+        self.boolean_hides_operation = bool(options.get("boolean_hides_operation", False))
+        self.no_user_props = bool(options.get("no_user_props", False))
+        self.user_prop_readback_tampered = bool(options.get("user_prop_readback_tampered", False))
+        self._pro_boolean = ProBooleanSymbol(self)
         self.tamper_knot = bool(options.get("tamper_knot", False))
         self.knot_type_source = options.get("knot_type_source", "native")
 
@@ -278,14 +341,27 @@ class FakeRuntime:
         loft.reject_steps = self.loft_rejects_steps
         return self._register(loft)
 
+    @property
     def ProBoolean(self):  # noqa: N802 - mirrors pymxs runtime naming.
-        if self.no_boolean:
-            raise RuntimeError("no ProBoolean constructor")
+        return self._pro_boolean
+
+    def _new_boolean(self, class_name="ProBoolean"):
         boolean = BooleanObject()
         boolean.reject_operands = self.boolean_rejects_operands
-        if self.boolean_coerces_op:
-            boolean.op = 0
+        boolean.reject_operation = self.boolean_rejects_operation
+        boolean.hide_operation = self.boolean_hides_operation
+        boolean.coerce_op = self.boolean_coerces_op
+        boolean.class_name = class_name
         return self._register(boolean)
+
+    def Boolean2(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        if self.no_boolean:
+            raise RuntimeError("no Boolean2 constructor")
+        return self._new_boolean(class_name="Boolean2")
+
+    @staticmethod
+    def classOf(node):  # noqa: N802 - mirrors pymxs runtime naming.
+        return getattr(node, "class_name", "")
 
     def Sweep(self):  # noqa: N802 - mirrors pymxs runtime naming.
         if self.no_sweep:
@@ -377,6 +453,35 @@ class FakeRuntime:
         self.deleted.append(node)
         if not self.delete_is_noop and node in self.nodes:
             self.nodes.remove(node)
+
+    def setUserPropVal(self, node, key, value):  # noqa: N802 - mirrors pymxs naming.
+        if self.no_user_props:
+            raise RuntimeError("the user property channel is unavailable")
+        props = getattr(node, "user_properties", None)
+        if not isinstance(props, dict):
+            props = {}
+            node.user_properties = props
+        props[key] = value
+
+    def getUserPropVal(self, node, key):  # noqa: N802 - mirrors pymxs naming.
+        if self.no_user_props:
+            raise RuntimeError("the user property channel is unavailable")
+        props = getattr(node, "user_properties", None)
+        if not isinstance(props, dict):
+            return None
+        value = props.get(key)
+        if self.user_prop_readback_tampered:
+            return "tampered"
+        return value
+
+    def deleteUserPropVal(self, node, key):  # noqa: N802 - mirrors pymxs naming.
+        if self.no_user_props:
+            raise RuntimeError("the user property channel is unavailable")
+        props = getattr(node, "user_properties", None)
+        if not isinstance(props, dict) or key not in props:
+            return False
+        del props[key]
+        return True
 
     def addModifier(self, node, modifier):  # noqa: N802 - mirrors pymxs runtime naming.
         node.modifiers.insert(0, modifier)
@@ -1114,22 +1219,6 @@ def test_boolean_operation_reports_a_coerced_mode(monkeypatch):
     _boolean_scene(runtime)
     module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
 
-    original = runtime.ProBoolean
-
-    class _CoercingBoolean(BooleanObject):
-        def __setattr__(self, name, value):
-            if name == "op":
-                value = 0
-            object.__setattr__(self, name, value)
-
-    def factory():
-        boolean = _CoercingBoolean()
-        runtime._register(boolean)
-        return boolean
-
-    monkeypatch.setattr(runtime, "ProBoolean", factory)
-    assert callable(original)
-
     result = module.main(
         action="create",
         operation="subtraction",
@@ -1138,7 +1227,68 @@ def test_boolean_operation_reports_a_coerced_mode(monkeypatch):
     )
 
     assert result["success"] is False
-    assert "kept 0 instead of the requested 2" in result["message"]
+    assert "kept operation 0 instead of the requested 2" in result["message"]
+    assert result["data"]["rolled_back"] is True
+
+
+def test_boolean_operation_fails_when_the_mode_cannot_be_read_back(monkeypatch):
+    """A mode the host accepts but will not report back is not a success."""
+    runtime = _install(monkeypatch, FakeRuntime(boolean_hides_operation=True))
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+    )
+
+    assert result["success"] is False
+    assert "cannot be read back" in result["message"]
+
+
+def test_boolean_operation_routes_cut_to_the_class_that_supports_it(monkeypatch):
+    """ProBoolean has no cut mode - 3 is Merge there - so cut must not reuse it."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="cut",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="cut_solid",
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["boolean_class"] == "Boolean2"
+    assert result["data"]["operation_code"] == 5
+    # The ProBoolean constructor must not have been used for a cut.
+    boolean_node = runtime.getNodeByName("cut_solid")
+    assert boolean_node.class_name == "Boolean2"
+
+
+def test_boolean_operation_rejects_cut_when_only_proboolean_exists(monkeypatch):
+    """A host with only ProBoolean reports that cut is unsupported, not merged."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    def no_boolean2():
+        raise RuntimeError("no Boolean2 constructor")
+
+    monkeypatch.setattr(runtime, "Boolean2", no_boolean2, raising=False)
+    result = module.main(
+        action="create",
+        operation="cut",
+        base_node="wall_block",
+        operands=["window_opening"],
+    )
+
+    assert result["success"] is False
+    assert "does not support the cut operation" in result["message"]
 
 
 def test_boolean_operation_re_adjusts_operands(monkeypatch):
@@ -1297,3 +1447,199 @@ def test_draw_spline_bounds_the_point_list():
     assert points["minItems"] == 2
     assert points["maxItems"] == 256
     assert points["items"]["minItems"] == points["items"]["maxItems"] == 3
+
+
+# ── Regression tests for review findings ───────────────────────────────
+
+
+def test_persistence_is_verified_through_the_native_user_property_channel(monkeypatch):
+    """Stored parameters are read back through setUserPropVal/getUserPropVal."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    result = module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+    assert result["success"] is True, result
+
+    node = runtime.getNodeByName("duct_profile")
+    # The payload has to live in the native user property buffer, not in a
+    # Python attribute the wrapper drops when the call returns.
+    assert "dcc_mcp_curve_model" in node.user_properties
+    assert runtime.getUserPropVal(node, "dcc_mcp_curve_model").startswith("{")
+
+
+def test_persistence_fails_closed_when_the_native_channel_is_unavailable(monkeypatch):
+    """No user property API means no persistence, and the call must say so."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    monkeypatch.delattr(FakeRuntime, "setUserPropVal", raising=True)
+    monkeypatch.delattr(FakeRuntime, "getUserPropVal", raising=True)
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    result = module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+
+    assert result["success"] is False
+    assert "setUserPropVal" in result["data"]["store_error"]
+    assert runtime.nodes == []
+
+
+def test_persistence_fails_when_the_native_write_is_rejected(monkeypatch):
+    """A user property write the host refuses must not count as stored."""
+    runtime = _install(monkeypatch, FakeRuntime(no_user_props=True))
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    result = module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+
+    assert result["success"] is False
+    assert "rejected" in result["data"]["store_error"]
+    assert runtime.nodes == []
+
+
+def test_persistence_fails_when_the_native_readback_differs(monkeypatch):
+    """A buffer that keeps something else cannot be reported as stored."""
+    runtime = _install(monkeypatch, FakeRuntime(user_prop_readback_tampered=True))
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    result = module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+
+    assert result["success"] is False
+    assert "kept" in result["data"]["store_error"]
+    assert runtime.nodes == []
+
+
+@pytest.mark.parametrize("bad_operand", [1, None, [1, 2], 3.5, object()])
+def test_boolean_operation_rejects_operand_entries_that_are_not_nodes(monkeypatch, bad_operand):
+    """Only names, name/handle objects, and nodes may reach the host."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=[bad_operand],
+    )
+
+    assert result["success"] is False
+    assert "operands entries" in result["message"]
+    assert not runtime.deleted
+
+
+def test_boolean_operation_reports_an_unconfirmed_rollback(monkeypatch):
+    """A delete the host ignores must not be reported as a completed rollback."""
+    runtime = _install(monkeypatch, FakeRuntime(boolean_rejects_operation=True, delete_is_noop=True))
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
+    assert len(runtime.nodes) == 4  # three meshes plus the orphaned boolean
+
+
+def test_add_operands_verifies_the_count_grew(monkeypatch):
+    """A host that accepts the call but registers nothing must fail the call."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="wall_boolean",
+    )
+    assert created["success"] is True
+
+    boolean_node = runtime.getNodeByName("wall_boolean")
+
+    def silent_noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(boolean_node, "add_operand", silent_noop)
+    result = module.main(action="add_operands", node_name="wall_boolean", operands=["second_opening"])
+
+    assert result["success"] is False
+    assert "left 2 operand(s) instead of the expected 3" in result["message"]
+
+
+def test_remove_operand_verifies_the_count_dropped(monkeypatch):
+    """A removal the host ignores is reported as a failure, not a success."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening", "second_opening"],
+        name="wall_boolean",
+    )
+    assert created["success"] is True
+    boolean_node = runtime.getNodeByName("wall_boolean")
+    monkeypatch.setattr(boolean_node, "RemoveOp", lambda index: None)
+
+    result = module.main(action="remove_operand", node_name="wall_boolean", operand_index=3)
+
+    assert result["success"] is False
+    assert "left 3 operand(s) instead of the expected 2" in result["message"]
+
+
+def test_extract_operand_requires_the_operand_list_to_survive(monkeypatch):
+    """Extraction copies an operand out; it must not shrink the list."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="wall_boolean",
+    )
+    assert created["success"] is True
+    boolean_node = runtime.getNodeByName("wall_boolean")
+
+    def destructive_extract(index):
+        boolean_node.operands.pop(index - 1)
+
+    monkeypatch.setattr(boolean_node, "ExtractOp", destructive_extract)
+    result = module.main(action="extract_operand", node_name="wall_boolean", operand_index=2)
+
+    assert result["success"] is False
+    assert "left 1 operand(s) instead of the expected 2" in result["message"]
+
+
+def test_set_operand_validates_the_index_before_calling_the_host(monkeypatch):
+    """An out-of-range slot must not be dispatched to the host at all."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["window_opening"],
+        name="wall_boolean",
+    )
+    assert created["success"] is True
+    boolean_node = runtime.getNodeByName("wall_boolean")
+    calls = []
+    monkeypatch.setattr(boolean_node, "SetOp", lambda index, node: calls.append(index))
+
+    result = module.main(
+        action="set_operand", node_name="wall_boolean", operand_index=9, operands=["wall_block"]
+    )
+
+    assert result["success"] is False
+    assert "out of range" in result["message"]
+    assert calls == []

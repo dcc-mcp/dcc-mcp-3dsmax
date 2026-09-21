@@ -107,7 +107,7 @@ def main(
         node, error = resolve_shape(rt, node_name=normalized_node_name, handle=handle)
         if error:
             return error
-        params = load_params(node, LOFT_PARAM_PROPERTY)
+        params = load_params(rt, node, LOFT_PARAM_PROPERTY)
         if params is None:
             return curve_error(
                 "the node carries no loft parameters",
@@ -215,16 +215,21 @@ def main(
                     delete_node(rt, loft)
                 return curve_error("could not name the loft node: {}".format(exc))
 
+        # An update that supplies no cross-sections is a surface-parameter
+        # edit; the loft object still holds the previously registered shapes,
+        # so the stored record must not be overwritten with an empty list.
+        previous = load_params(rt, loft, LOFT_PARAM_PROPERTY) or {}
         persisted: Dict[str, Any] = {
             "name": normalized_name or str(getattr(loft, "name", "")),
-            "cross_sections": [entry["node"]["node_name"] for entry in added],
-            "cross_section_count": len(added),
+            "cross_sections": [entry["node"]["node_name"] for entry in added]
+            or previous.get("cross_sections", []),
             "surface_params": applied,
         }
+        persisted["cross_section_count"] = len(persisted["cross_sections"])
         if path_node:
             persisted["path_node"] = str(path_node)
 
-        stored, store_error = store_params(loft, LOFT_PARAM_PROPERTY, persisted)
+        stored, store_error = store_params(rt, loft, LOFT_PARAM_PROPERTY, persisted)
         if not stored:
             if created_node:
                 delete_node(rt, loft)

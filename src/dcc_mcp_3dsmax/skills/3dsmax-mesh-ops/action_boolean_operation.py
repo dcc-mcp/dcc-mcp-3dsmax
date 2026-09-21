@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._curve_utils import (
-    call_first,
     create_scene_object,
     delete_node,
     is_node_like,
     read_count,
-    read_property_first,
     resolve_shape,
-    set_property_first,
     validated_int,
     validated_name,
 )
@@ -32,21 +29,293 @@ _ACTIONS = (
 
 _OPERATIONS = ("union", "intersection", "subtraction", "cut")
 
-# 3ds Max encodes the boolean mode as an integer on `op`. The mapping below is
-# verified by reading the value back, so a host that numbers the modes
-# differently fails the call instead of producing the wrong solid.
-_OPERATION_CODES = {"union": 0, "intersection": 1, "subtraction": 2, "cut": 3}
+# Operand transfer method: 1 instance, 2 reference, 3 copy, 4 move (deletes the
+# operand node). Reference keeps the operand alive in the scene, which is what
+# "re-adjust the operands later" requires.
+_ADD_METHOD_REFERENCE = 2
+# Material method: 1 combines materials without changing them or their IDs.
+_MAT_METHOD_COMBINE = 1
 
-_OP_PROPERTIES = ("op", "operation", "Operation")
-_OPERAND_COUNTS = ("NumOps", "numOps", "numOperands", "NumOperands")
 
+def _invoke(
+    runtime: Any,
+    boolean: Any,
+    namespace: Optional[str],
+    names: Sequence[str],
+    arg_sets: Sequence[Sequence[Any]],
+) -> Tuple[bool, Any, str]:
+    """Call the first accepted shape of a boolean method.
+
+    3ds Max exposes the same operation in three places depending on the class:
+    a namespaced interface struct (``ProBoolean.SetBoolOp``), a method on the
+    object (``boolObj.setBoolOp``), or a runtime function that takes the object
+    first. All three are tried, and every rejection is recorded, so a missing
+    capability is reported instead of being downgraded to a no-op.
+    """
+    attempts: List[str] = []
+    owners: List[Tuple[Any, bool]] = []
+    if namespace:
+        struct_object = getattr(runtime, namespace, None)
+        if struct_object is not None:
+            owners.append((struct_object, True))
+    owners.append((boolean, False))
+    owners.append((runtime, True))
+
+    for owner, pass_object in owners:
+        for name in names:
+            function = getattr(owner, name, None)
+            if not callable(function):
+                attempts.append("{}: not exposed".format(name))
+                continue
+            for args in arg_sets:
+                call_args = (boolean,) + tuple(args) if pass_object else tuple(args)
+                try:
+                    result = function(*call_args)
+                except Exception as exc:  # noqa: BLE001 - the next shape may work.
+                    attempts.append("{}({}): {}".format(name, len(call_args), exc))
+                    continue
+                return True, result, name
+    return False, None, "no accepted call among {} ({})".format(", ".join(names), "; ".join(attempts))
+
+
+class _BooleanAdapter(object):
+    """Class-specific surface over one 3ds Max boolean implementation.
+
+    ProBoolean and the legacy Boolean / Boolean2 object expose different
+    operand methods and different operation codes: ``cut`` is 5 on Boolean2 and
+    absent from ProBoolean, where 3 means Merge. Sharing one code path between
+    them silently produces the wrong solid, so each class carries its own map.
+    """
+
+    name = "Boolean"
+    constructor_names: Sequence[str] = ()
+    namespace: Optional[str] = None
+    operation_codes: Dict[str, int] = {}
+    operation_getters: Sequence[str] = ()
+    operation_setters: Sequence[str] = ()
+    operand_counters: Sequence[str] = ()
+    operand_adders: Sequence[str] = ()
+    operand_setters: Sequence[str] = ()
+    operand_removers: Sequence[str] = ()
+    operand_extractors: Sequence[str] = ()
+    operand_getters: Sequence[str] = ()
+
+    def operation_label(self, code: int) -> Optional[str]:
+        """Return the operation name for a native code of this class."""
+        for label, native_code in self.operation_codes.items():
+            if native_code == code:
+                return label
+        return None
+
+    def operation_code(self, operation: str) -> Tuple[Optional[int], Optional[str]]:
+        """Return the native code for one operation, or why it is unsupported."""
+        if operation not in self.operation_codes:
+            return None, "{} does not support the {} operation (supported: {})".format(
+                self.name, operation, ", ".join(sorted(self.operation_codes))
+            )
+        return self.operation_codes[operation], None
+
+    def get_operation(self, runtime: Any, boolean: Any) -> Optional[int]:
+        """Return the current native mode, or ``None`` when it cannot be read."""
+        ok, value, _used = _invoke(runtime, boolean, self.namespace, self.operation_getters, ((),))
+        if not ok:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def set_operation(self, runtime: Any, boolean: Any, operation: str) -> Tuple[Optional[int], Optional[str]]:
+        """Set the mode and confirm it through the native getter."""
+        code, error = self.operation_code(operation)
+        if error:
+            return None, error
+        ok, _value, used = _invoke(runtime, boolean, self.namespace, self.operation_setters, ((code,),))
+        if not ok:
+            return None, used
+        readback = self.get_operation(runtime, boolean)
+        if readback is None:
+            return None, "{} accepted the operation write but the mode cannot be read back".format(self.name)
+        if readback != code:
+            return None, "{} kept operation {} instead of the requested {}".format(self.name, readback, code)
+        return code, None
+
+    def operand_count(self, runtime: Any, boolean: Any) -> Tuple[Optional[int], Optional[str]]:
+        """Return the registered operand count, or why it cannot be confirmed."""
+        count, verified = read_count(runtime, boolean, self.operand_counters)
+        if not verified:
+            return None, (
+                "the operand count cannot be read (tried {}), so the operands cannot be confirmed".format(
+                    ", ".join(self.operand_counters)
+                )
+            )
+        return count, None
+
+    def _mutate(
+        self,
+        runtime: Any,
+        boolean: Any,
+        names: Sequence[str],
+        arg_sets: Sequence[Sequence[Any]],
+        expected_count: int,
+        *,
+        action_label: str,
+    ) -> Tuple[Optional[int], Optional[str]]:
+        """Run one operand mutation and verify the resulting count."""
+        ok, _value, detail = _invoke(runtime, boolean, self.namespace, names, arg_sets)
+        if not ok:
+            return None, detail
+        count, error = self.operand_count(runtime, boolean)
+        if error:
+            return None, error
+        if count != expected_count:
+            return None, "{} left {} operand(s) instead of the expected {}".format(
+                action_label, count, expected_count
+            )
+        return count, None
+
+    def add_operand(
+        self, runtime: Any, boolean: Any, operand: Any, count_before: int
+    ) -> Tuple[Optional[int], Optional[str]]:
+        """Register one operand and require the count to grow by exactly one."""
+        return self._mutate(
+            runtime,
+            boolean,
+            self.operand_adders,
+            (
+                (operand, _ADD_METHOD_REFERENCE, _MAT_METHOD_COMBINE),
+                (operand, _ADD_METHOD_REFERENCE),
+                (operand,),
+            ),
+            count_before + 1,
+            action_label="adding an operand",
+        )
+
+    def set_operand(
+        self, runtime: Any, boolean: Any, index: int, operand: Any, count_before: int
+    ) -> Tuple[Optional[int], Optional[bool], Optional[str]]:
+        """Replace one operand and confirm the count and, when readable, identity."""
+        count, error = self._mutate(
+            runtime,
+            boolean,
+            self.operand_setters,
+            ((index, operand), (index, operand, _ADD_METHOD_REFERENCE)),
+            count_before,
+            action_label="replacing operand {}".format(index),
+        )
+        if error:
+            return None, None, error
+        identity_verified = self._operand_matches(runtime, boolean, index, operand)
+        return count, identity_verified, None
+
+    def remove_operand(
+        self, runtime: Any, boolean: Any, index: int, count_before: int
+    ) -> Tuple[Optional[int], Optional[str]]:
+        """Remove one operand and require the count to drop by exactly one."""
+        return self._mutate(
+            runtime,
+            boolean,
+            self.operand_removers,
+            ((index,),),
+            count_before - 1,
+            action_label="removing operand {}".format(index),
+        )
+
+    def extract_operand(
+        self, runtime: Any, boolean: Any, index: int, count_before: int
+    ) -> Tuple[Optional[int], Optional[str]]:
+        """Extract an operand copy and require the operand list to stay intact."""
+        return self._mutate(
+            runtime,
+            boolean,
+            self.operand_extractors,
+            ((index,), (index, True)),
+            count_before,
+            action_label="extracting operand {}".format(index),
+        )
+
+    def _operand_matches(self, runtime: Any, boolean: Any, index: int, operand: Any) -> Optional[bool]:
+        """Return whether slot ``index`` holds ``operand``, or ``None`` if unreadable."""
+        ok, value, _used = _invoke(runtime, boolean, self.namespace, self.operand_getters, ((index,),))
+        if not ok:
+            return None
+        wanted = getattr(operand, "handle", None)
+        if wanted is None:
+            return None
+        return getattr(value, "handle", None) == wanted
+
+
+class _ProBooleanAdapter(_BooleanAdapter):
+    """ProBoolean compound object, driven through the ``ProBoolean`` interface."""
+
+    name = "ProBoolean"
+    constructor_names = ("ProBoolean",)
+    namespace = "ProBoolean"
+    # ProBoolean.SetBoolOp takes the 0-based radio state and has no cut mode;
+    # 3 is Merge, not a cut, so it is deliberately absent.
+    operation_codes = {"union": 0, "intersection": 1, "subtraction": 2}
+    operation_getters = ("GetBoolOp", "getBoolOp")
+    operation_setters = ("SetBoolOp", "setBoolOp")
+    operand_counters = ("NumOps", "numOps", "numOperands", "NumOperands")
+    operand_adders = ("SetOperandB", "setOperandB", "AddOp", "addOp", "AddOperand", "addOperand")
+    operand_setters = ("SetOp", "setOp", "SetOperand", "setOperand")
+    operand_removers = ("RemoveOp", "removeOp", "RemoveOperand", "removeOperand")
+    operand_extractors = ("ExtractOp", "extractOp", "ExtractOperand", "extractOperand")
+    operand_getters = ("GetOp", "getOp", "GetOperand", "getOperand")
+
+
+class _Boolean2Adapter(_BooleanAdapter):
+    """Legacy Boolean / Boolean2 compound object."""
+
+    name = "Boolean2"
+    constructor_names = ("Boolean2", "Boolean")
+    # Boolean2 setBoolOp is 1-based: 3 is Subtraction (A-B) and 5 is Cut.
+    operation_codes = {"union": 1, "intersection": 2, "subtraction": 3, "cut": 5}
+    operation_getters = ("getBoolOp", "GetBoolOp")
+    operation_setters = ("setBoolOp", "SetBoolOp")
+    operand_counters = ("NumOps", "numOps", "numOperands", "NumOperands")
+    operand_adders = ("setOperandB", "SetOperandB", "AddOp", "addOp", "AddOperand", "addOperand")
+    operand_setters = ("SetOp", "setOp", "SetOperand", "setOperand")
+    operand_removers = ("RemoveOp", "removeOp", "RemoveOperand", "removeOperand")
+    operand_extractors = ("ExtractOp", "extractOp", "ExtractOperand", "extractOperand")
+    operand_getters = ("GetOp", "getOp", "GetOperand", "getOperand")
+
+
+_ADAPTERS: Tuple[_BooleanAdapter, ...] = (_ProBooleanAdapter(), _Boolean2Adapter())
 
 def _validation_error(message: str) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": {}}
 
 
+def _describe_operand(reference: Any) -> str:
+    """Return a readable label for one rejected operand entry."""
+    if isinstance(reference, str):
+        return "the name {!r}".format(reference)
+    if isinstance(reference, dict):
+        return "the mapping {!r}".format(sorted(reference))
+    return "a {} value".format(type(reference).__name__)
+
+
+def _validate_operand_reference(reference: Any) -> Optional[str]:
+    """Return an error when an operand entry cannot identify a scene node."""
+    if isinstance(reference, str):
+        return None if reference.strip() else "operands entries must be non-empty node names"
+    if isinstance(reference, dict):
+        if reference.get("node_name") or reference.get("name") or reference.get("handle") is not None:
+            return None
+        return "operands entries must carry a node_name, name, or handle"
+    if is_node_like(reference):
+        return None
+    return "operands entries must be node names, name/handle objects, or scene nodes, not {}".format(
+        _describe_operand(reference)
+    )
+
+
 def _resolve_operand(runtime: Any, reference: Any) -> tuple:
-    """Resolve one operand reference, accepting a name, a handle, or a node."""
+    """Resolve one validated operand reference into a scene node."""
+    error = _validate_operand_reference(reference)
+    if error:
+        return None, mesh_error(error)
     if isinstance(reference, dict):
         return resolve_shape(
             runtime,
@@ -58,28 +327,71 @@ def _resolve_operand(runtime: Any, reference: Any) -> tuple:
     return reference, None
 
 
-def _add_operand(boolean_object: Any, operand: Any) -> tuple:
-    """Register one operand and return ``(used_method, error)``."""
-    ok, used_method, error = call_first(
-        boolean_object,
-        ("AddOp", "addOp", "AddOperand", "addOperand"),
-        ((operand,),),
-        owner_label="the Boolean object",
+def _class_name(runtime: Any, boolean: Any) -> str:
+    """Return the node's class name when the host reports one."""
+    class_of = getattr(runtime, "classOf", None)
+    if callable(class_of):
+        try:
+            return str(class_of(boolean))
+        except Exception:  # noqa: BLE001 - fall through to the reported attribute.
+            pass
+    return str(getattr(boolean, "class_name", "") or "")
+
+
+def _detect_adapter(runtime: Any, boolean: Any) -> Tuple[Optional[_BooleanAdapter], Optional[str]]:
+    """Pick the adapter whose interface the node actually answers to.
+
+    Both classes share the operand-count property, so the count alone cannot
+    tell them apart. Three signals are tried in order of strength: the reported
+    class name, a mode that only one class's code map explains (Boolean2 is
+    1-based and owns 5 for cut; ProBoolean starts at 0 and has no cut), and
+    finally the presence of any readable operand count.
+    """
+    class_name = _class_name(runtime, boolean)
+    if class_name:
+        for adapter in _ADAPTERS:
+            if adapter.name.lower() in class_name.lower():
+                return adapter, None
+
+    distinctive = []
+    for adapter in _ADAPTERS:
+        code = adapter.get_operation(runtime, boolean)
+        if code is not None and code in adapter.operation_codes.values():
+            distinctive.append(adapter)
+    if len(distinctive) == 1:
+        return distinctive[0], None
+    if distinctive:
+        return distinctive[0], None
+
+    for adapter in _ADAPTERS:
+        count, _error = adapter.operand_count(runtime, boolean)
+        if count is not None:
+            return adapter, None
+    return None, (
+        "the node exposes no known Boolean/ProBoolean operand interface, so its mode and "
+        "operands cannot be read or changed"
     )
-    if not ok:
-        return None, error
-    return used_method, None
 
 
-def _operand_count(runtime: Any, boolean_object: Any) -> tuple:
-    """Return ``(count, error)`` for the registered operands."""
-    count, verified = read_count(runtime, boolean_object, _OPERAND_COUNTS)
-    if not verified:
-        return None, (
-            "the operand count cannot be read, so the operands cannot be confirmed; "
-            "tried {}".format(", ".join(_OPERAND_COUNTS))
-        )
-    return count, None
+def _create_boolean(runtime: Any, operation: str) -> tuple:
+    """Construct a boolean using the first class that can express ``operation``."""
+    failures: List[str] = []
+    for adapter in _ADAPTERS:
+        _code, code_error = adapter.operation_code(operation)
+        if code_error:
+            failures.append(code_error)
+            continue
+        node, used_class, error = create_scene_object(runtime, adapter.constructor_names)
+        if error:
+            failures.append(error)
+            continue
+        if not is_node_like(node):
+            failures.append(
+                "3ds Max did not return a scene node for the {} constructor".format(used_class)
+            )
+            continue
+        return adapter, node, used_class, None
+    return None, None, None, "; ".join(failures) or "no boolean class is available"
 
 
 @with_max
@@ -95,11 +407,15 @@ def main(
 ) -> Dict[str, Any]:
     """Run a boolean operation and re-adjust its operands later.
 
-    The boolean is the native Boolean / ProBoolean object, so the operands stay
-    live: an operand can be swapped, extracted into its own node, or removed
-    without rebuilding the stack. Every write is confirmed by reading the
-    object back - a mode or operand the host did not register is reported as a
-    failure, never as a warning on a successful call.
+    The boolean is the native ProBoolean or Boolean/Boolean2 compound object,
+    reached through a class-specific adapter, so the operands stay live: one can
+    be swapped, extracted into its own node, or removed without rebuilding the
+    stack.
+
+    Every write is confirmed by reading the object back. A mode the host
+    coerced, an operand that did not register, or an operand count the host
+    does not expose all fail the call, and a failed ``create`` removes the node
+    it made and reports whether that removal was actually confirmed.
     """
     try:
         normalized_action = str(action or "read").strip().lower()
@@ -132,6 +448,10 @@ def main(
                 raise ValueError("operands must be an array of node names or name/handle objects")
             if not 1 <= len(operands) <= 64:
                 raise ValueError("operands must contain between 1 and 64 entries")
+            for entry in operands:
+                reference_error = _validate_operand_reference(entry)
+                if reference_error:
+                    raise ValueError(reference_error)
             references = list(operands)
     except ValueError as exc:
         return _validation_error(str(exc))
@@ -145,198 +465,174 @@ def main(
             base, error = resolve_shape(rt, node_name=normalized_base)
             if error:
                 return error
-            boolean_object, used_class, error = create_scene_object(rt, ("ProBoolean", "Boolean"))
+
+            adapter, boolean_object, used_class, error = _create_boolean(rt, normalized_operation)
             if error:
                 return mesh_error(error)
-            if not is_node_like(boolean_object):
-                return mesh_error(
-                    "3ds Max did not return a scene node for the Boolean constructor",
-                    constructor_returned=type(boolean_object).__name__,
-                )
             created_node = True
 
-            used_property, error = set_property_first(
-                boolean_object,
-                _OP_PROPERTIES,
-                _OPERATION_CODES[normalized_operation],
-                owner_label="the Boolean object",
-            )
+            code, error = adapter.set_operation(rt, boolean_object, normalized_operation)
             if error:
-                delete_node(rt, boolean_object)
-                return mesh_error(error, rolled_back=True)
+                rolled_back = delete_node(rt, boolean_object)
+                return mesh_error(error, rolled_back=rolled_back)
 
             registered: List[Dict[str, Any]] = []
             for reference in [base] + references:
                 operand, error = _resolve_operand(rt, reference)
                 if error:
-                    delete_node(rt, boolean_object)
-                    return error
-                _used_method, error = _add_operand(boolean_object, operand)
+                    rolled_back = delete_node(rt, boolean_object)
+                    return mesh_error(error["message"], **error["data"])
+                count_before, error = adapter.operand_count(rt, boolean_object)
                 if error:
-                    delete_node(rt, boolean_object)
-                    return mesh_error(error, rolled_back=True)
+                    rolled_back = delete_node(rt, boolean_object)
+                    return mesh_error(error, rolled_back=rolled_back)
+                count_after, error = adapter.add_operand(rt, boolean_object, operand, count_before)
+                if error:
+                    rolled_back = delete_node(rt, boolean_object)
+                    return mesh_error(error, rolled_back=rolled_back)
                 registered.append(node_identity(operand))
-
-            count, error = _operand_count(rt, boolean_object)
-            if error:
-                delete_node(rt, boolean_object)
-                return mesh_error(error, rolled_back=True)
-            if count != len(registered):
-                delete_node(rt, boolean_object)
-                return mesh_error(
-                    "the boolean registered {} of {} operands".format(count, len(registered)),
-                    requested_operand_count=len(registered),
-                    registered_operand_count=count,
-                    rolled_back=True,
-                )
+                count_before = count_after
 
             if normalized_name is not None:
                 try:
                     boolean_object.name = normalized_name
                 except Exception as exc:  # noqa: BLE001 - a naming failure is a hard failure.
-                    delete_node(rt, boolean_object)
-                    return mesh_error("could not name the boolean node: {}".format(exc), rolled_back=True)
+                    rolled_back = delete_node(rt, boolean_object)
+                    return mesh_error(
+                        "could not name the boolean node: {}".format(exc), rolled_back=rolled_back
+                    )
 
-            found, stored_code = read_property_first(boolean_object, (used_property,))
             return mesh_success(
                 "Created boolean: {}".format(str(boolean_object.name)),
                 node=node_identity(boolean_object),
-                boolean_class=used_class,
+                boolean_class=adapter.name,
+                created_with=used_class,
                 operation=normalized_operation,
-                operation_property=used_property,
-                operation_code=stored_code if found else None,
+                operation_code=code,
                 operands=registered,
-                operand_count=count,
+                operand_count=count_before,
             )
 
         boolean_object, error = resolve_shape(rt, node_name=node_name, handle=handle)
         if error:
             return error
+        adapter, error = _detect_adapter(rt, boolean_object)
+        if error:
+            return mesh_error(error, node=node_identity(boolean_object))
 
         if normalized_action == "read":
-            found, stored_code = read_property_first(boolean_object, _OP_PROPERTIES)
-            reverse = {code: label for label, code in _OPERATION_CODES.items()}
-            count, count_error = _operand_count(rt, boolean_object)
+            code = adapter.get_operation(rt, boolean_object)
+            count, count_error = adapter.operand_count(rt, boolean_object)
             payload: Dict[str, Any] = {
                 "node": node_identity(boolean_object),
-                "operation_code": stored_code if found else None,
-                "operation": reverse.get(stored_code) if found else None,
+                "boolean_class": adapter.name,
+                "operation_code": code,
+                "operation": adapter.operation_label(code) if code is not None else None,
                 "operand_count": count,
             }
             if count_error:
                 payload["operand_count_error"] = count_error
-            if not found:
-                payload["operation_error"] = "the boolean exposes none of {}".format(", ".join(_OP_PROPERTIES))
+            if code is None:
+                payload["operation_error"] = "the node reports no boolean mode the adapter can read"
             return mesh_success("Read boolean state", **payload)
 
         if normalized_action == "set_operation":
-            used_property, error = set_property_first(
-                boolean_object,
-                _OP_PROPERTIES,
-                _OPERATION_CODES[normalized_operation],
-                owner_label="the Boolean object",
-            )
+            code, error = adapter.set_operation(rt, boolean_object, normalized_operation)
             if error:
-                return mesh_error(error)
-            found, stored_code = read_property_first(boolean_object, (used_property,))
+                return mesh_error(error, node=node_identity(boolean_object))
             return mesh_success(
                 "Set boolean operation",
                 node=node_identity(boolean_object),
+                boolean_class=adapter.name,
                 operation=normalized_operation,
-                operation_property=used_property,
-                operation_code=stored_code if found else None,
+                operation_code=code,
             )
+
+        # Every remaining action mutates the operand list, so the starting
+        # count is read first and each mutation is verified against it.
+        count_before, error = adapter.operand_count(rt, boolean_object)
+        if error:
+            return mesh_error(error, node=node_identity(boolean_object))
 
         if normalized_action == "add_operands":
             registered = []
             for reference in references:
                 operand, error = _resolve_operand(rt, reference)
                 if error:
-                    return mesh_error(error, added=registered)
-                _used_method, error = _add_operand(boolean_object, operand)
+                    return error
+                count_after, error = adapter.add_operand(rt, boolean_object, operand, count_before)
                 if error:
-                    return mesh_error(error, added=registered)
+                    return mesh_error(error, added=registered, node=node_identity(boolean_object))
                 registered.append(node_identity(operand))
-            count, error = _operand_count(rt, boolean_object)
-            if error:
-                return mesh_error(error, added=registered)
+                count_before = count_after
             return mesh_success(
                 "Added {} boolean operand(s)".format(len(registered)),
                 node=node_identity(boolean_object),
+                boolean_class=adapter.name,
                 added=registered,
-                operand_count=count,
+                operand_count=count_before,
+            )
+
+        if normalized_index > count_before:
+            return mesh_error(
+                "operand_index {} is out of range".format(normalized_index),
+                node=node_identity(boolean_object),
+                operand_count=count_before,
             )
 
         if normalized_action == "set_operand":
             operand, error = _resolve_operand(rt, references[0])
             if error:
                 return error
-            ok, used_method, error = call_first(
-                boolean_object,
-                ("SetOp", "setOp", "SetOperand"),
-                ((normalized_index, operand),),
-                owner_label="the Boolean object",
+            count_after, identity_verified, error = adapter.set_operand(
+                rt, boolean_object, normalized_index, operand, count_before
             )
-            if not ok:
-                return mesh_error(error)
-            count, error = _operand_count(rt, boolean_object)
             if error:
-                return mesh_error(error)
-            if normalized_index > count:
-                return mesh_error(
-                    "operand_index {} is out of range".format(normalized_index),
-                    operand_count=count,
-                )
+                return mesh_error(error, node=node_identity(boolean_object))
+            payload = {
+                "node": node_identity(boolean_object),
+                "boolean_class": adapter.name,
+                "operand_index": normalized_index,
+                "operand": node_identity(operand),
+                "operand_count": count_after,
+                "operand_identity_verified": bool(identity_verified),
+            }
+            if identity_verified is None:
+                payload["warnings"] = [
+                    "the host does not expose an operand getter, so the slot contents were not confirmed"
+                ]
             return mesh_success(
-                "Replaced boolean operand {}".format(normalized_index),
-                node=node_identity(boolean_object),
-                operand_index=normalized_index,
-                operand=node_identity(operand),
-                method=used_method,
-                operand_count=count,
+                "Replaced boolean operand {}".format(normalized_index), **payload
             )
 
         if normalized_action == "extract_operand":
-            ok, used_method, error = call_first(
-                boolean_object,
-                ("ExtractOp", "extractOp", "ExtractOperand"),
-                ((normalized_index,), (normalized_index, True)),
-                owner_label="the Boolean object",
-            )
-            if not ok:
-                return mesh_error(error)
+            count_after, error = adapter.extract_operand(rt, boolean_object, normalized_index, count_before)
+            if error:
+                return mesh_error(error, node=node_identity(boolean_object))
             return mesh_success(
                 "Extracted boolean operand {}".format(normalized_index),
                 node=node_identity(boolean_object),
+                boolean_class=adapter.name,
                 operand_index=normalized_index,
-                method=used_method,
+                operand_count=count_after,
                 note="Re-read the scene: the extracted copy is a new node.",
             )
 
-        ok, used_method, error = call_first(
-            boolean_object,
-            ("RemoveOp", "removeOp", "RemoveOperand"),
-            ((normalized_index,),),
-            owner_label="the Boolean object",
-        )
-        if not ok:
-            return mesh_error(error)
-        count, error = _operand_count(rt, boolean_object)
+        count_after, error = adapter.remove_operand(rt, boolean_object, normalized_index, count_before)
         if error:
-            return mesh_error(error)
+            return mesh_error(error, node=node_identity(boolean_object))
         return mesh_success(
             "Removed boolean operand {}".format(normalized_index),
             node=node_identity(boolean_object),
+            boolean_class=adapter.name,
             operand_index=normalized_index,
-            method=used_method,
-            operand_count=count,
+            operand_count=count_after,
         )
     except Exception as exc:  # noqa: BLE001 - host failures roll a new node back.
-        if created_node and boolean_object is not None:
-            delete_node(rt, boolean_object)
+        rolled_back = delete_node(rt, boolean_object) if (created_node and boolean_object is not None) else False
         return mesh_error(
             "boolean_operation failed",
             exception_type=type(exc).__name__,
             exception=str(exc),
-            rolled_back=created_node,
+            rolled_back=rolled_back,
         )

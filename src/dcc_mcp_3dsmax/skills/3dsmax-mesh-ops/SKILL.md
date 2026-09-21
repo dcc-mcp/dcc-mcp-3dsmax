@@ -51,17 +51,35 @@ agents can report what changed without relying on opaque macros.
 
 ## Boolean solids
 
-`boolean_operation` drives the native Boolean / ProBoolean object. `create`
-registers `base_node` as the first operand followed by `operands`, and sets the
-mode (`union`, `intersection`, `subtraction`, `cut`). Because the operands stay
-live, `set_operand`, `extract_operand`, `remove_operand`, and `add_operands`
-re-adjust an existing boolean without rebuilding it, and `set_operation`
-switches the mode in place.
+`boolean_operation` drives the native ProBoolean or Boolean / Boolean2 compound
+object. `create` registers `base_node` as the first operand followed by
+`operands`, and sets the mode (`union`, `intersection`, `subtraction`, `cut`).
+Because the operands stay live, `set_operand`, `extract_operand`,
+`remove_operand`, and `add_operands` re-adjust an existing boolean without
+rebuilding it, and `set_operation` switches the mode in place.
+
+The two classes are reached through **class-specific adapters**, because they do
+not agree on anything:
+
+| | ProBoolean | Boolean / Boolean2 |
+| --- | --- | --- |
+| Reached through | the `ProBoolean` interface struct | methods on the object |
+| Operand add | `SetOperandB` | `setOperandB` |
+| Mode set / get | `SetBoolOp` / `GetBoolOp` | `setBoolOp` / `getBoolOp` |
+| union / intersection / subtraction | 0 / 1 / 2 | 1 / 2 / 3 |
+| cut | **unsupported** (3 is Merge there) | 5 |
+
+Sharing one code path would silently produce the wrong solid, so `cut` is
+rejected when only ProBoolean is available rather than being mapped onto Merge.
 
 Both the mode and the registered operand count are read back. A mode the host
-coerced, an operand that did not register, or an operand count the host does
-not expose all fail the call; a `create` failure also removes the node it
-made.
+coerced - or that it accepts but will not report - an operand that did not
+register, and an operand count the host does not expose all fail the call.
+Every operand mutation is verified against the count read **before** the call:
+an add must grow it by one, a removal must shrink it by one, and an extraction
+must leave it unchanged. A failed `create` removes the node it made and reports
+whether that removal was actually confirmed, so a rollback is never claimed
+unless the deletion is verified.
 
 ## No silent success
 

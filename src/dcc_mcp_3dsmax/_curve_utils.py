@@ -520,46 +520,74 @@ def curve_token(node: Any, state: Dict[str, Any]) -> str:
 
 # ── Scene persistence ──────────────────────────────────────────────────
 
+# 3ds Max persists per-node data through the user property buffer. A Python
+# attribute on the node wrapper is not that buffer: it survives one call and is
+# gone when the wrapper is dropped, so a round-trip through it proves nothing
+# about the scene. Persistence therefore goes through the documented user
+# property API and is read back through that same API.
+_USER_PROP_SETTERS = ("setUserPropVal", "setUserProp")
+_USER_PROP_GETTERS = ("getUserPropVal", "getUserProp")
+_USER_PROP_DELETERS = ("deleteUserPropVal", "deleteUserProp")
 
-def _property_bag(node: Any) -> Optional[Dict[str, Any]]:
-    """Return the node's user property mapping, creating it when absent.
 
-    This is the same channel the display skill uses for custom properties, so
-    curve parameters land where an agent already looks for them.
+def _user_prop_channel(runtime: Any) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
+    """Return ``(setter, getter, error)`` for the native user property API.
+
+    Setter and getter are paired by index first, so ``setUserPropVal`` is never
+    paired with ``getUserProp`` while its own getter is available.
     """
-    props = getattr(node, "user_properties", None)
-    if props is None:
-        props = getattr(node, "custom_properties", None)
-    if props is None:
-        props = {}
-        try:
-            setattr(node, "user_properties", props)
-        except Exception:  # noqa: BLE001 - persistence is best-effort, reporting is not.
-            return None
-    if not isinstance(props, dict):
-        return None
-    return props
+    setters = [getattr(runtime, name, None) for name in _USER_PROP_SETTERS]
+    getters = [getattr(runtime, name, None) for name in _USER_PROP_GETTERS]
+    for setter, getter in zip(setters, getters):
+        if callable(setter) and callable(getter):
+            return setter, getter, None
+    for setter in setters:
+        if callable(setter):
+            for getter in getters:
+                if callable(getter):
+                    return setter, getter, None
+    return None, None, "3ds Max exposes none of {} / {}, so parameters cannot be persisted".format(
+        ", ".join(_USER_PROP_SETTERS), ", ".join(_USER_PROP_GETTERS)
+    )
 
 
-def store_params(node: Any, property_name: str, params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """Persist a parameter mapping on a node and verify the round-trip."""
-    props = _property_bag(node)
-    if props is None:
-        return False, "the node exposes no writable user property mapping"
+def store_params(
+    runtime: Any, node: Any, property_name: str, params: Dict[str, Any]
+) -> Tuple[bool, Optional[str]]:
+    """Persist a parameter mapping on a node through the native channel.
+
+    The write is read back through the same channel, so ``params_stored``
+    reflects what the scene retained rather than what Python still holds.
+    """
+    setter, getter, error = _user_prop_channel(runtime)
+    if error:
+        return False, error
     encoded = json.dumps(json_safe(params), sort_keys=True)
-    props[property_name] = encoded
-    if props.get(property_name) != encoded:
-        return False, "the node did not retain the {} parameter payload".format(property_name)
+    try:
+        setter(node, property_name, encoded)
+    except Exception as exc:  # noqa: BLE001 - surface the host rejection.
+        return False, "the user property channel rejected the {} write: {}".format(property_name, exc)
+    try:
+        readback = getter(node, property_name)
+    except Exception as exc:  # noqa: BLE001 - an unreadable write is unverified.
+        return False, "the {} write could not be read back: {}".format(property_name, exc)
+    if readback != encoded:
+        return False, "the user property channel kept {!r} instead of the {} payload".format(
+            readback, property_name
+        )
     return True, None
 
 
-def load_params(node: Any, property_name: str) -> Optional[Dict[str, Any]]:
+def load_params(runtime: Any, node: Any, property_name: str) -> Optional[Dict[str, Any]]:
     """Return persisted parameters for a node, or ``None`` when absent."""
-    props = _property_bag(node)
-    if not props:
+    _setter, getter, error = _user_prop_channel(runtime)
+    if error:
         return None
-    encoded = props.get(property_name)
-    if not isinstance(encoded, str):
+    try:
+        encoded = getter(node, property_name)
+    except Exception:  # noqa: BLE001 - an unreadable payload is reported as absent.
+        return None
+    if not isinstance(encoded, str) or not encoded:
         return None
     try:
         decoded = json.loads(encoded)
@@ -568,20 +596,38 @@ def load_params(node: Any, property_name: str) -> Optional[Dict[str, Any]]:
     return decoded if isinstance(decoded, dict) else None
 
 
-def clear_params(node: Any, property_name: str) -> bool:
-    """Remove persisted parameters from a node."""
-    props = _property_bag(node)
-    if not props or property_name not in props:
+def clear_params(runtime: Any, node: Any, property_name: str) -> bool:
+    """Remove persisted parameters from a node and confirm they are gone."""
+    setter, getter, error = _user_prop_channel(runtime)
+    if error:
         return False
-    del props[property_name]
-    return True
+    for name in _USER_PROP_DELETERS:
+        deleter = getattr(runtime, name, None)
+        if not callable(deleter):
+            continue
+        try:
+            deleter(node, property_name)
+        except Exception:  # noqa: BLE001 - fall through to the write-empty path.
+            continue
+        try:
+            return not getter(node, property_name)
+        except Exception:  # noqa: BLE001 - an unverified clear is a failed clear.
+            return False
+    try:
+        setter(node, property_name, "")
+    except Exception:  # noqa: BLE001 - an unverified clear is a failed clear.
+        return False
+    try:
+        return not getter(node, property_name)
+    except Exception:  # noqa: BLE001 - an unverified clear is a failed clear.
+        return False
 
 
 def iter_scene_shapes(runtime: Any, property_name: str) -> List[Dict[str, Any]]:
     """List every scene node that carries a persisted parameter payload."""
     found: List[Dict[str, Any]] = []
     for node in iter_scene_nodes(runtime):
-        params = load_params(node, property_name)
+        params = load_params(runtime, node, property_name)
         if params is not None:
             entry = {"node": node_identity(node)}
             entry.update(params)

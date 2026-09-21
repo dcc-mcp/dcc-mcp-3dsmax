@@ -192,17 +192,18 @@ def main(
     rt = get_runtime()
 
     if normalized_action == "list":
+        models = iter_scene_shapes(rt, CURVE_MODEL_PROPERTY)
         return curve_success(
-            "Listed {} curve model(s)".format(len(iter_scene_shapes(rt, CURVE_MODEL_PROPERTY))),
-            models=iter_scene_shapes(rt, CURVE_MODEL_PROPERTY),
-            count=len(iter_scene_shapes(rt, CURVE_MODEL_PROPERTY)),
+            "Listed {} curve model(s)".format(len(models)),
+            models=models,
+            count=len(models),
         )
 
     if normalized_action == "read":
         node, error = resolve_shape(rt, node_name=normalized_node_name, handle=handle)
         if error:
             return error
-        params = load_params(node, CURVE_MODEL_PROPERTY)
+        params = load_params(rt, node, CURVE_MODEL_PROPERTY)
         if params is None:
             return curve_error(
                 "the node carries no curve model parameters",
@@ -217,10 +218,10 @@ def main(
         node, error = resolve_shape(rt, node_name=normalized_node_name, handle=handle)
         if error:
             return error
-        params = load_params(node, CURVE_MODEL_PROPERTY) or {}
+        params = load_params(rt, node, CURVE_MODEL_PROPERTY) or {}
         entry = {"node": node_identity(node), "name": params.get("name")}
         if not normalized_delete_node:
-            removed = clear_params(node, CURVE_MODEL_PROPERTY)
+            removed = clear_params(rt, node, CURVE_MODEL_PROPERTY)
             entry.update({"removed": removed, "delete_node": False})
             return curve_success(
                 "Cleared the curve model parameters; the spline node was kept",
@@ -255,6 +256,7 @@ def main(
 
     node = None
     created_node = False
+    target_spline = 1
     try:
         if normalized_action == "update":
             node, error = resolve_shape(rt, node_name=normalized_node_name, handle=handle)
@@ -267,27 +269,32 @@ def main(
                 return curve_error(count_error)
             if count < 1:
                 return curve_error("the target shape has no spline to update")
-            # Replace spline 1 with the regenerated profile.
+            # Replace spline 1 with the regenerated profile. deleteSpline
+            # shifts every higher index down, and addNewSpline appends at the
+            # end, so the rebuilt spline lands at index `count` - not at 1.
             delete_spline = getattr(rt, "deleteSpline", None)
             add_new_spline = getattr(rt, "addNewSpline", None)
             if not callable(delete_spline) or not callable(add_new_spline):
                 return curve_error("3ds Max does not expose deleteSpline/addNewSpline")
             delete_spline(node, 1)
             add_new_spline(node)
+            target_spline = count
             from dcc_mcp_3dsmax._curve_utils import append_knots, world_to_object
 
             for point in world_points:
                 local, map_error = world_to_object(rt, node, point)
                 if map_error:
                     return curve_error(map_error)
-                knot_error = append_knots(rt, node, 1, [local], normalized_knot_type, curve_type=normalized_curve_type)
+                knot_error = append_knots(
+                    rt, node, target_spline, [local], normalized_knot_type, curve_type=normalized_curve_type
+                )
                 if knot_error:
                     return curve_error(knot_error)
             if closed_flag:
                 closer = getattr(rt, "closeSpline", None)
                 if not callable(closer):
                     return curve_error("3ds Max does not expose closeSpline")
-                closer(node, 1)
+                closer(node, target_spline)
             update_error = update_shape(rt, node)
             if update_error:
                 return curve_error(update_error)
@@ -301,9 +308,9 @@ def main(
                 curve_type=normalized_curve_type,
             )
             created_node = node is not None
-            if error and node is None:
-                return curve_error(error)
             if error:
+                if created_node:
+                    remove_scene_node(rt, node)
                 return curve_error(error)
     except Exception as exc:  # noqa: BLE001 - host failures roll the created node back.
         if created_node and node is not None:
@@ -314,7 +321,9 @@ def main(
             exception=str(exc),
         )
 
-    mismatches, error = verify_world_points(rt, node, 1, world_points, expected_closed=closed_flag)
+    mismatches, error = verify_world_points(
+        rt, node, target_spline, world_points, expected_closed=closed_flag
+    )
     if error:
         if created_node:
             remove_scene_node(rt, node)
@@ -377,7 +386,7 @@ def main(
     if path_node:
         persisted["path_node"] = str(path_node)
 
-    stored, store_error = store_params(node, CURVE_MODEL_PROPERTY, persisted)
+    stored, store_error = store_params(rt, node, CURVE_MODEL_PROPERTY, persisted)
     if not stored:
         if created_node:
             remove_scene_node(rt, node)
