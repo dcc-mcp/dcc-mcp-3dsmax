@@ -134,6 +134,8 @@ they are declared `batch_call`. They are not listed below because all four are
 | `3dsmax-scene__set_visibility` | yes | `batch_call` | One call sets visibility on N nodes. |
 | `3dsmax-scene__center_pivots` | yes | `batch_call` | One call centres pivots on N nodes. |
 | `3dsmax-scene__freeze_transforms` | yes | `batch_call` | One call freezes N nodes. |
+| `3dsmax-mesh-ops__create_mesh` | yes | `batch_call` | Node creation, TriMesh assignment, and convertToPoly, with no undo hold. |
+| `3dsmax-mesh-ops__edit_vertices` | yes | `batch_call` | One write per vertex with no undo hold; grouping is not queryable. |
 
 ### Undo counts for a batch write
 
@@ -172,6 +174,7 @@ batch, those extra steps consume undo entries that belong to earlier work.
 | `3dsmax-scene__save_scene` | no | `none` | File writes are outside the host undo stack. |
 | `3dsmax-scene__save_scene_as` | no | `none` | File writes are outside the host undo stack. |
 | `3dsmax-scene__delete_nodes` | yes | `single_call` | One host call; the per-node fallback leaves one entry per node. |
+| `3dsmax-mesh-ops__mesh_edit` | yes | `single_call` | Every component edit in the batch is written inside one host undo hold, so one `undo_last` reverses the whole call. `undo.grouped` is `false` only when the host could not open a hold, which the tool refuses unless `allow_ungrouped` is true; then each op may leave its own entry and a part-way failure is reported as `rollback: unavailable` rather than as a clean `rolled_back`. |
 | `3dsmax-scene__scene_patch` | yes | `single_call` | Every edit in the batch is written inside one host undo hold, so one `undo_last` reverses the whole call. `undo.grouped` is `false` only when the host could not open a hold. |
 | `3dsmax-scripting__execute_python` | depends | `script_defined` | Prefer typed tools. |
 | `3dsmax-scripting__execute_maxscript` | depends | `script_defined` | Prefer typed tools. |
@@ -192,6 +195,15 @@ guessing: the yielded dict carries `engaged` and `reason`, and the caller must
 surface a non-engaged hold rather than assume the batch was grouped.
 `scene_patch` refuses to apply an ungrouped batch unless `allow_ungrouped` is
 true, so an agent never ends up with a silently half-reversible batch.
+
+`3dsmax-mesh-ops__mesh_edit` applies the same wrapper to component editing. It
+adds one rule the node-edit path does not need, because a component op can
+**remove** data rather than only change it: when no hold could be opened and
+`allow_ungrouped` allowed the batch anyway, a failure part-way through reports
+`rolled_back: false`, `rollback: "unavailable"`, and the ops that did land. A
+bare `rolled_back` there would cover a partially edited mesh, so the tool names
+the partial state instead and tells the caller to undo and re-read while the
+node still differs.
 
 Every other tool still keeps its own host undo entries, which is the
 conservative behaviour: the semantics above are unchanged for them, and a
