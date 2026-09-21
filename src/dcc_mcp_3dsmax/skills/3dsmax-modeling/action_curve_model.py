@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from dcc_mcp_3dsmax._curve_utils import (
     CURVE_MODEL_PROPERTY,
@@ -223,6 +223,10 @@ def main(
         if not normalized_delete_node:
             removed = clear_params(rt, node, CURVE_MODEL_PROPERTY)
             entry.update({"removed": removed, "delete_node": False})
+            if not removed:
+                return curve_error(
+                    "the curve model parameters could not be cleared from the node", **entry
+                )
             return curve_success(
                 "Cleared the curve model parameters; the spline node was kept",
                 **entry
@@ -269,35 +273,81 @@ def main(
                 return curve_error(count_error)
             if count < 1:
                 return curve_error("the target shape has no spline to update")
-            # Replace spline 1 with the regenerated profile. deleteSpline
-            # shifts every higher index down, and addNewSpline appends at the
-            # end, so the rebuilt spline lands at index `count` - not at 1.
+            # deleteSpline is the only destructive step in an update, so the
+            # replacement is built and verified first and the old spline is
+            # dropped last. A failure anywhere before that leaves the shape
+            # exactly as it was, and the rebuilt spline still lands at index
+            # `count` afterwards, because deleteSpline shifts the higher
+            # indices down by one.
+            from dcc_mcp_3dsmax._curve_utils import append_knots, world_to_object
+
             delete_spline = getattr(rt, "deleteSpline", None)
             add_new_spline = getattr(rt, "addNewSpline", None)
             if not callable(delete_spline) or not callable(add_new_spline):
                 return curve_error("3ds Max does not expose deleteSpline/addNewSpline")
-            delete_spline(node, 1)
-            add_new_spline(node)
-            target_spline = count
-            from dcc_mcp_3dsmax._curve_utils import append_knots, world_to_object
 
+            # Every point is mapped into object space before any mutation, so
+            # a mapping failure cannot leave a half-replaced shape behind.
+            local_points = []
             for point in world_points:
                 local, map_error = world_to_object(rt, node, point)
                 if map_error:
                     return curve_error(map_error)
+                local_points.append(local)
+
+            add_new_spline(node)
+            target_spline = count + 1
+
+            def _abort_replacement(message: str, **details: Any) -> Dict[str, Any]:
+                """Drop the half-built spline and fail with the original intact."""
+                try:
+                    delete_spline(node, target_spline)
+                    discarded = True
+                except Exception:  # noqa: BLE001 - the discard result is reported.
+                    discarded = False
+                details.setdefault("node", node_identity(node))
+                details["discarded_replacement"] = discarded
+                return curve_error(message, **details)
+
+            for local in local_points:
                 knot_error = append_knots(
                     rt, node, target_spline, [local], normalized_knot_type, curve_type=normalized_curve_type
                 )
                 if knot_error:
-                    return curve_error(knot_error)
+                    return _abort_replacement(knot_error)
             if closed_flag:
                 closer = getattr(rt, "closeSpline", None)
                 if not callable(closer):
-                    return curve_error("3ds Max does not expose closeSpline")
+                    return _abort_replacement("3ds Max does not expose closeSpline")
                 closer(node, target_spline)
             update_error = update_shape(rt, node)
             if update_error:
-                return curve_error(update_error)
+                return _abort_replacement(update_error)
+
+            stale, verify_error = verify_world_points(
+                rt, node, target_spline, world_points, expected_closed=closed_flag
+            )
+            if verify_error:
+                return _abort_replacement(verify_error)
+            if stale:
+                return _abort_replacement(
+                    "the regenerated profile did not pass world-space readback", mismatches=stale
+                )
+
+            # Verified, so the old spline can be dropped and the index re-checked.
+            delete_spline(node, 1)
+            target_spline = count
+            final, final_error = verify_world_points(
+                rt, node, target_spline, world_points, expected_closed=closed_flag
+            )
+            if final_error:
+                return curve_error(final_error)
+            if final:
+                return curve_error(
+                    "the regenerated profile did not pass world-space readback after the replacement",
+                    node=node_identity(node),
+                    mismatches=final,
+                )
         else:
             node, error = create_spline_shape(
                 rt,
@@ -321,9 +371,12 @@ def main(
             exception=str(exc),
         )
 
-    mismatches, error = verify_world_points(
-        rt, node, target_spline, world_points, expected_closed=closed_flag
-    )
+    mismatches: List[Dict[str, Any]] = []
+    error = None
+    if normalized_action == "create":
+        mismatches, error = verify_world_points(
+            rt, node, target_spline, world_points, expected_closed=closed_flag
+        )
     if error:
         if created_node:
             remove_scene_node(rt, node)

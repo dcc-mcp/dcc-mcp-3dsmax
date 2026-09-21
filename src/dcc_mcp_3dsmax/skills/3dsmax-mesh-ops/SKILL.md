@@ -78,8 +78,17 @@ register, and an operand count the host does not expose all fail the call.
 Every operand mutation is verified against the count read **before** the call:
 an add must grow it by one, a removal must shrink it by one, and an extraction
 must leave it unchanged. A failed `create` removes the node it made and reports
-whether that removal was actually confirmed, so a rollback is never claimed
-unless the deletion is verified.
+whether that removal was actually confirmed - including when the failure is an
+operand that could not be resolved - so a rollback is never claimed unless the
+deletion is verified.
+
+`set_operand` is the one exception to full verification. It always confirms the
+operand count, but whether the requested slot really holds the replacement
+depends on an operand getter the host may not expose. When that getter is
+missing the result carries `operand_identity_verified: false` plus a warning
+instead of failing, because the common case - a host that applied the change -
+would otherwise be unusable. Read that flag as "re-read before trusting the
+slot", not as a confirmed replacement.
 
 ## No silent success
 

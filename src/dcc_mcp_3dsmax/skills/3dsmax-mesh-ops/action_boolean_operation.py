@@ -480,8 +480,9 @@ def main(
             for reference in [base] + references:
                 operand, error = _resolve_operand(rt, reference)
                 if error:
-                    rolled_back = delete_node(rt, boolean_object)
-                    return mesh_error(error["message"], **error["data"])
+                    payload = dict(error["data"])
+                    payload["rolled_back"] = delete_node(rt, boolean_object)
+                    return mesh_error(error["message"], **payload)
                 count_before, error = adapter.operand_count(rt, boolean_object)
                 if error:
                     rolled_back = delete_node(rt, boolean_object)

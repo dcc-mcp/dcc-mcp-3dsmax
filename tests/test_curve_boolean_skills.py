@@ -1643,3 +1643,130 @@ def test_set_operand_validates_the_index_before_calling_the_host(monkeypatch):
     assert result["success"] is False
     assert "out of range" in result["message"]
     assert calls == []
+
+
+# ── Regression tests for the second review round ──────────────────────
+
+
+def test_boolean_create_reports_rollback_when_an_operand_cannot_be_resolved(monkeypatch):
+    """An unresolvable operand still has to report whether cleanup worked."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["ghost_operand"],
+    )
+
+    assert result["success"] is False
+    assert "rolled_back" in result["data"]
+    assert result["data"]["rolled_back"] is True
+
+
+def test_boolean_create_reports_an_unconfirmed_rollback_on_resolution_failure(monkeypatch):
+    """A cleanup the host ignores must not be reported as a completed rollback."""
+    runtime = _install(monkeypatch, FakeRuntime(delete_is_noop=True))
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    result = module.main(
+        action="create",
+        operation="union",
+        base_node="wall_block",
+        operands=["ghost_operand"],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False
+
+
+def test_curve_model_delete_fails_when_the_parameters_cannot_be_cleared(monkeypatch):
+    """An unconfirmed metadata removal must not be reported as cleared."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    module = _load(MODELING_DIR, "action_curve_model.py")
+
+    module.main(action="create", name="duct_profile", profile="rectangle", width=10, height=10)
+    # A getter that keeps reporting a payload makes the removal unconfirmable.
+    monkeypatch.setattr(runtime, "getUserPropVal", lambda node, key: "still here")
+
+    result = module.main(action="delete", node_name="duct_profile")
+
+    assert result["success"] is False
+    assert "could not be cleared" in result["message"]
+    assert result["data"]["removed"] is False
+
+
+def test_curve_model_update_leaves_the_original_spline_intact_on_failure(monkeypatch):
+    """A failed update must not destroy the spline it was meant to replace."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+
+    model.main(action="create", name="profile_a", profile="rectangle", width=40, height=20)
+    before = inspect.main(node_name="profile_a")
+    assert before["success"] is True
+    original_knots = [knot["position"] for knot in before["data"]["splines"][0]["knots"]]
+
+    original_add_knot = runtime.addKnot
+
+    def failing_add_knot(shape, spline_index, knot_type, segment_type, point):
+        # Fail on the third knot of the replacement spline only.
+        if spline_index == 2 and len(shape.splines[spline_index - 1].knots) >= 2:
+            raise RuntimeError("host refused the third knot")
+        original_add_knot(shape, spline_index, knot_type, segment_type, point)
+
+    monkeypatch.setattr(runtime, "addKnot", failing_add_knot)
+    result = model.main(
+        action="update",
+        name="profile_a",
+        node_name="profile_a",
+        profile="rounded_rect",
+        width=80,
+        height=20,
+        corner_radius=5,
+    )
+
+    assert result["success"] is False
+    after = inspect.main(node_name="profile_a")
+    assert after["success"] is True
+    assert after["data"]["spline_count"] == 1
+    assert [knot["position"] for knot in after["data"]["splines"][0]["knots"]] == original_knots
+    assert result["data"]["discarded_replacement"] is True
+
+
+def test_curve_model_update_replaces_only_after_the_profile_is_verified(monkeypatch):
+    """The destructive delete happens last, and the final index is re-checked."""
+    _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+
+    model.main(action="create", name="profile_a", profile="rectangle", width=40, height=20)
+    draw.main(points=[[0, 200, 0], [10, 200, 0]], mode="append", node_name="profile_a", spline_index=2)
+
+    result = model.main(
+        action="update",
+        name="profile_a",
+        node_name="profile_a",
+        profile="rectangle",
+        width=80,
+        height=20,
+    )
+
+    assert result["success"] is True, result
+    after = inspect.main(node_name="profile_a")
+    assert after["data"]["spline_count"] == 2
+    # The rebuilt profile lands at the last index and the other spline is intact.
+    assert [knot["position"] for knot in after["data"]["splines"][1]["knots"]] == [
+        [-40.0, -10.0, 0.0],
+        [40.0, -10.0, 0.0],
+        [40.0, 10.0, 0.0],
+        [-40.0, 10.0, 0.0],
+    ]
+    assert [knot["position"] for knot in after["data"]["splines"][0]["knots"]] == [
+        [0.0, 200.0, 0.0],
+        [10.0, 200.0, 0.0],
+    ]
