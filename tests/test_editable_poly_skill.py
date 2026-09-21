@@ -286,26 +286,79 @@ def _renumber(face, removed):
     return [v if v < removed else v - 1 for v in face]
 
 
-class _Hold:
-    """Stands in for ``rt.theHold`` with a real Begin/Accept/Cancel cycle."""
+def _snapshot(runtime: "FakeRuntime"):
+    """Copy the geometry of every node, so a hold can put it back.
 
-    def __init__(self) -> None:
+    Vertices, faces, and the two per-face maps are what the component tools
+    write, so together they are the state a cancelled or undone batch has to
+    restore. The node list is copied too, because a detach creates a node that
+    undoing the batch has to remove again.
+    """
+    nodes = list(runtime.objects)
+    geometry = [
+        (
+            [Point3(v.x, v.y, v.z) for v in node.verts],
+            [list(face) for face in node.faces],
+            dict(node.smoothing_groups),
+            dict(node.material_ids),
+        )
+        for node in nodes
+    ]
+    return (nodes, geometry)
+
+
+def _restore(runtime: "FakeRuntime", snapshot) -> None:
+    """Put every node back to the geometry captured in *snapshot*."""
+    nodes, geometry = snapshot
+    runtime.objects[:] = nodes
+    for node, (verts, faces, smoothing, material_ids) in zip(nodes, geometry):
+        node.verts = [Point3(v.x, v.y, v.z) for v in verts]
+        node.faces = [list(face) for face in faces]
+        node.smoothing_groups = dict(smoothing)
+        node.material_ids = dict(material_ids)
+
+
+class _Hold:
+    """Stands in for ``rt.theHold`` with a real Begin/Accept/Cancel cycle.
+
+    The geometry side is real as well as the bookkeeping: ``Begin`` snapshots
+    every node, ``Cancel`` restores it, and ``Accept`` pushes one reversible
+    entry onto the runtime undo stack. That is what makes "one undo reverses the
+    whole batch" an observable claim instead of a counter having moved -
+    ``runtime.execute("max undo")`` runs the same host channel the adapter's
+    undo tool uses.
+    """
+
+    def __init__(self, runtime: "FakeRuntime") -> None:
+        self.runtime = runtime
         self.begin_calls = 0
         self.accept_calls: list = []
         self.cancel_calls = 0
         self.holding = False
+        self._snapshot = None
 
     def Begin(self):  # noqa: N802
         self.begin_calls += 1
         self.holding = True
+        self._snapshot = _snapshot(self.runtime)
 
     def Accept(self, label):  # noqa: N802
         self.accept_calls.append(str(label))
         self.holding = False
+        if self._snapshot is not None:
+            before, after = self._snapshot, _snapshot(self.runtime)
+            self._snapshot = None
+            self.runtime.record(
+                lambda: _restore(self.runtime, after),
+                lambda: _restore(self.runtime, before),
+            )
 
     def Cancel(self):  # noqa: N802
         self.cancel_calls += 1
         self.holding = False
+        if self._snapshot is not None:
+            snapshot, self._snapshot = self._snapshot, None
+            _restore(self.runtime, snapshot)
 
     def Holding(self):  # noqa: N802
         return self.holding
@@ -329,7 +382,7 @@ class FakeRuntime:
         self.polyOp = _PolyOp(self)
         self.Point3 = Point3
         self.ray = Ray
-        self.theHold = _Hold() if with_hold else None
+        self.theHold = _Hold(self) if with_hold else None
         self.history: list = []
         self.redo_stack: list = []
         self.executed: list = []
@@ -849,10 +902,11 @@ def test_mesh_edit_rejects_unknown_ops_and_bad_shapes(monkeypatch):
 
 
 def test_mesh_edit_applies_a_batch_and_one_undo_reverses_all_of_it(monkeypatch):
-    """The headline contract: N ops, one undo step, whole batch reversed."""
+    """The headline contract: N ops, one undo entry, one undo reverses all of them."""
     runtime = _install(monkeypatch)
     node = _quad(runtime)
     runtime.record(lambda: None, lambda: None)  # something to undo, so the stack is non-empty
+    history_before = len(runtime.history)
 
     result = _load_action("action_mesh_edit.py").main(
         node_name="quad",
@@ -870,6 +924,26 @@ def test_mesh_edit_applies_a_batch_and_one_undo_reverses_all_of_it(monkeypatch):
     assert result["data"]["undo"]["granularity"] == _undo_utils.GRANULARITY_SINGLE_CALL
     assert runtime.theHold.accept_calls == ["quad edit"]
     assert runtime.theHold.cancel_calls == 0
+    assert node.verts[0].z == 3.0
+    assert len(node.faces) == 1
+    assert node.smoothing_groups[1] == 4
+    # Three ops, one host entry: the hold collapsed them, so one step is all
+    # the caller has to ask for.
+    assert len(runtime.history) == history_before + 1
+
+    # One undo through the host channel the adapter uses, and all three ops are
+    # gone - geometry included, not just the hold bookkeeping.
+    runtime.execute("max undo")
+
+    assert node.verts[0].z == 0.0
+    assert node.verts[1].z == 0.0
+    assert len(node.faces) == 2
+    assert node.smoothing_groups == {}
+    assert [list(face) for face in node.faces] == [list(face) for face in QUAD_FACES]
+
+    # The entry is a real undo/redo pair, so the batch comes back as a unit.
+    runtime.execute("max redo")
+
     assert node.verts[0].z == 3.0
     assert len(node.faces) == 1
     assert node.smoothing_groups[1] == 4
@@ -895,6 +969,34 @@ def test_mesh_edit_a_failed_op_cancels_the_hold(monkeypatch):
     assert result["data"]["rollback"] == "cancelled_hold"
     assert runtime.theHold.cancel_calls == 1
     assert runtime.theHold.accept_calls == []
+    # Cancelling put the geometry back: the move that landed is gone again.
+    assert node.verts[0].z == 0.0
+    assert len(node.faces) == 2
+    # A cancelled hold leaves nothing to undo later.
+    assert len(runtime.history) == 0
+
+
+def test_mesh_edit_cancelling_the_hold_restores_a_delete_that_landed(monkeypatch):
+    """Rollback is geometric: a face removed before the failure comes back."""
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+    node.reject_smoothing = True
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_faces", "indices": [2]},
+            {"op": "set_face_smoothing_group", "indices": [1], "smoothing_group": 2},
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    assert result["data"]["rollback"] == "cancelled_hold"
+    assert result["data"]["applied"] == 1
+    # The delete really ran, and the cancelled hold really undid it.
+    assert [list(face) for face in node.faces] == [list(face) for face in QUAD_FACES]
+    assert len(node.edges()) == 5
 
 
 def test_mesh_edit_refuses_an_ungrouped_batch_by_default(monkeypatch):
@@ -1492,6 +1594,56 @@ def test_edit_vertices_read_reports_what_it_could_not_read(monkeypatch):
     assert "1 of 3" in result["data"]["message_note"]
     assert len(result["data"]["warnings"]) == 1
     assert "getVert" in result["data"]["warnings"][0]
+
+
+def test_mesh_edit_rejects_an_edge_op_after_faces_were_deleted(monkeypatch):
+    """Deleting faces takes edges with them, so the edge count stops being known.
+
+    The quad has 5 edges. Deleting both faces removes every edge, and which of
+    them go is decided by the host - so a following ``delete_edges`` has to be
+    refused during preflight instead of being range-checked against the stale
+    count of 5 and failing once the hold is already open.
+    """
+    runtime = _install(monkeypatch)
+    node = _quad(runtime)
+
+    result = _load_action("action_mesh_edit.py").main(
+        node_name="quad",
+        ops=[
+            {"op": "delete_faces", "indices": [1, 2]},
+            {"op": "delete_edges", "indices": [5]},
+        ],
+    )
+
+    assert result["success"] is False
+    assert "failed preflight" in result["message"]
+    assert result["data"]["applied"] == 0
+    assert result["data"]["errors"][0]["op"] == "delete_edges"
+    assert result["data"]["errors"][0]["position"] == 1
+    assert "split the batch" in result["data"]["errors"][0]["message"]
+    # Rejected before the hold opened, so no geometry was touched and no host
+    # call was made with an index that no longer exists.
+    assert len(node.faces) == 2
+    assert len(node.edges()) == 5
+    assert runtime.theHold.begin_calls == 0
+
+
+def test_mesh_edit_declares_a_component_and_a_count_effect_for_every_op():
+    """A new op must not be able to reach preflight without its metadata."""
+    module = _load_action("action_mesh_edit.py")
+
+    assert set(module.OPERATIONS) <= set(module.OP_COMPONENT)
+    assert set(module.OPERATIONS) <= set(module._COUNT_EFFECTS)
+
+
+def test_mesh_edit_advance_limits_treats_a_missing_count_effect_as_no_change():
+    """An op with no count entry must not raise KeyError out of preflight."""
+    module = _load_action("action_mesh_edit.py")
+    limits = {"vertices": 4, "edges": 5, "faces": 2}
+
+    module._advance_limits(limits, {"position": 0, "op": "tessellate", "indices": [1]})
+
+    assert limits == {"vertices": 4, "edges": 5, "faces": 2}
 
 
 # ── tools.yaml / docs contract ─────────────────────────────────────────
