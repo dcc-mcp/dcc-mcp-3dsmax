@@ -240,6 +240,7 @@ class LoftObject:
         self.smooth_width = False
         self.reject_shapes = False
         self.reject_steps = False
+        self.reject_rename = False
         self.accepted: dict = {}
 
     @property
@@ -268,6 +269,8 @@ class LoftObject:
     def __setattr__(self, name, value):
         if name in ("shape_steps", "path_steps") and getattr(self, "reject_steps", False):
             raise RuntimeError("surface parameter rejected by the host")
+        if name == "name" and getattr(self, "reject_rename", False):
+            raise RuntimeError("node name rejected by the host")
         object.__setattr__(self, name, value)
 
 
@@ -1216,6 +1219,83 @@ def test_loft_mesh_records_only_the_sections_a_failed_update_kept(monkeypatch):
     assert read["success"] is True, read
     assert read["data"]["cross_sections"] == ["profile_a", "profile_b", "profile_a"]
     assert read["data"]["cross_section_count"] == 3
+
+
+def _loft_refuses_the_path_node(monkeypatch, runtime, loft):
+    """The host refuses the path node, after no cross-section was added."""
+
+    def _refuse_path(node):
+        raise RuntimeError("the host refused the path node")
+
+    monkeypatch.setattr(loft, "createPath", _refuse_path)
+    return {"path_node": "profile_a"}
+
+
+def _loft_refuses_the_node_name(monkeypatch, runtime, loft):
+    loft.reject_rename = True
+    return {"name": "renamed_loft"}
+
+
+def _loft_refuses_the_parameter_write(monkeypatch, runtime, loft):
+    runtime.no_user_props = True
+    return {"cap_start": False}
+
+
+class _UnanswerableProperty:
+    """A property the host refuses to answer for at all, set and get alike."""
+
+    def __get__(self, instance, owner=None):
+        raise RuntimeError("the host refused to answer")
+
+    def __set__(self, instance, value):
+        instance.__dict__["cap_start"] = value
+
+
+def _loft_refuses_the_surface_probe(monkeypatch, runtime, loft):
+    monkeypatch.setattr(LoftObject, "cap_start", _UnanswerableProperty(), raising=False)
+    return {"cap_start": True}
+
+
+@pytest.mark.parametrize(
+    "refuse",
+    [
+        _loft_refuses_the_path_node,
+        _loft_refuses_the_node_name,
+        _loft_refuses_the_parameter_write,
+        _loft_refuses_the_surface_probe,
+    ],
+    ids=["path-node", "node-name", "parameter-write", "surface-probe"],
+)
+def test_loft_mesh_omits_the_shape_count_when_no_baseline_was_measured(monkeypatch, refuse):
+    """An update that added no section measured no count, so it reports none.
+
+    `count_before` only holds a measured value once the call reads the host
+    shape count, which only happens for a call carrying cross-sections. A
+    failure on an update without them has nothing to compare the host count
+    against, so the pair has to be left out: reporting it would describe a
+    verification that never ran, and the removal probe behind it would take
+    the caller's own cross-sections back off the loft while trying to reach a
+    baseline of zero.
+    """
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create", name="duct_loft", cross_sections=["profile_a", "profile_b"]
+    )
+    assert created["success"] is True, created
+    loft = runtime.getNodeByName("duct_loft")
+
+    result = module.main(action="update", node_name="duct_loft", **refuse(monkeypatch, runtime, loft))
+
+    assert result["success"] is False, result
+    assert "observed_shape_count" not in result["data"]
+    assert "expected_shape_count" not in result["data"]
+    # Nothing this call added was left behind, and the two cross-sections the
+    # caller registered before it were never taken back off the loft.
+    assert loft.numShapes == 2
+    assert runtime.getNodeByName("duct_loft") is loft
 
 
 def test_loft_mesh_fails_when_the_constructor_returns_no_node(monkeypatch):

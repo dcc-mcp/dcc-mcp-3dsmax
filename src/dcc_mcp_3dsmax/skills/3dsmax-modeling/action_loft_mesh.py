@@ -99,6 +99,35 @@ def _discard_added_sections(
     return (verified and count == expected_count), count
 
 
+def _rollback_added_sections(
+    runtime: Any, loft: Any, expected_count: int, added: Sequence[Dict[str, Any]]
+) -> Tuple[bool, Optional[int]]:
+    """Take the sections this call added back off an existing loft.
+
+    Returns ``(restored, observed_count)``, where ``observed_count`` is
+    ``None`` whenever there is nothing to take back. Only a call that supplied
+    cross-sections read the host count, so a call that added no section has no
+    measured baseline either: comparing the host's cumulative count against
+    that unmeasured baseline would report a verification that never ran, and
+    the removal probe behind it would take the caller's own sections back off
+    the loft while trying to reach a baseline of zero.
+    """
+    if not added:
+        return True, None
+    return _discard_added_sections(runtime, loft, expected_count)
+
+
+def _shape_count_fields(observed: Optional[int], expected_count: int) -> Dict[str, Any]:
+    """Return the shape count pair, or nothing when no count was measured.
+
+    Reporting the two fields only when both sides were read is what keeps a
+    failure from describing a comparison that never happened.
+    """
+    if observed is None:
+        return {}
+    return {"observed_shape_count": observed, "expected_shape_count": expected_count}
+
+
 @with_max
 def main(
     action: str = "create",
@@ -185,6 +214,7 @@ def main(
     loft = None
     created_node = False
     count_before = 0
+    added: List[Dict[str, Any]] = []
     try:
         if normalized_action == "update":
             node, error = resolve_shape(rt, node_name=normalized_node_name, handle=handle)
@@ -216,7 +246,6 @@ def main(
                 )
             count_before = baseline
 
-        added: List[Dict[str, Any]] = []
         for offset, section_name in enumerate(sections):
             section, error = resolve_shape(rt, node_name=section_name)
             if error:
@@ -303,13 +332,12 @@ def main(
             if not ok:
                 if created_node:
                     return curve_error(error, rolled_back=delete_node(rt, loft))
-                restored, observed = _discard_added_sections(rt, loft, count_before)
+                restored, observed = _rollback_added_sections(rt, loft, count_before, added)
                 return curve_error(
                     error,
                     rolled_back=False,
                     restored=restored,
-                    observed_shape_count=observed,
-                    expected_shape_count=count_before,
+                    **_shape_count_fields(observed, count_before),
                 )
             path_summary = {"node": node_identity(path_object), "method": used_method, "verified": True}
 
@@ -386,13 +414,12 @@ def main(
                     return curve_error(
                         "could not name the loft node: {}".format(exc), rolled_back=rolled_back
                     )
-                restored, observed = _discard_added_sections(rt, loft, count_before)
+                restored, observed = _rollback_added_sections(rt, loft, count_before, added)
                 return curve_error(
                     "could not name the loft node: {}".format(exc),
                     rolled_back=False,
                     restored=restored,
-                    observed_shape_count=observed,
-                    expected_shape_count=count_before,
+                    **_shape_count_fields(observed, count_before),
                 )
 
         # An update that supplies no cross-sections is a surface-parameter
@@ -428,15 +455,14 @@ def main(
                     store_error=store_error,
                     rolled_back=rolled_back,
                 )
-            restored, observed = _discard_added_sections(rt, loft, count_before)
+            restored, observed = _rollback_added_sections(rt, loft, count_before, added)
             return curve_error(
                 "the loft parameters could not be stored on the node",
                 node=node_identity(loft),
                 store_error=store_error,
                 rolled_back=False,
                 restored=restored,
-                observed_shape_count=observed,
-                expected_shape_count=count_before,
+                **_shape_count_fields(observed, count_before),
             )
     except Exception as exc:  # noqa: BLE001 - host failures roll the new node back.
         if created_node and loft is not None:
@@ -447,17 +473,16 @@ def main(
                 rolled_back=delete_node(rt, loft),
             )
         restored = False
-        observed = None
+        observed: Optional[int] = None
         if loft is not None:
-            restored, observed = _discard_added_sections(rt, loft, count_before)
+            restored, observed = _rollback_added_sections(rt, loft, count_before, added)
         return curve_error(
             "loft_mesh failed",
             exception_type=type(exc).__name__,
             exception=str(exc),
             rolled_back=False,
             restored=restored,
-            observed_shape_count=observed,
-            expected_shape_count=count_before,
+            **_shape_count_fields(observed, count_before),
         )
 
     data: Dict[str, Any] = {
