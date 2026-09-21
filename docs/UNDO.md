@@ -127,6 +127,11 @@ their `destructive` / `risk` classification is unchanged.
 | `3dsmax-scene__set_visibility` | yes | `batch_call` | One call sets visibility on N nodes. |
 | `3dsmax-scene__center_pivots` | yes | `batch_call` | One call centres pivots on N nodes. |
 | `3dsmax-scene__freeze_transforms` | yes | `batch_call` | One call freezes N nodes. |
+| `3dsmax-modeling__draw_spline` | yes | `single_call` | Creates or rewrites one spline shape. |
+| `3dsmax-modeling__edit_curve` | yes | `single_call` | One host entry per call, whatever the number of edited knots. |
+| `3dsmax-modeling__curve_model` | yes | `single_call` | Includes the parameters stored on the node. |
+| `3dsmax-modeling__loft_mesh` | yes | `single_call` | Includes the cross-sections registered on a new loft node. |
+| `3dsmax-mesh-ops__boolean_operation` | yes | `single_call` | A created boolean node is removed again when the call fails. |
 
 ### Undo counts for a batch write
 

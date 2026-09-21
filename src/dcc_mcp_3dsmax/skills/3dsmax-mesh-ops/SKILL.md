@@ -2,21 +2,21 @@
 name: 3dsmax-mesh-ops
 description: >-
   Domain skill - inspect and mutate 3ds Max mesh topology, cleanup, smoothing
-  groups, modifier stacks, proxy meshes, and explicit normals through atomic
-  host-native operations.
+  groups, modifier stacks, proxy meshes, explicit normals, and native boolean
+  solids through atomic host-native operations.
 license: MIT
 compatibility: "dcc-mcp-core 0.17+, 3ds Max 2024+"
 metadata:
   dcc-mcp:
     dcc: 3dsmax
-    version: "1.0.0"
+    version: "1.1.0"
     layer: domain
     stage: authoring
-    search-hint: "3ds Max mesh cleanup topology normals smoothing groups modifiers triangulate attach detach proxy subdivision add remove modifier stack collapse make unique modifier properties viewport render enable"
-    tags: "3dsmax, mesh, topology, cleanup, normals, smoothing, modifiers, modifier_stack"
+    search-hint: "3ds Max mesh cleanup topology normals smoothing groups modifiers triangulate attach detach proxy subdivision add remove modifier stack collapse make unique modifier properties viewport render enable boolean union intersection subtraction cut operand extract"
+    tags: "3dsmax, mesh, topology, cleanup, normals, smoothing, modifiers, modifier_stack, boolean"
     tools: tools.yaml
     intent: "Inspect and mutate 3ds Max mesh topology, cleanup, smoothing groups, modifiers, and normals."
-    search_aliases: ["mesh_operations", "mesh-ops"]
+    search_aliases: ["mesh_operations", "mesh-ops", "boolean"]
     recall_context:
       app_type: "3dsmax"
       domain: "mesh_operations"
@@ -35,7 +35,7 @@ metadata:
       file_output: false
       render: false
       targets: ["mesh", "scene_node", "modifier", "smoothing_group"]
-    produces: ["mesh_topology", "smoothing_group", "modifier_stack", "modifier_parameters", "proxy_mesh"]
+    produces: ["mesh_topology", "smoothing_group", "modifier_stack", "modifier_parameters", "proxy_mesh", "boolean_state"]
 ---
 
 # 3ds Max Mesh Operations Skill
@@ -48,6 +48,20 @@ granularity), set properties, collapse, and make-unique.
 Mutating tools require explicit node names, stable object handles, or an
 explicit `use_selection=true` argument. They return changed-node summaries so
 agents can report what changed without relying on opaque macros.
+
+## Boolean solids
+
+`boolean_operation` drives the native Boolean / ProBoolean object. `create`
+registers `base_node` as the first operand followed by `operands`, and sets the
+mode (`union`, `intersection`, `subtraction`, `cut`). Because the operands stay
+live, `set_operand`, `extract_operand`, `remove_operand`, and `add_operands`
+re-adjust an existing boolean without rebuilding it, and `set_operation`
+switches the mode in place.
+
+Both the mode and the registered operand count are read back. A mode the host
+coerced, an operand that did not register, or an operand count the host does
+not expose all fail the call; a `create` failure also removes the node it
+made.
 
 ## No silent success
 

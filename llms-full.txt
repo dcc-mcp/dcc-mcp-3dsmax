@@ -222,12 +222,12 @@ server.shutdown()                  # stop and cleanup
 
 ### authoring stage (load on demand)
 
-`3dsmax-modeling` (5): `create_box`, `create_sphere`, `create_cylinder`, `create_plane`, `lathe_profile`
+`3dsmax-modeling` (10): `create_box`, `create_sphere`, `create_cylinder`, `create_plane`, `lathe_profile`, `draw_spline`, `inspect_curve`, `edit_curve`, `curve_model`, `loft_mesh`
 
 `3dsmax-geometry-io` (5): `validate_geometry_file`, `import_fbx`, `import_geometry`, `export_fbx`, `export_obj`
 `3dsmax-import-to-scene` (1): `import_to_scene`
 
-`3dsmax-mesh-ops` (13): `get_mesh_topology`, `get_selected_mesh_topology`, `get_smoothing_groups`, `get_modifier_stack`, `triangulate_meshes`, `cleanup_meshes`, `attach_meshes`, `detach_selected_faces`, `apply_subdivision`, `create_proxy_meshes`, `set_explicit_normals`, `clear_explicit_normals`, `assign_smoothing_group`
+`3dsmax-mesh-ops` (14): `get_mesh_topology`, `get_selected_mesh_topology`, `get_smoothing_groups`, `get_modifier_stack`, `triangulate_meshes`, `cleanup_meshes`, `attach_meshes`, `detach_selected_faces`, `apply_subdivision`, `create_proxy_meshes`, `set_explicit_normals`, `clear_explicit_normals`, `assign_smoothing_group`, `boolean_operation`
 
 `3dsmax-uv-atlas` (11): `list_uv_channels`, `create_uv_channel`, `delete_uv_channel`, `copy_uv_channel`, `get_uv_shell_summary`, `apply_uv_projection`, `unwrap_uvs`, `pack_uvs`, `detect_uv_overlaps`, `normalize_uvs`, `prepare_texture_atlas`
 
