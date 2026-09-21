@@ -2,21 +2,21 @@
 name: 3dsmax-mesh-ops
 description: >-
   Domain skill - inspect and mutate 3ds Max mesh topology, cleanup, smoothing
-  groups, modifier stacks, proxy meshes, and explicit normals through atomic
-  host-native operations.
+  groups, modifier stacks, proxy meshes, explicit normals, and native boolean
+  solids through atomic host-native operations.
 license: MIT
 compatibility: "dcc-mcp-core 0.17+, 3ds Max 2024+"
 metadata:
   dcc-mcp:
     dcc: 3dsmax
-    version: "1.0.0"
+    version: "1.1.0"
     layer: domain
     stage: authoring
-    search-hint: "3ds Max mesh cleanup topology normals smoothing groups modifiers triangulate attach detach proxy subdivision add remove modifier stack collapse make unique modifier properties viewport render enable"
-    tags: "3dsmax, mesh, topology, cleanup, normals, smoothing, modifiers, modifier_stack"
+    search-hint: "3ds Max mesh cleanup topology normals smoothing groups modifiers triangulate attach detach proxy subdivision add remove modifier stack collapse make unique modifier properties viewport render enable boolean union intersection subtraction cut operand extract"
+    tags: "3dsmax, mesh, topology, cleanup, normals, smoothing, modifiers, modifier_stack, boolean"
     tools: tools.yaml
     intent: "Inspect and mutate 3ds Max mesh topology, cleanup, smoothing groups, modifiers, and normals."
-    search_aliases: ["mesh_operations", "mesh-ops"]
+    search_aliases: ["mesh_operations", "mesh-ops", "boolean"]
     recall_context:
       app_type: "3dsmax"
       domain: "mesh_operations"
@@ -35,7 +35,7 @@ metadata:
       file_output: false
       render: false
       targets: ["mesh", "scene_node", "modifier", "smoothing_group"]
-    produces: ["mesh_topology", "smoothing_group", "modifier_stack", "modifier_parameters", "proxy_mesh"]
+    produces: ["mesh_topology", "smoothing_group", "modifier_stack", "modifier_parameters", "proxy_mesh", "boolean_state"]
 ---
 
 # 3ds Max Mesh Operations Skill
@@ -48,6 +48,47 @@ granularity), set properties, collapse, and make-unique.
 Mutating tools require explicit node names, stable object handles, or an
 explicit `use_selection=true` argument. They return changed-node summaries so
 agents can report what changed without relying on opaque macros.
+
+## Boolean solids
+
+`boolean_operation` drives the native ProBoolean or Boolean / Boolean2 compound
+object. `create` registers `base_node` as the first operand followed by
+`operands`, and sets the mode (`union`, `intersection`, `subtraction`, `cut`).
+Because the operands stay live, `set_operand`, `extract_operand`,
+`remove_operand`, and `add_operands` re-adjust an existing boolean without
+rebuilding it, and `set_operation` switches the mode in place.
+
+The two classes are reached through **class-specific adapters**, because they do
+not agree on anything:
+
+| | ProBoolean | Boolean / Boolean2 |
+| --- | --- | --- |
+| Reached through | the `ProBoolean` interface struct | methods on the object |
+| Operand add | `SetOperandB` | `setOperandB` |
+| Mode set / get | `SetBoolOp` / `GetBoolOp` | `setBoolOp` / `getBoolOp` |
+| union / intersection / subtraction | 0 / 1 / 2 | 1 / 2 / 3 |
+| cut | **unsupported** (3 is Merge there) | 5 |
+
+Sharing one code path would silently produce the wrong solid, so `cut` is
+rejected when only ProBoolean is available rather than being mapped onto Merge.
+
+Both the mode and the registered operand count are read back. A mode the host
+coerced - or that it accepts but will not report - an operand that did not
+register, and an operand count the host does not expose all fail the call.
+Every operand mutation is verified against the count read **before** the call:
+an add must grow it by one, a removal must shrink it by one, and an extraction
+must leave it unchanged. A failed `create` removes the node it made and reports
+whether that removal was actually confirmed - including when the failure is an
+operand that could not be resolved - so a rollback is never claimed unless the
+deletion is verified.
+
+`set_operand` is the one exception to full verification. It always confirms the
+operand count, but whether the requested slot really holds the replacement
+depends on an operand getter the host may not expose. When that getter is
+missing the result carries `operand_identity_verified: false` plus a warning
+instead of failing, because the common case - a host that applied the change -
+would otherwise be unusable. Read that flag as "re-read before trusting the
+slot", not as a confirmed replacement.
 
 ## No silent success
 

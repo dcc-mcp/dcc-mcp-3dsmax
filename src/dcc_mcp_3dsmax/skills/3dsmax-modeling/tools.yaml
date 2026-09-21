@@ -422,3 +422,617 @@ tools:
       render: false
       targets: []
     produces: ['scene_nodes']
+  - name: draw_spline
+    description: >-
+      Create, append to, or replace a spline shape from an ordered list of
+      world-space points. Every point is converted into the shape's object
+      space, committed with updateShape, and read back in world space; a
+      point that does not come back fails the call and removes a node this
+      call created. Use for spline and shape modelling that primitives
+      cannot express. Returns the node identity, knot count, world knot
+      positions, and the closed flag.
+    source_file: action_draw_spline.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [points]
+      additionalProperties: false
+      properties:
+        points:
+          type: array
+          minItems: 2
+          maxItems: 256
+          description: Ordered world-space XYZ triples defining the spline path.
+          items:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items:
+              type: number
+        mode:
+          type: string
+          enum: [create, append, replace]
+          default: create
+          description: >-
+            create builds a new shape, append extends one spline of an
+            existing shape, replace rewrites one spline in place.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional scene node name for a newly created shape.
+        node_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Existing shape node for append or replace modes.
+        handle:
+          type: integer
+          description: Existing shape handle for append or replace modes.
+        spline_index:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 1
+          description: 1-based spline index to append to or replace.
+        closed:
+          type: boolean
+          default: false
+          description: Close the spline after the points are written.
+        knot_type:
+          type: string
+          enum: [corner, smooth, bezier, bezierCorner]
+          default: corner
+          description: Native knot type applied to the written knots.
+        curve_type:
+          type: string
+          enum: [line, curve]
+          default: line
+          description: Native segment type used between the written knots.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Draw a spline shape from world-space points and verify it by readback."
+    tool_role: action
+    risk: medium
+    search_aliases: ["draw_spline", "draw spline", "spline", "shape", "curve"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_node:shape"]
+    produces: ['scene_nodes', 'spline_knots']
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One addKnot per point; the host may or may not group them.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
+    call_examples:
+      - arguments:
+          points: [[0, 0, 0], [50, 0, 40], [100, 0, 0]]
+          name: guide_spline
+          knot_type: smooth
+          curve_type: curve
+        note: "Create a three-point smooth spline named guide_spline"
+  - name: inspect_curve
+    description: >-
+      Read the world-space knots, handle vectors, and closed flag of an
+      editable spline, and return a token that identifies the geometry that
+      was read. Pass that token to edit_curve; it is rejected once the
+      geometry changes, so an edit can never land on a spline the caller has
+      not just inspected.
+    source_file: action_inspect_curve.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Shape node to inspect.
+        handle:
+          type: integer
+          description: Shape handle to inspect.
+        spline_index:
+          type: integer
+          minimum: 1
+          maximum: 64
+          description: Optional 1-based spline index; all splines are read when omitted.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 15
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Read spline knots and handles in world space plus a stale-token guard."
+    tool_role: action
+    risk: low
+    search_aliases: ["inspect_curve", "inspect curve", "read spline", "spline knots"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ['spline_knots']
+    call_examples:
+      - arguments:
+          node_name: guide_spline
+        note: "Read every spline of guide_spline with its stale-token value"
+  - name: edit_curve
+    description: >-
+      Edit spline knot positions, handle vectors, knot types, and the closed
+      flag under stale-token protection. The token must come from a prior
+      inspect_curve call for the same geometry; a mismatch fails before
+      anything is written. Every requested field is read back afterwards and a
+      field that did not take effect restores the captured spline state and
+      fails the call.
+    source_file: action_edit_curve.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [token, knots]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Token returned by inspect_curve for the current geometry.
+        knots:
+          type: array
+          minItems: 1
+          maxItems: 256
+          description: Knot edits keyed by 1-based knot index.
+          items:
+            type: object
+            additionalProperties: false
+            required: [index]
+            properties:
+              index:
+                type: integer
+                minimum: 1
+                description: 1-based knot index to edit.
+              position:
+                type: array
+                minItems: 3
+                maxItems: 3
+                items:
+                  type: number
+                description: New world-space position for the knot.
+              in_vec:
+                type: array
+                minItems: 3
+                maxItems: 3
+                items:
+                  type: number
+                description: New in-handle vector in object space.
+              out_vec:
+                type: array
+                minItems: 3
+                maxItems: 3
+                items:
+                  type: number
+                description: New out-handle vector in object space.
+              knot_type:
+                type: string
+                enum: [corner, smooth, bezier, bezierCorner]
+                description: New native knot type.
+        node_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Shape node to edit.
+        handle:
+          type: integer
+          description: Shape handle to edit.
+        spline_index:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 1
+          description: 1-based spline index to edit.
+        closed:
+          type: boolean
+          description: Close or open the spline; omitted leaves it unchanged.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 20
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    intent: "Edit spline knots and handles with verified readback and stale-token protection."
+    tool_role: action
+    risk: medium
+    search_aliases: ["edit_curve", "edit curve", "edit spline", "move knot"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_node:shape"]
+    produces: ['spline_knots']
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One write per edited knot field; count is not queryable.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
+    call_examples:
+      - arguments:
+          node_name: guide_spline
+          token: "1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c"
+          knots:
+            - index: 2
+              position: [50, 20, 40]
+              knot_type: bezier
+        note: "Move knot 2 of guide_spline, guarded by an inspect_curve token"
+  - name: curve_model
+    description: >-
+      Create, read, update, list, or delete a named curve model: a parametric
+      profile (rounded rectangle, rectangle, circle, or explicit polyline)
+      optionally swept along a path spline. The parameters that produced the
+      profile are stored on the node, so a later call can rebuild or inspect
+      the curve without repeating them. Profile points are verified in world
+      space before the call reports success.
+    source_file: action_curve_model.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [create, update, read, list, delete]
+          default: list
+          description: Operation to perform on the named curve model.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Model name; required for create and update.
+        node_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Existing model node for update, read, or delete.
+        handle:
+          type: integer
+          description: Existing model handle for update, read, or delete.
+        profile:
+          type: string
+          enum: [rounded_rect, rectangle, circle, polyline]
+          default: rounded_rect
+          description: Profile generator used for create and update.
+        operation:
+          type: string
+          enum: [profile, sweep]
+          default: profile
+          description: >-
+            profile builds the cross-section only; sweep also drives it along
+            path_node with the native Sweep modifier.
+        path_node:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Path spline to sweep along; required when operation is sweep.
+        width:
+          type: number
+          exclusiveMinimum: 0
+          default: 100
+          description: Profile width in current scene units.
+        height:
+          type: number
+          exclusiveMinimum: 0
+          default: 100
+          description: Profile height in current scene units.
+        corner_radius:
+          type: number
+          minimum: 0
+          default: 10
+          description: Corner radius for the rounded_rect profile.
+        corner_segments:
+          type: integer
+          minimum: 1
+          maximum: 32
+          default: 4
+          description: Segments per rounded corner.
+        radius:
+          type: number
+          exclusiveMinimum: 0
+          default: 50
+          description: Radius for the circle profile.
+        segments:
+          type: integer
+          minimum: 3
+          maximum: 256
+          default: 16
+          description: Segment count for the circle profile.
+        points:
+          type: array
+          minItems: 2
+          maxItems: 256
+          description: Explicit world-space XYZ triples for the polyline profile.
+          items:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items:
+              type: number
+        closed:
+          type: boolean
+          description: Close the profile; defaults to true for generated profiles.
+        knot_type:
+          type: string
+          enum: [corner, smooth, bezier, bezierCorner]
+          default: corner
+          description: Native knot type for the generated profile.
+        curve_type:
+          type: string
+          enum: [line, curve]
+          default: line
+          description: Native segment type for the generated profile.
+        delete_node:
+          type: boolean
+          default: false
+          description: >-
+            For the delete action, also remove the spline node instead of only
+            clearing the stored parameters.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 25
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Build a named parametric curve model and store its parameters on the node."
+    tool_role: action
+    risk: medium
+    search_aliases: ["curve_model", "curve model", "sweep", "rounded profile"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_node:shape", "scene_property"]
+    produces: ['scene_nodes', 'spline_knots', 'curve_params']
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. Spline construction, optional sweep, and stored parameters.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
+    call_examples:
+      - arguments:
+          action: create
+          name: duct_profile
+          profile: rounded_rect
+          width: 120
+          height: 60
+          corner_radius: 18
+          corner_segments: 6
+        note: "Create a rounded rectangular profile named duct_profile"
+  - name: loft_mesh
+    description: >-
+      Build a quad loft from matching cross-section splines, optionally along
+      a path spline. Every cross-section has to register on the loft: the
+      shape count is read back and a count that cannot be confirmed fails the
+      call. Surface parameters are applied one by one and read back, so a
+      parameter the host ignores is returned in rejected_surface_params
+      instead of being reported as applied. The cross-section list and applied
+      parameters are stored on the loft node.
+    source_file: action_loft_mesh.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [create, update, read, list]
+          default: create
+          description: Operation to perform on the loft.
+        cross_sections:
+          type: array
+          minItems: 2
+          maxItems: 64
+          description: >-
+            Ordered cross-section spline node names, lofted in the given
+            order. Required for create.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 255
+        node_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Existing loft node for update or read.
+        handle:
+          type: integer
+          description: Existing loft handle for update or read.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional scene node name for the created loft.
+        path_node:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional path spline the cross-sections follow.
+        shape_steps:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Interpolation steps between cross-sections.
+        path_steps:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Interpolation steps along the path.
+        optimize_shapes:
+          type: boolean
+          description: Optimize the cross-section interpolation.
+        optimize_path:
+          type: boolean
+          description: Optimize the path interpolation.
+        cap_start:
+          type: boolean
+          description: Cap the start of the loft.
+        cap_end:
+          type: boolean
+          description: Cap the end of the loft.
+        smooth_length:
+          type: boolean
+          description: Smooth the loft along its length.
+        smooth_width:
+          type: boolean
+          description: Smooth the loft across its width.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success:
+          type: boolean
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: object
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    intent: "Loft matching cross-section splines into a surface with verified registration."
+    tool_role: action
+    risk: medium
+    search_aliases: ["loft_mesh", "loft mesh", "loft", "quad loft"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["scene_node:loft", "scene_property"]
+    produces: ['scene_nodes', 'loft_params']
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        One call performs several host writes with no undo hold, so the
+        grouping cannot be queried. One addShape per cross-section, plus the surface parameters.
+        Undo once, re-read the reported nodes or knots, then repeat while
+        the scene still differs.
+    call_examples:
+      - arguments:
+          action: create
+          name: duct_loft
+          cross_sections: ["duct_profile_a", "duct_profile_b"]
+          shape_steps: 4
+          path_steps: 8
+          cap_start: true
+          cap_end: true
+        note: "Loft two matching profiles into a capped duct surface"
