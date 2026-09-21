@@ -1113,6 +1113,10 @@ def test_loft_mesh_rejects_surface_parameters_on_every_action_path(monkeypatch):
     assert "shape_steps" not in result["data"]["applied_surface_params"]
     assert result["data"]["rolled_back"] is False
     assert result["data"]["restored"] is True
+    # No cross-sections were supplied, so no shape count was measured and
+    # none is reported: a count here would claim a readback that never ran.
+    assert "observed_shape_count" not in result["data"]
+    assert "expected_shape_count" not in result["data"]
     assert runtime.getNodeByName("duct_loft") is loft
     assert loft.numShapes == 2
 
@@ -1133,6 +1137,85 @@ def test_loft_mesh_rejects_surface_parameters_on_every_action_path(monkeypatch):
     assert fresh["success"] is False
     assert fresh["data"]["rejected_surface_params"][0]["property"] == "shape_steps"
     assert fresh["data"]["rolled_back"] is True
+
+
+def test_loft_mesh_persists_the_parameters_a_rejected_update_did_apply(monkeypatch):
+    """A partially accepted update must not leave `read` answering stale values."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create",
+        name="duct_loft",
+        cross_sections=["profile_a", "profile_b"],
+        shape_steps=4,
+        cap_start=True,
+    )
+    assert created["success"] is True, created
+    loft = runtime.getNodeByName("duct_loft")
+    loft.reject_steps = True
+
+    # The host accepts `cap_start` and refuses `shape_steps`, so the loft ends
+    # up holding a value the call reports as failed.
+    result = module.main(
+        action="update", node_name="duct_loft", cap_start=False, shape_steps=9
+    )
+    assert result["success"] is False, result
+    assert result["data"]["applied_surface_params"] == {"cap_start": False}
+    assert [entry["property"] for entry in result["data"]["rejected_surface_params"]] == ["shape_steps"]
+    assert result["data"]["params_stored"] is True
+    assert loft.cap_start is False
+    assert loft.shape_steps == 4
+
+    # The stored record has to describe the loft as it is: the parameter the
+    # host took is recorded, the one it refused keeps the previous value.
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["success"] is True, read
+    assert read["data"]["surface_params"] == {"shape_steps": 4, "cap_start": False}
+
+
+def test_loft_mesh_records_only_the_sections_a_failed_update_kept(monkeypatch):
+    """A partial rollback leaves a prefix of the added sections, not all of them."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create", name="duct_loft", cross_sections=["profile_a", "profile_b"]
+    )
+    assert created["success"] is True, created
+    loft = runtime.getNodeByName("duct_loft")
+
+    # Take back one of the two sections this call adds, then refuse: cleanup
+    # stops with the loft holding three shapes where it started with two.
+    removals = []
+    real_delete_shape = loft.deleteShape
+
+    def _delete_shape_once(index):
+        if removals:
+            raise RuntimeError("the host refused the second removal")
+        removals.append(index)
+        return real_delete_shape(index)
+
+    monkeypatch.setattr(loft, "deleteShape", _delete_shape_once)
+    loft.reject_steps = True
+
+    result = module.main(
+        action="update", node_name="duct_loft", cross_sections=["profile_a", "profile_b"], shape_steps=9
+    )
+    assert result["success"] is False, result
+    assert result["data"]["restored"] is False
+    assert result["data"]["observed_shape_count"] == 3
+    assert result["data"]["params_stored"] is True
+    assert loft.numShapes == 3
+
+    # Only the section the host kept is recorded, so `read` cannot name a
+    # cross-section that is no longer on the loft.
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["success"] is True, read
+    assert read["data"]["cross_sections"] == ["profile_a", "profile_b", "profile_a"]
+    assert read["data"]["cross_section_count"] == 3
 
 
 def test_loft_mesh_fails_when_the_constructor_returns_no_node(monkeypatch):

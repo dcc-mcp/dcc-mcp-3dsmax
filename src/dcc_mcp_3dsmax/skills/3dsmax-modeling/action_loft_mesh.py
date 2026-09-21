@@ -40,6 +40,35 @@ def _validation_error(message: str) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": {}}
 
 
+def _store_loft_params(
+    runtime: Any,
+    loft: Any,
+    previous: Dict[str, Any],
+    sections: Sequence[str],
+    surface: Dict[str, Any],
+    name: str,
+    path_node: Optional[str] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Write the stored record for a loft and report whether the write took.
+
+    The record is the node's previous payload with only the fields this call
+    changed merged in, so a path that stops early still leaves the node
+    described as it is rather than as it was.
+    """
+    persisted: Dict[str, Any] = dict(previous)
+    persisted.update(
+        {
+            "name": name,
+            "cross_sections": list(sections),
+            "surface_params": dict(surface),
+        }
+    )
+    persisted["cross_section_count"] = len(sections)
+    if path_node:
+        persisted["path_node"] = str(path_node)
+    return store_params(runtime, loft, LOFT_PARAM_PROPERTY, persisted)
+
+
 def _discard_added_sections(
     runtime: Any, loft: Any, expected_count: int
 ) -> Tuple[bool, Optional[int]]:
@@ -299,17 +328,53 @@ def main(
             # its own new node above, while an update leaves the caller's node
             # in place and only takes the sections this call added back off it.
             restored = True
-            observed = count_before
+            # No baseline is read when the call supplies no cross-sections, so
+            # there is no measured count to report - only the statement that
+            # nothing had to be taken back off.
+            observed: Optional[int] = None
             if added:
                 restored, observed = _discard_added_sections(rt, loft, count_before)
+            # The host keeps every parameter it accepted, so the update failing
+            # on a later one cannot leave the node described by the previous
+            # record: `read` would then answer with values the loft no longer
+            # holds. Store what the host actually took before reporting.
+            previous = load_params(rt, loft, LOFT_PARAM_PROPERTY) or {}
+            merged_failed_surface = dict(previous.get("surface_params") or {})
+            merged_failed_surface.update(applied)
+            merged_failed_sections = list(previous.get("cross_sections") or [])
+            if not restored:
+                # The host kept some of the sections this call added, so they
+                # belong in the record even though the call failed. Removal
+                # takes the current cumulative count, so what is left is the
+                # leading part of `added`; `observed` says how much of it
+                # survived rather than assuming all of it did.
+                retained_count = len(added)
+                if observed is not None:
+                    retained_count = max(0, min(len(added), observed - count_before))
+                for entry in added[:retained_count]:
+                    merged_failed_sections.append(entry["node"]["node_name"])
+            stored, store_error = _store_loft_params(
+                rt,
+                loft,
+                previous,
+                merged_failed_sections,
+                merged_failed_surface,
+                name=str(getattr(loft, "name", "")),
+                path_node=path_node,
+            )
+            failure_data: Dict[str, Any] = {
+                "rejected_surface_params": rejected,
+                "applied_surface_params": applied,
+                "rolled_back": False,
+                "restored": restored,
+                "params_stored": stored,
+                "store_error": store_error,
+            }
+            if observed is not None:
+                failure_data["observed_shape_count"] = observed
+                failure_data["expected_shape_count"] = count_before
             return curve_error(
-                "the loft did not accept every surface parameter",
-                rejected_surface_params=rejected,
-                applied_surface_params=applied,
-                rolled_back=False,
-                restored=restored,
-                observed_shape_count=observed,
-                expected_shape_count=count_before,
+                "the loft did not accept every surface parameter", **failure_data
             )
 
         if normalized_name is not None:
@@ -345,19 +410,15 @@ def main(
         merged_surface = dict(previous.get("surface_params") or {})
         merged_surface.update(applied)
 
-        persisted: Dict[str, Any] = dict(previous)
-        persisted.update(
-            {
-                "name": normalized_name or str(getattr(loft, "name", "")),
-                "cross_sections": merged_sections,
-                "surface_params": merged_surface,
-            }
+        stored, store_error = _store_loft_params(
+            rt,
+            loft,
+            previous,
+            merged_sections,
+            merged_surface,
+            name=normalized_name or str(getattr(loft, "name", "")),
+            path_node=path_node,
         )
-        persisted["cross_section_count"] = len(merged_sections)
-        if path_node:
-            persisted["path_node"] = str(path_node)
-
-        stored, store_error = store_params(rt, loft, LOFT_PARAM_PROPERTY, persisted)
         if not stored:
             if created_node or not added:
                 rolled_back = delete_node(rt, loft) if created_node else False
