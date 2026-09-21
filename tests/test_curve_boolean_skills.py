@@ -1094,8 +1094,8 @@ def test_loft_mesh_fails_when_the_shape_count_cannot_be_confirmed(monkeypatch):
     assert "shape count" in result["message"]
 
 
-def test_loft_mesh_reports_rejected_surface_parameters_on_an_existing_loft(monkeypatch):
-    """A parameter the host refuses is reported, not folded into success."""
+def test_loft_mesh_rejects_surface_parameters_on_every_action_path(monkeypatch):
+    """A parameter the host refuses fails the call on create and on update."""
     runtime = _install(monkeypatch, FakeRuntime())
     _two_profiles(monkeypatch, runtime)
     module = _load(MODELING_DIR, "action_loft_mesh.py")
@@ -1104,20 +1104,118 @@ def test_loft_mesh_reports_rejected_surface_parameters_on_an_existing_loft(monke
     loft = runtime.getNodeByName("duct_loft")
     loft.reject_steps = True
 
+    # An update owns the caller's node, so the node stays; the rejection is
+    # still a failure and is never presented as an applied parameter.
     result = module.main(action="update", node_name="duct_loft", shape_steps=3)
-
-    # The update keeps the node (nothing new was created), so the rejection is
-    # reported on the result instead of being hidden. It is never presented as
-    # an applied parameter, and it is never reported as a clean success.
+    assert result["success"] is False, result
     assert result["data"]["rejected_surface_params"]
     assert result["data"]["rejected_surface_params"][0]["property"] == "shape_steps"
     assert "shape_steps" not in result["data"]["applied_surface_params"]
-    assert result["data"]["warnings"]
+    assert result["data"]["rolled_back"] is False
+    assert result["data"]["restored"] is True
+    # No cross-sections were supplied, so no shape count was measured and
+    # none is reported: a count here would claim a readback that never ran.
+    assert "observed_shape_count" not in result["data"]
+    assert "expected_shape_count" not in result["data"]
+    assert runtime.getNodeByName("duct_loft") is loft
+    assert loft.numShapes == 2
+
+    # The same rejection on an update that also adds cross-sections: the new
+    # sections come back off instead of leaving a half-updated loft.
+    extended = module.main(
+        action="update", node_name="duct_loft", cross_sections=["profile_a", "profile_b"], shape_steps=3
+    )
+    assert extended["success"] is False, extended
+    assert extended["data"]["rejected_surface_params"][0]["property"] == "shape_steps"
+    assert extended["data"]["restored"] is True
+    assert extended["data"]["observed_shape_count"] == 2
+    assert loft.numShapes == 2
+
     # A create that hits the same rejection fails outright and keeps no node.
     runtime.loft_rejects_steps = True
     fresh = module.main(action="create", cross_sections=["profile_a", "profile_b"], shape_steps=9)
     assert fresh["success"] is False
+    assert fresh["data"]["rejected_surface_params"][0]["property"] == "shape_steps"
     assert fresh["data"]["rolled_back"] is True
+
+
+def test_loft_mesh_persists_the_parameters_a_rejected_update_did_apply(monkeypatch):
+    """A partially accepted update must not leave `read` answering stale values."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create",
+        name="duct_loft",
+        cross_sections=["profile_a", "profile_b"],
+        shape_steps=4,
+        cap_start=True,
+    )
+    assert created["success"] is True, created
+    loft = runtime.getNodeByName("duct_loft")
+    loft.reject_steps = True
+
+    # The host accepts `cap_start` and refuses `shape_steps`, so the loft ends
+    # up holding a value the call reports as failed.
+    result = module.main(
+        action="update", node_name="duct_loft", cap_start=False, shape_steps=9
+    )
+    assert result["success"] is False, result
+    assert result["data"]["applied_surface_params"] == {"cap_start": False}
+    assert [entry["property"] for entry in result["data"]["rejected_surface_params"]] == ["shape_steps"]
+    assert result["data"]["params_stored"] is True
+    assert loft.cap_start is False
+    assert loft.shape_steps == 4
+
+    # The stored record has to describe the loft as it is: the parameter the
+    # host took is recorded, the one it refused keeps the previous value.
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["success"] is True, read
+    assert read["data"]["surface_params"] == {"shape_steps": 4, "cap_start": False}
+
+
+def test_loft_mesh_records_only_the_sections_a_failed_update_kept(monkeypatch):
+    """A partial rollback leaves a prefix of the added sections, not all of them."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _two_profiles(monkeypatch, runtime)
+    module = _load(MODELING_DIR, "action_loft_mesh.py")
+
+    created = module.main(
+        action="create", name="duct_loft", cross_sections=["profile_a", "profile_b"]
+    )
+    assert created["success"] is True, created
+    loft = runtime.getNodeByName("duct_loft")
+
+    # Take back one of the two sections this call adds, then refuse: cleanup
+    # stops with the loft holding three shapes where it started with two.
+    removals = []
+    real_delete_shape = loft.deleteShape
+
+    def _delete_shape_once(index):
+        if removals:
+            raise RuntimeError("the host refused the second removal")
+        removals.append(index)
+        return real_delete_shape(index)
+
+    monkeypatch.setattr(loft, "deleteShape", _delete_shape_once)
+    loft.reject_steps = True
+
+    result = module.main(
+        action="update", node_name="duct_loft", cross_sections=["profile_a", "profile_b"], shape_steps=9
+    )
+    assert result["success"] is False, result
+    assert result["data"]["restored"] is False
+    assert result["data"]["observed_shape_count"] == 3
+    assert result["data"]["params_stored"] is True
+    assert loft.numShapes == 3
+
+    # Only the section the host kept is recorded, so `read` cannot name a
+    # cross-section that is no longer on the loft.
+    read = module.main(action="read", node_name="duct_loft")
+    assert read["success"] is True, read
+    assert read["data"]["cross_sections"] == ["profile_a", "profile_b", "profile_a"]
+    assert read["data"]["cross_section_count"] == 3
 
 
 def test_loft_mesh_fails_when_the_constructor_returns_no_node(monkeypatch):
@@ -1856,6 +1954,9 @@ def test_detect_adapter_uses_boolean2_codes_for_the_legacy_class_name(monkeypatc
     assert created["success"] is True, created
     boolean_node = runtime.getNodeByName("cut_solid")
     assert boolean_node.class_name == "Boolean2"
+    # The legacy name the case is named for: report the node as "Boolean" and
+    # it still has to resolve through the Boolean2 map, never the ProBoolean one.
+    boolean_node.class_name = "Boolean"
 
     # Boolean2 union is 1; the ProBoolean map would call the same code
     # "intersection". Both must be resolved through the Boolean2 map.
@@ -1868,8 +1969,40 @@ def test_detect_adapter_uses_boolean2_codes_for_the_legacy_class_name(monkeypatc
 
     read = module.main(action="read", node_name="cut_solid")
     assert read["success"] is True
+    assert read["data"]["boolean_class"] == "Boolean2"
     assert read["data"]["operation"] == "union"
     assert read["data"]["operation_code"] == 1
+
+
+def test_class_id_probe_does_not_shadow_the_class_name_fallback(monkeypatch):
+    """A host probe that answers with a class id must not mask the real name."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _boolean_scene(runtime)
+    module = _load(MESH_OPS_DIR, "action_boolean_operation.py")
+
+    created = _create_cut_boolean(module, runtime)
+    assert created["success"] is True, created
+    boolean_node = runtime.getNodeByName("cut_solid")
+    boolean_node.class_name = "Boolean2"
+    # Code 2 is intersection on Boolean2 and subtraction on ProBoolean, so
+    # only the class name can settle it.
+    boolean_node.bool_op = 2
+
+    def _failing_class_of(node):
+        raise RuntimeError("classOf is unavailable on this host")
+
+    def _class_id(node):
+        # MAXScript's getClassId answers with a class id, never a class name.
+        return "#(1234, 0)"
+
+    monkeypatch.setattr(runtime, "classOf", _failing_class_of, raising=False)
+    monkeypatch.setattr(runtime, "getClassId", _class_id, raising=False)
+
+    read = module.main(action="read", node_name="cut_solid")
+    assert read["success"] is True, read
+    assert read["data"]["boolean_class"] == "Boolean2"
+    assert read["data"]["operation"] == "intersection"
+    assert read["data"]["operation_code"] == 2
 
 
 def test_detect_adapter_reports_ambiguity_instead_of_guessing(monkeypatch):

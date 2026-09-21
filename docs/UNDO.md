@@ -112,11 +112,12 @@ still be reversible through the host undo stack. The multi-node write paths in
 `3dsmax-scene` therefore carry an `undo` block, using the same vocabulary, and
 their `destructive` / `risk` classification is unchanged.
 
-The `3dsmax-modeling` tools below are not destructive, but each one performs
-several host writes - one `addKnot` per spline point, one write per edited knot
-field, one `addShape` per loft cross-section - with no undo hold opened. The
-host may group them into one entry or keep them separate, and the adapter
-cannot query which, so they are declared `batch_call`.
+The `3dsmax-modeling` curve tools each perform several host writes - one
+`addKnot` per spline point, one write per edited knot field, one `addShape`
+per loft cross-section - with no undo hold opened. The host may group them
+into one entry or keep them separate, and the adapter cannot query which, so
+they are declared `batch_call`. They are not listed below because all four are
+`destructive: true` and belong to the destructive table.
 
 | Tool | Reversible | Granularity | Notes |
 | --- | --- | --- | --- |
@@ -133,10 +134,6 @@ cannot query which, so they are declared `batch_call`.
 | `3dsmax-scene__set_visibility` | yes | `batch_call` | One call sets visibility on N nodes. |
 | `3dsmax-scene__center_pivots` | yes | `batch_call` | One call centres pivots on N nodes. |
 | `3dsmax-scene__freeze_transforms` | yes | `batch_call` | One call freezes N nodes. |
-| `3dsmax-modeling__draw_spline` | yes | `batch_call` | One addKnot per point; grouping is not queryable. |
-| `3dsmax-modeling__edit_curve` | yes | `batch_call` | One write per edited knot field; grouping is not queryable. |
-| `3dsmax-modeling__curve_model` | yes | `batch_call` | Spline construction, optional sweep, and stored parameters. |
-| `3dsmax-modeling__loft_mesh` | yes | `batch_call` | One addShape per cross-section, plus the surface parameters. |
 
 ### Undo counts for a batch write
 
@@ -165,6 +162,10 @@ batch, those extra steps consume undo entries that belong to earlier work.
 | `3dsmax-mesh-ops__remove_modifier` | yes | `per_node` | One entry per node in the response. |
 | `3dsmax-mesh-ops__collapse_modifier_stack` | yes | `per_node` | Recoverable only through the host stack, and only until the session ends. |
 | `3dsmax-mesh-ops__boolean_operation` | yes | `batch_call` | Node creation, mode write, and one registration per operand. `remove_operand` drops an operand. |
+| `3dsmax-modeling__draw_spline` | yes | `batch_call` | `replace` mode drops the spline at `spline_index` before rebuilding it; a failed call removes the node it created. |
+| `3dsmax-modeling__edit_curve` | yes | `batch_call` | Overwrites knot positions, handle vectors, and knot types the result does not report back, so only `inspect_curve` taken beforehand can recreate them. |
+| `3dsmax-modeling__curve_model` | yes | `batch_call` | `delete_node: true` removes the profile node; `deleteSpline` drops the spline an update replaces. |
+| `3dsmax-modeling__loft_mesh` | yes | `batch_call` | A failed create removes the node it created; a failed update takes the cross-sections it registered back off an existing loft. |
 | `3dsmax-rigging__remove_deformer_modifier` | yes | `per_node` | One entry per node in the response. |
 | `3dsmax-scene__new_scene` | no | `none` | File > New clears the history stack. |
 | `3dsmax-scene__open_scene` | no | `none` | File > Open clears the history stack. |
