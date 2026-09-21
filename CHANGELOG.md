@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.12...v0.2.13) (2026-09-21)
+
+
+### Bug Fixes
+
+* **mesh-ops:** invalidate edge counts after delete_faces ([#199](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/199)) ([e9a66d0](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e9a66d07344ae3a80e0fa7b775e960f539ba0d0b))
+
 ## [0.2.12](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.11...v0.2.12) (2026-09-21)
 
 
