@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.12](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.11...v0.2.12) (2026-09-21)
+
+
+### Features
+
+* **mesh-ops:** add Editable Poly component modelling tools ([#196](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/196)) ([a067f76](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/a067f765c479a607d85f06127149a7cd67b478bc))
+
+
+### Bug Fixes
+
+* **loft:** omit the shape count pair when no baseline was measured ([f17e470](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/f17e470acfd0e8d5744adca663b97c44b5f49710))
+
 ## [0.2.11](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.10...v0.2.11) (2026-09-21)
 
 
