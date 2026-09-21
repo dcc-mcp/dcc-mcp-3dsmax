@@ -261,7 +261,10 @@ _COUNT_EFFECTS = {
     OP_WELD_VERTICES: {"vertices": lambda removed: -removed},
     OP_DELETE_VERTICES: {"vertices": lambda removed: -removed, "edges": None, "faces": None},
     OP_DELETE_EDGES: {"edges": lambda removed: -removed, "faces": None},
-    OP_DELETE_FACES: {"faces": lambda removed: -removed},
+    # A deleted face takes its edges with it, and which of them survive
+    # depends on the neighbours, so the edge count afterwards is unknown rather
+    # than merely lower: a later edge op belongs in its own batch.
+    OP_DELETE_FACES: {"faces": lambda removed: -removed, "edges": None},
     OP_DETACH_FACES: {"faces": lambda removed: -removed, "edges": None},
     OP_SET_FACE_MATERIAL_ID: {},
     OP_SET_FACE_SMOOTHING_GROUP: {},
@@ -278,7 +281,10 @@ def _advance_limits(limits: Dict[str, Optional[int]], record: Dict[str, Any]) ->
     removed = {
         OP_WELD_VERTICES: len(record["indices"]) - 1,
     }.get(record["op"], len(record["indices"]))
-    for kind, effect in _COUNT_EFFECTS[record["op"]].items():
+    # ``.get``, not a subscript: an op added to OPERATIONS without a count entry
+    # must preflight as "no tracked change", not raise a KeyError out of the
+    # tool before the hold has even been opened.
+    for kind, effect in _COUNT_EFFECTS.get(record["op"], {}).items():
         current = limits.get(kind)
         if effect is None or current is None:
             limits[kind] = None
