@@ -657,6 +657,151 @@ def _node_kind(node: Any, *, default: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Verified write helpers shared by the generic light providers
+# ---------------------------------------------------------------------------
+
+WRITE_MODES = ("exact", "number", "color", "texture")
+
+
+def attr_present(runtime: Any, node: Any, attr: str) -> bool:
+    """Return whether the host exposes ``attr`` on ``node``.
+
+    A runtime without an ``isProperty`` contract (a plain test double, or no
+    runtime at all) cannot answer, so every candidate stays eligible and the
+    readback stays the authoritative check.
+    """
+    if runtime is None:
+        return True
+    if not callable(getattr(runtime, "isProperty", None)):
+        return True
+    return _runtime_has_property(runtime, node, attr)
+
+
+def color_channels(value: Any) -> Optional[List[float]]:
+    """Return RGB channels of a host color value, or None when unreadable."""
+    for names in (("r", "g", "b"), ("red", "green", "blue")):
+        try:
+            return [float(getattr(value, name)) for name in names]
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 3:
+        try:
+            return [float(value[0]), float(value[1]), float(value[2])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def numeric_matches(readback: Any, expected: Any) -> bool:
+    """Compare a numeric readback against the requested value."""
+    if readback is None or isinstance(readback, bool):
+        return False
+    try:
+        return math.isclose(float(readback), float(expected), rel_tol=1e-6, abs_tol=1e-6)
+    except (TypeError, ValueError):
+        return False
+
+
+def color_matches(readback: Any, expected: Any) -> bool:
+    """Compare a host color readback against the requested 0-255 channels."""
+    if readback is None or expected is None:
+        return False
+    actual = color_channels(readback)
+    target = color_channels(expected)
+    if actual is None or target is None:
+        return readback == expected
+    return all(math.isclose(actual[index], target[index], rel_tol=1e-3, abs_tol=1e-3) for index in range(3))
+
+
+def bitmap_path(value: Any) -> str:
+    """Return the image path held by a texmap, following nested bitmaps."""
+    if value is None:
+        return ""
+    direct = getattr(value, "filename", "") or getattr(value, "path", "")
+    if direct:
+        return str(direct)
+    for attribute in ("bitmap", "texmap", "normal_map", "normalMap"):
+        nested = getattr(value, attribute, None)
+        if nested is not None and nested is not value:
+            nested_path = bitmap_path(nested)
+            if nested_path:
+                return nested_path
+    return ""
+
+
+def same_map(readback: Any, expected: Any) -> bool:
+    """Return whether a texmap slot holds the requested image."""
+    if readback is None or expected is None:
+        return False
+    if readback is expected:
+        return True
+    actual_path = bitmap_path(readback)
+    expected_path = bitmap_path(expected)
+    return bool(actual_path) and actual_path == expected_path
+
+
+def write_verified_attr(
+    runtime: Any,
+    node: Any,
+    attributes: Sequence[str],
+    value: Any,
+    *,
+    mode: str = "exact",
+) -> Dict[str, Any]:
+    """Write ``value`` onto the first native attribute that accepts it.
+
+    The result always reports whether the host kept the value: ``applied`` is
+    only true when an attribute was written and read back as requested.
+    """
+    if mode not in WRITE_MODES:
+        raise ValueError("Unsupported write mode: {}".format(mode))
+    warnings: List[str] = []
+    for attribute in attributes:
+        if not attr_present(runtime, node, attribute):
+            continue
+        try:
+            setattr(node, attribute, value)
+        except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
+            warnings.append("Could not set {}: {}".format(attribute, exc))
+            continue
+        readback = _read_first_attr(runtime, node, (attribute,))
+        if _readback_matches(readback, value, mode):
+            return {"applied": True, "attribute": attribute, "warnings": warnings}
+        warnings.append("{} read back {!r} after writing {!r}".format(attribute, readback, value))
+    return {
+        "applied": False,
+        "attribute": None,
+        "candidates": list(attributes),
+        "warnings": warnings,
+    }
+
+
+def _readback_matches(readback: Any, expected: Any, mode: str) -> bool:
+    if mode == "texture":
+        return same_map(readback, expected)
+    if mode == "color":
+        return color_matches(readback, expected)
+    if mode == "number":
+        return numeric_matches(readback, expected)
+    return readback == expected or (isinstance(expected, bool) and readback is expected)
+
+
+def native_bitmap(runtime: Any, texture_path: str) -> Any:
+    """Create a host bitmap texmap that points at ``texture_path``."""
+    constructor = getattr(runtime, "Bitmaptexture", None) or getattr(runtime, "BitmapTexture", None)
+    if callable(constructor):
+        try:
+            return constructor(filename=texture_path)
+        except TypeError:
+            bitmap = constructor()
+            bitmap.filename = texture_path
+            return bitmap
+    bitmap = type("BitmapTexture", (), {})()
+    bitmap.filename = texture_path
+    return bitmap
+
+
+# ---------------------------------------------------------------------------
 # Public aliases for renderer-specific light modules in this package
 # ---------------------------------------------------------------------------
 

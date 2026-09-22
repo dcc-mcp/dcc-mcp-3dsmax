@@ -186,7 +186,12 @@ tools:
       targets: []
     produces: ['scene_nodes']
   - name: set_light_properties
-    description: Adjust common light properties after validating the target node.
+    description: >-
+      Adjust light properties after validating the target node: common controls
+      (enabled, intensity, color, shadows) plus renderer light controls
+      (shape, photometric units, emitter size, color temperature, color space).
+      Every requested control is read back; a control the light rejects fails
+      the call and restores the previous values.
     source_file: action_set_light_properties.py
     execution: sync
     affinity: main
@@ -201,17 +206,32 @@ tools:
         intensity: {type: number, minimum: 0}
         color: *color_schema
         shadows: {type: boolean}
+        provider: {type: string, enum: [auto, arnold, corona, photometric, vray, standard]}
+        shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
+        shape_value: {type: integer, minimum: 0}
+        units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
+        units_value: {type: integer, minimum: 0}
+        exposure: {type: number}
+        color_temperature: {type: number, minimum: 0, description: Color temperature in Kelvin.}
+        size_u: {type: number, minimum: 0}
+        size_v: {type: number, minimum: 0}
+        radius: {type: number, minimum: 0}
+        samples: {type: number, minimum: 0}
+        spread: {type: number}
+        normalize_color: {type: boolean}
+        color_space: {type: string, minLength: 1}
     output_schema: *output_schema
-    timeout_hint_secs: 10
+    timeout_hint_secs: 15
     read_only: false
     destructive: false
     idempotent: true
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
 
-    intent: "Adjust intensity, color, shadows, and enabled state of a light."
+    intent: "Adjust intensity, color, shadows, enabled state, and renderer light controls of a light."
     tool_role: action
     risk: medium
-    search_aliases: ["set_light_properties", "set light properties", "light properties"]
+    search_aliases:
+      ["set_light_properties", "set light properties", "light properties", "light shape", "light units", "kelvin"]
     side_effects:
       creates: false
       modifies: true
@@ -326,6 +346,174 @@ tools:
     tool_role: action
     risk: medium
     search_aliases: ["create_vray_light", "create vray light", "vray light", "vray dome", "vray hdri"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'light']
+    produces: ['scene_node:light']
+
+  - name: lighting_capabilities
+    description: >-
+      Report the light providers the active 3ds Max host can build: factory
+      availability per light kind, light shapes, photometric units, renderer
+      routing, and the native property candidates for every control. Pass
+      `probe=true` to build one throwaway light per available factory, record
+      which controls the host exposes and which enum indices it accepts, and
+      then delete it again.
+    source_file: action_lighting_capabilities.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        renderer:
+          type: string
+          minLength: 1
+          description: Renderer name used for provider routing. Defaults to the active renderer.
+        providers:
+          type: array
+          minItems: 1
+          items: {type: string, enum: [arnold, corona, photometric, vray, standard]}
+        probe:
+          type: boolean
+          default: false
+          description: Build and delete one light per factory to record real host support.
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    # probe=true builds one light per factory and deletes it again, so the tool
+    # is not read-only even though the default call only reads state.
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Discover which light providers, shapes, units, and controls the host supports."
+    tool_role: action
+    risk: medium
+    search_aliases:
+      ["lighting_capabilities", "lighting capabilities", "light provider", "arnold light", "corona light"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_node', 'light']
+    produces: ['lighting_capability_report']
+
+  - name: create_renderer_light
+    description: >-
+      Create Arnold (MAXtoA), Corona, photometric, or host-native lights with
+      emitter shape, photometric units, Kelvin color temperature, and local
+      emitter size. Pass `lights` to build up to 32 lights in one transaction;
+      every requested control is read back from the host and any mismatch rolls
+      the whole call back. Use `lighting_capabilities` first when the host's
+      shape or unit dropdown order is unknown, or pass `shape_value` /
+      `units_value` to write the native index directly.
+    source_file: action_create_renderer_light.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        lights:
+          type: array
+          minItems: 1
+          maxItems: 32
+          description: One entry per light. Mutually exclusive with the flat single-light arguments.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name: {type: string, minLength: 1}
+              kind:
+                type: string
+                enum: [area, dome, photometric, sun, sky, omni, spot, directional, skylight]
+              shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
+              shape_value: {type: integer, minimum: 0}
+              units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
+              units_value: {type: integer, minimum: 0}
+              position: *vector_schema
+              target_position: *vector_schema
+              targeted: {type: boolean}
+              intensity: {type: number, minimum: 0}
+              exposure: {type: number}
+              color: *color_schema
+              color_temperature: {type: number, minimum: 0}
+              cast_shadows: {type: boolean}
+              size_u: {type: number, minimum: 0}
+              size_v: {type: number, minimum: 0}
+              radius: {type: number, minimum: 0}
+              samples: {type: number, minimum: 0}
+              spread: {type: number}
+              normalize_color: {type: boolean}
+              texture_path: {type: string, minLength: 1}
+              color_space: {type: string, minLength: 1}
+              map_type: {type: string, enum: [angular, cubic, spherical, mirrored_ball, max_standard]}
+              gamma: {type: number, minimum: 0}
+              horizontal_rotation: {type: number}
+        provider:
+          type: string
+          enum: [auto, arnold, corona, photometric, vray, standard]
+          default: auto
+        name: {type: string, minLength: 1}
+        kind:
+          type: string
+          enum: [area, dome, photometric, sun, sky, omni, spot, directional, skylight]
+        shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
+        shape_value: {type: integer, minimum: 0}
+        units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
+        units_value: {type: integer, minimum: 0}
+        position: *vector_schema
+        target_position: *vector_schema
+        targeted: {type: boolean}
+        intensity: {type: number, minimum: 0}
+        exposure: {type: number}
+        color: *color_schema
+        color_temperature: {type: number, minimum: 0}
+        cast_shadows: {type: boolean}
+        size_u: {type: number, minimum: 0}
+        size_v: {type: number, minimum: 0}
+        radius: {type: number, minimum: 0}
+        samples: {type: number, minimum: 0}
+        spread: {type: number}
+        normalize_color: {type: boolean}
+        texture_path: {type: string, minLength: 1}
+        color_space: {type: string, minLength: 1}
+        map_type: {type: string, enum: [angular, cubic, spherical, mirrored_ball, max_standard]}
+        gamma: {type: number, minimum: 0}
+        horizontal_rotation: {type: number}
+    output_schema: *output_schema
+    timeout_hint_secs: 30
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Create verified renderer lights with shape, units, temperature, and emitter size."
+    tool_role: action
+    risk: medium
+    search_aliases:
+      [
+        "create_renderer_light",
+        "create renderer light",
+        "arnold light",
+        "corona light",
+        "photometric light",
+        "area light",
+        "kelvin",
+      ]
     side_effects:
       creates: true
       modifies: false

@@ -17,16 +17,22 @@ import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._camera_light_utils import (
+    bitmap_path,
     cam_error,
     cam_success,
+    color_matches,
     float_matches,
     host_has_property,
     light_summary,
+    native_bitmap,
+    numeric_matches,
     owned_light,
     point3_value,
     rollback_owned_nodes,
     rollback_summary,
     runtime_color,
+    same_map,
+    write_verified_attr,
 )
 
 VRAY_LIGHT_FACTORIES = ("VRayLight", "VRay_Light")
@@ -697,17 +703,7 @@ def _apply_vray_bitmap_file(runtime: Any, bitmap: Any, texture_path: str) -> Dic
 
 
 def _create_native_bitmap(runtime: Any, texture_path: str) -> Any:
-    constructor = getattr(runtime, "Bitmaptexture", None) or getattr(runtime, "BitmapTexture", None)
-    if callable(constructor):
-        try:
-            return constructor(filename=texture_path)
-        except TypeError:
-            bitmap = constructor()
-            bitmap.filename = texture_path
-            return bitmap
-    bitmap = type("BitmapTexture", (), {})()
-    bitmap.filename = texture_path
-    return bitmap
+    return native_bitmap(runtime, texture_path)
 
 
 def _apply_attr(
@@ -721,34 +717,15 @@ def _apply_attr(
     texture: bool = False,
 ) -> Dict[str, Any]:
     """Write one control onto the first native attribute that accepts it."""
-    warnings: List[str] = []
-    for attribute in attributes:
-        if not _host_has_property(runtime, node, attribute):
-            continue
-        try:
-            setattr(node, attribute, value)
-        except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
-            warnings.append("Could not set {}: {}".format(attribute, exc))
-            continue
-        readback = _read_attr_any(runtime, node, (attribute,))
-        if texture:
-            if _is_same_map(readback, value):
-                return {"applied": True, "attribute": attribute, "warnings": warnings}
-        elif color:
-            if _color_matches(readback, value):
-                return {"applied": True, "attribute": attribute, "warnings": warnings}
-        elif numeric:
-            if _numeric_matches(readback, value):
-                return {"applied": True, "attribute": attribute, "warnings": warnings}
-        elif readback == value or (isinstance(value, bool) and readback is value):
-            return {"applied": True, "attribute": attribute, "warnings": warnings}
-        warnings.append("{} read back {!r} after writing {!r}".format(attribute, readback, value))
-    return {
-        "applied": False,
-        "attribute": None,
-        "candidates": list(attributes),
-        "warnings": warnings,
-    }
+    if texture:
+        mode = "texture"
+    elif color:
+        mode = "color"
+    elif numeric:
+        mode = "number"
+    else:
+        mode = "exact"
+    return write_verified_attr(runtime, node, attributes, value, mode=mode)
 
 
 def _collect(
@@ -826,8 +803,7 @@ def _vector_matches(readback: Optional[List[float]], expected: Sequence[float]) 
     if readback is None or len(readback) < 3:
         return False
     return all(
-        math.isclose(float(readback[index]), float(expected[index]), rel_tol=1e-6, abs_tol=1e-6)
-        for index in range(3)
+        math.isclose(float(readback[index]), float(expected[index]), rel_tol=1e-6, abs_tol=1e-6) for index in range(3)
     )
 
 
@@ -847,63 +823,20 @@ def _vector_or_none(value: Any) -> Optional[List[float]]:
     return None
 
 
-def _numeric_matches(readback: Any, expected: float) -> bool:
-    if readback is None or isinstance(readback, bool):
-        return False
-    try:
-        return math.isclose(float(readback), float(expected), rel_tol=1e-6, abs_tol=1e-6)
-    except (TypeError, ValueError):
-        return False
-
-
-def _color_matches(readback: Any, expected: Any) -> bool:
-    for value in (readback, expected):
-        if value is None:
-            return False
-    actual = _color_channels(readback)
-    target = _color_channels(expected)
-    if actual is None or target is None:
-        return readback == expected
-    return all(math.isclose(actual[index], target[index], rel_tol=1e-3, abs_tol=1e-3) for index in range(3))
-
-
-def _color_channels(value: Any) -> Optional[List[float]]:
-    for names in (("r", "g", "b"), ("red", "green", "blue")):
-        try:
-            return [float(getattr(value, name)) for name in names]
-        except (AttributeError, TypeError, ValueError):
-            continue
-    if isinstance(value, (list, tuple)) and len(value) >= 3 and not isinstance(value, (str, bytes)):
-        try:
-            return [float(value[0]), float(value[1]), float(value[2])]
-        except (TypeError, ValueError):
-            return None
-    return None
+def _bitmap_path(value: Any) -> str:
+    return bitmap_path(value)
 
 
 def _is_same_map(readback: Any, expected: Any) -> bool:
-    if readback is None or expected is None:
-        return False
-    if readback is expected:
-        return True
-    actual_path = _bitmap_path(readback)
-    expected_path = _bitmap_path(expected)
-    return bool(actual_path) and actual_path == expected_path
+    return same_map(readback, expected)
 
 
-def _bitmap_path(value: Any) -> str:
-    if value is None:
-        return ""
-    direct = getattr(value, "filename", "") or getattr(value, "path", "")
-    if direct:
-        return str(direct)
-    for attribute in ("bitmap", "texmap", "normal_map", "normalMap"):
-        nested = getattr(value, attribute, None)
-        if nested is not None and nested is not value:
-            nested_path = _bitmap_path(nested)
-            if nested_path:
-                return nested_path
-    return ""
+def _numeric_matches(readback: Any, expected: float) -> bool:
+    return numeric_matches(readback, expected)
+
+
+def _color_matches(readback: Any, expected: Any) -> bool:
+    return color_matches(readback, expected)
 
 
 def _shape_name(value: Optional[int]) -> Optional[str]:
