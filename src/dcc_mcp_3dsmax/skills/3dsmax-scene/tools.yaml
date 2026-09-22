@@ -743,6 +743,307 @@ tools:
       notes: >-
         Selection is editor state, not scene content, and 3ds Max does not reliably record it as
         an undo entry. Re-apply the previous selection explicitly instead of calling undo_last.
+
+  - name: list_selection_sets
+    description: >-
+      List the named selection sets in the current scene.
+    source_file: action_list_selection_sets.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        include_nodes:
+          type: boolean
+          default: false
+          description: Include the member node identity of every set.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "List named selection sets and optionally their member nodes."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["list_selection_sets", "list selection sets", "named selection sets", "selection sets"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ['selection_set_list']
+
+  - name: create_selection_set
+    description: >-
+      Create a named selection set from explicit nodes or the current selection.
+    source_file: action_create_selection_set.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the selection set to create.
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Node names to store in the set.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles to store in the set.
+        use_selection:
+          type: boolean
+          default: false
+          description: Store the current selection instead of explicit node references.
+        replace_existing:
+          type: boolean
+          default: false
+          description: Overwrite an existing set that already uses this name.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Create a named selection set."
+    tool_role: action
+    risk: medium
+    search_aliases: ["create_selection_set", "create selection set", "named selection set", "selection sets"]
+    side_effects:
+      creates: true
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['selection_sets']
+    produces: ['selection_set']
+    undo:
+      supported: true
+      granularity: script_defined
+      notes: >-
+        Undo coverage for named selection sets depends on the host; call delete_selection_set to undo
+        deterministically.
+
+  - name: replace_selection_set
+    description: >-
+      Replace the contents of an existing named selection set.
+    source_file: action_replace_selection_set.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the selection set to replace.
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Node names to store in the set.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles to store in the set.
+        use_selection:
+          type: boolean
+          default: false
+          description: Store the current selection instead of explicit node references.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Replace the member nodes of an existing named selection set."
+    tool_role: action
+    risk: medium
+    search_aliases: ["replace_selection_set", "replace selection set", "update selection set", "selection sets"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['selection_sets']
+    produces: ['selection_set']
+    undo:
+      supported: true
+      granularity: script_defined
+      notes: >-
+        Undo coverage for named selection sets depends on the host; re-run the tool with the previous
+        node references to restore the contents deterministically.
+
+  - name: delete_selection_set
+    description: >-
+      Delete a named selection set by name.
+    source_file: action_delete_selection_set.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the selection set to delete.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Delete one named selection set."
+    tool_role: destructive
+    risk: medium
+    search_aliases: ["delete_selection_set", "delete selection set", "remove selection set", "selection sets"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['selection_sets']
+    produces: ['deletion_result']
+    undo:
+      supported: true
+      granularity: script_defined
+      notes: >-
+        Undo coverage for named selection sets depends on the host; re-create the set with
+        create_selection_set to restore it deterministically.
+
+  - name: select_selection_set
+    description: >-
+      Select the nodes held by a named selection set.
+    source_file: action_select_selection_set.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Name of the selection set to select.
+        add:
+          type: boolean
+          default: false
+          description: Add the set members to the current selection instead of replacing it.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Select the member nodes of a named selection set."
+    tool_role: action
+    risk: medium
+    search_aliases: ["select_selection_set", "select selection set", "named selection sets", "selection sets"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes']
+    produces: ['selection_state']
+    undo:
+      supported: false
+      granularity: none
+      notes: >-
+        Selection is editor state, not scene content; re-apply the previous selection explicitly
+        instead of calling undo_last.
+
   - name: duplicate_nodes
     description: >-
       Duplicate nodes by node names or object handles.
@@ -926,6 +1227,258 @@ tools:
       notes: >-
         Groups N nodes under one new group node in one call. Undo once and re-check the hierarchy;
         repeat while the group is still present, because 3ds Max may or may not group the writes.
+
+  - name: ungroup_nodes
+    description: >-
+      Dissolve group heads and keep their member nodes.
+    source_file: action_ungroup_nodes.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Names of the group head nodes to dissolve.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles of the group head nodes to dissolve.
+        use_selection:
+          type: boolean
+          default: false
+          description: Dissolve every selected group head.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: true
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: true
+      idempotent_hint: false
+      open_world_hint: false
+
+    intent: "Dissolve groups and keep their member nodes."
+    tool_role: destructive
+    risk: high
+    search_aliases: ["ungroup_nodes", "ungroup nodes", "ungroup", "dissolve group"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: true
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes', 'groups']
+    produces: ['scene_nodes']
+    undo:
+      supported: true
+      granularity: batch_call
+      notes: >-
+        One host undo entry per ungroup call. Undo once per reported group and re-check the
+        hierarchy, because 3ds Max may or may not group the writes.
+
+  - name: set_group_open
+    description: >-
+      Open a group for member editing, or close it again.
+    source_file: action_set_group_open.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      required: [open]
+      additionalProperties: false
+      properties:
+        open:
+          type: boolean
+          description: True opens the group, false closes it.
+        group_name:
+          type: string
+          minLength: 1
+          description: Name of the group head node.
+        handle:
+          type: integer
+          description: Object handle of the group head node.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Open or close one group head."
+    tool_role: action
+    risk: low
+    search_aliases: ["set_group_open", "set group open", "open group", "close group"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['groups']
+    produces: ['group_state']
+    undo:
+      supported: true
+      granularity: single_call
+      notes: >-
+        One host undo entry per call; re-run with the opposite value to restore the state without undo.
+
+  - name: attach_to_group
+    description: >-
+      Attach resolved nodes to an existing group head.
+    source_file: action_attach_to_group.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        group_name:
+          type: string
+          minLength: 1
+          description: Name of the group head node.
+        group_handle:
+          type: integer
+          description: Object handle of the group head node.
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Names of the nodes to attach.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles of the nodes to attach.
+        use_selection:
+          type: boolean
+          default: false
+          description: Attach the current selection instead of explicit node references.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Attach nodes to an existing group."
+    tool_role: action
+    risk: medium
+    search_aliases: ["attach_to_group", "attach to group", "add to group", "group"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes', 'groups']
+    produces: ['group_state']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per attached node; pass the reported applied count to undo_last.
+
+  - name: detach_from_group
+    description: >-
+      Detach resolved nodes from the group they currently belong to.
+    source_file: action_detach_from_group.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_names:
+          type: array
+          items: {type: string, minLength: 1}
+          description: Names of the nodes to detach.
+        handles:
+          type: array
+          items: {type: integer}
+          description: Object handles of the nodes to detach.
+        use_selection:
+          type: boolean
+          default: false
+          description: Detach the current selection instead of explicit node references.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 15
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Detach nodes from their group."
+    tool_role: action
+    risk: medium
+    search_aliases: ["detach_from_group", "detach from group", "remove from group", "group"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ['scene_nodes', 'groups']
+    produces: ['group_state']
+    undo:
+      supported: true
+      granularity: per_node
+      notes: >-
+        One host undo entry per detached node; pass the reported applied count to undo_last.
+
   - name: parent_node
     description: >-
       Parent one child node under another node.

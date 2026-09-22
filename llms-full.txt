@@ -217,8 +217,8 @@ server.shutdown()                  # stop and cleanup
 ## Bundled Skills — Complete Tool Inventory
 
 ### scene stage (default loaded)
-`3dsmax-scene` (33 tools):
-`get_scene_info`, `get_scene_status`, `new_scene`, `open_scene`, `save_scene`, `save_scene_as`, `merge_file`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms`, `get_object_properties`, `set_object_property`, `batch_rename_objects`, `create_object`, `transform_object`, `clone_objects`, `analyze_node_orientation`, `inspect_max_file`, `batch_file_info`, `search_max_files`, `merge_from_file`
+`3dsmax-scene` (47 tools):
+`get_scene_info`, `get_scene_status`, `new_scene`, `open_scene`, `save_scene`, `save_scene_as`, `merge_file`, `list_scene_nodes`, `list_cameras`, `get_selection`, `get_bounding_box`, `get_node_visibility`, `get_scene_metadata`, `set_selection`, `list_selection_sets`, `create_selection_set`, `replace_selection_set`, `delete_selection_set`, `select_selection_set`, `duplicate_nodes`, `delete_nodes`, `group_nodes`, `ungroup_nodes`, `set_group_open`, `attach_to_group`, `detach_from_group`, `parent_node`, `unparent_node`, `set_visibility`, `center_pivots`, `freeze_transforms`, `get_object_properties`, `set_object_property`, `batch_rename_objects`, `create_object`, `transform_object`, `clone_objects`, `analyze_node_orientation`, `inspect_max_file`, `batch_file_info`, `search_max_files`, `merge_from_file`, `scene_patch`, `get_hierarchy`, `get_instances`, `get_dependencies`, `query_scene`
 
 ### authoring stage (load on demand)
 
@@ -245,7 +245,7 @@ server.shutdown()                  # stop and cleanup
 
 `3dsmax-validation` (10): `validate_naming`, `validate_transforms`, `validate_pivots`, `validate_mesh_topology`, `validate_smoothing_groups`, `validate_material_assignments`, `validate_texture_paths`, `validate_uv_channels`, `validate_uv_overlaps`, `run_asset_readiness_checks`
 
-`3dsmax-display` (10): `list_layers`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property`
+`3dsmax-display` (11): `list_layers`, `set_layer_properties`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property`
 
 `3dsmax-camera-lighting` (7): `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig`
 

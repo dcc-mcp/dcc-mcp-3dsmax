@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -194,6 +195,203 @@ def resolve_node_objects(
         "message": "Resolved nodes",
         "nodes": [node_identity(node) for node in nodes],
         "objects": nodes,
+    }
+
+
+# ── Verified writes ─────────────────────────────────────────────────────
+# A pymxs wrapper accepts unknown properties without persisting them, so a bare
+# setattr is not evidence that anything changed. Every write in this module is
+# read back and classified as applied, unverified, or rejected.
+
+ATTR_APPLIED = "applied"
+ATTR_UNVERIFIED = "unverified"
+ATTR_REJECTED = "rejected"
+
+
+def _numeric_sequence(value: Any) -> Optional[List[float]]:
+    """Return numeric channels for colors and vectors, or ``None``."""
+    if value is None or isinstance(value, (bool, str, bytes, Mapping)):
+        return None
+    if isinstance(value, Sequence):
+        try:
+            return [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+    for axes in (("x", "y", "z"), ("r", "g", "b")):
+        if all(hasattr(value, axis) for axis in axes):
+            try:
+                return [float(getattr(value, axis)) for axis in axes]
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def attribute_matches(readback: Any, value: Any) -> bool:
+    """Report whether a read-back attribute value equals the requested one.
+
+    A ``None`` read-back means the host holds no value for the attribute, which
+    is what a write it silently dropped looks like. It therefore only matches a
+    ``None`` request: ``bool(None)`` is ``False``, so folding it into the
+    boolean comparison would verify a dropped ``False`` as applied.
+    """
+    if readback is None:
+        return value is None
+    if value is None:
+        return False
+    if isinstance(value, bool) or isinstance(readback, bool):
+        return bool(readback) == bool(value)
+    if isinstance(value, (int, float)):
+        try:
+            return math.isclose(float(readback), float(value), rel_tol=1e-6, abs_tol=1e-6)
+        except (TypeError, ValueError):
+            return False
+    readback_channels = _numeric_sequence(readback)
+    requested_channels = _numeric_sequence(value)
+    if readback_channels and requested_channels and len(readback_channels) == len(requested_channels):
+        return all(
+            math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-6) for a, b in zip(readback_channels, requested_channels)
+        )
+    return str(readback) == str(value)
+
+
+def _target_label(target: Any) -> str:
+    """Name a write target in error messages."""
+    name = getattr(target, "name", None)
+    return str(name) if name else type(target).__name__
+
+
+def _exposed_attributes(target: Any, candidates: Sequence[str]) -> List[str]:
+    """Return the candidate attributes the host object exposes, in order."""
+    exposed: List[str] = []
+    for name in candidates:
+        try:
+            getattr(target, name)
+        except Exception:  # noqa: BLE001 - an unreadable property is not an exposed one.
+            continue
+        exposed.append(name)
+    return exposed
+
+
+def apply_object_attribute(
+    target: Any,
+    attribute: str,
+    value: Any,
+    *,
+    label: Optional[str] = None,
+    optional: bool = False,
+    compare: Optional[Any] = None,
+    candidates: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Write one attribute on a host object and verify the host kept it.
+
+    ``candidates`` lists alternate property names for the same value, tried in
+    order; hosts differ between MAXScript casing and snake_case mirrors. A write
+    is only reported applied when the value reads back equal. A write the host
+    took but that cannot be read back is reported unverified, never applied.
+
+    3ds Max exposes several of these as a read-only ``is*`` getter next to a
+    writable short name, and which one a host offers is not knowable up front.
+    Each exposed candidate is tried in turn and the first that verifies wins, so
+    a read-only candidate cannot fail a write the host can actually take. A
+    candidate is only abandoned, never written twice once it verifies.
+    """
+    names = list(candidates) if candidates else [attribute]
+    if attribute not in names:
+        names.insert(0, attribute)
+    name = label or attribute
+    exposed = _exposed_attributes(target, names)
+    if not exposed:
+        return _attribute_row(
+            name,
+            attribute,
+            ATTR_REJECTED,
+            value,
+            None,
+            "{} does not expose {}".format(_target_label(target), "/".join(names)),
+            optional=optional,
+        )
+
+    write_failures: List[str] = []
+    outcome: Optional[Dict[str, Any]] = None
+    for candidate in exposed:
+        try:
+            setattr(target, candidate, value)
+        except Exception as exc:  # noqa: BLE001 - an explicit rejection; try the next name.
+            write_failures.append("Could not set {}: {}".format(candidate, exc))
+            continue
+        try:
+            readback = getattr(target, candidate)
+        except Exception as exc:  # noqa: BLE001 - an unreadable value is reported, never assumed.
+            outcome = _attribute_row(
+                name,
+                candidate,
+                ATTR_UNVERIFIED,
+                value,
+                None,
+                "Could not read back {} to verify the value: {}".format(candidate, exc),
+                optional=optional,
+            )
+            continue
+        matches = compare(readback, value) if callable(compare) else attribute_matches(readback, value)
+        if matches:
+            return _attribute_row(name, candidate, ATTR_APPLIED, value, readback, None, optional=optional)
+        outcome = _attribute_row(
+            name,
+            candidate,
+            ATTR_REJECTED,
+            value,
+            readback,
+            "{} read back {!r} after writing {!r}".format(candidate, readback, value),
+            optional=optional,
+        )
+
+    if outcome is not None:
+        return outcome
+    return _attribute_row(
+        name,
+        exposed[0],
+        ATTR_REJECTED,
+        value,
+        None,
+        "; ".join(write_failures),
+        optional=optional,
+    )
+
+
+def _attribute_row(
+    name: str,
+    attribute: str,
+    status: str,
+    requested: Any,
+    actual: Any,
+    message: Optional[str],
+    *,
+    optional: bool,
+) -> Dict[str, Any]:
+    """Build one per-attribute write result row."""
+    if status == ATTR_REJECTED and optional:
+        status = ATTR_UNVERIFIED
+    return {
+        "property": name,
+        "attribute": attribute,
+        "status": status,
+        "requested": requested,
+        "actual": actual,
+        "error": message if status == ATTR_REJECTED else None,
+        "warning": message if status == ATTR_UNVERIFIED else None,
+    }
+
+
+def summarize_attribute_results(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Collapse per-attribute write results into applied / errors / warnings."""
+    warnings = [row["warning"] for row in results if row["status"] == ATTR_UNVERIFIED and row.get("warning")]
+    return {
+        "applied": [row["property"] for row in results if row["status"] == ATTR_APPLIED],
+        "applied_count": sum(1 for row in results if row["status"] == ATTR_APPLIED),
+        "unverified": [row["property"] for row in results if row["status"] == ATTR_UNVERIFIED],
+        "errors": [dict(row) for row in results if row["status"] == ATTR_REJECTED],
+        "warnings": warnings,
+        "property_results": [dict(row) for row in results],
     }
 
 

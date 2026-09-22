@@ -134,6 +134,13 @@ they are declared `batch_call`. They are not listed below because all four are
 | `3dsmax-scene__set_visibility` | yes | `batch_call` | One call sets visibility on N nodes. |
 | `3dsmax-scene__center_pivots` | yes | `batch_call` | One call centres pivots on N nodes. |
 | `3dsmax-scene__freeze_transforms` | yes | `batch_call` | One call freezes N nodes. |
+| `3dsmax-scene__create_selection_set` | depends | `script_defined` | Undo coverage for named selection sets depends on the host; call `delete_selection_set` to undo deterministically. |
+| `3dsmax-scene__replace_selection_set` | depends | `script_defined` | Undo coverage depends on the host; re-run with the previous node references to restore the contents. |
+| `3dsmax-scene__select_selection_set` | no | `none` | Selection is editor state. Re-select explicitly. |
+| `3dsmax-scene__set_group_open` | yes | `single_call` | Re-run with the opposite value to restore the state without undo. |
+| `3dsmax-scene__attach_to_group` | yes | `per_node` | One entry per node in `applied`. |
+| `3dsmax-scene__detach_from_group` | yes | `per_node` | One entry per node in `applied`; `previous_group` names the group each node left. |
+| `3dsmax-display__set_layer_properties` | yes | `batch_call` | One host write per property with no undo hold; re-read the properties after each undo step. |
 | `3dsmax-mesh-ops__create_mesh` | yes | `batch_call` | Node creation, TriMesh assignment, and convertToPoly, with no undo hold. |
 | `3dsmax-mesh-ops__edit_vertices` | yes | `batch_call` | One write per vertex with no undo hold; grouping is not queryable. |
 
@@ -160,6 +167,8 @@ batch, those extra steps consume undo entries that belong to earlier work.
 | --- | --- | --- | --- |
 | `3dsmax-animation__delete_keyframes` | yes | `per_node` | One entry per node in `changes`. |
 | `3dsmax-display__delete_layer` | yes | `single_call` | Includes member nodes removed with `delete_nodes=true`. |
+| `3dsmax-scene__delete_selection_set` | depends | `script_defined` | Re-create the set with `create_selection_set` to restore it deterministically. |
+| `3dsmax-scene__ungroup_nodes` | yes | `batch_call` | One entry per group; re-check the hierarchy after each step. |
 | `3dsmax-display__delete_custom_property` | yes | `per_node` | Pass `changed_property_count` as `count`. |
 | `3dsmax-mesh-ops__remove_modifier` | yes | `per_node` | One entry per node in the response. |
 | `3dsmax-mesh-ops__collapse_modifier_stack` | yes | `per_node` | Recoverable only through the host stack, and only until the session ends. |
