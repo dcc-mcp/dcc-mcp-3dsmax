@@ -208,8 +208,15 @@ def build_signal_script(
     message: str,
     output_path: str,
 ) -> str:
-    """Build the MAXScript body that writes the completion signal file."""
-    actions_literal = ", ".join('"{}"'.format(_maxscript_escape(action)) for action in actions)
+    """Build the MAXScript body that writes the completion signal file.
+
+    Every quote that reaches the inside of the MAXScript ``format`` string is
+    escaped. A bare ``"`` would terminate the string literal and turn the rest
+    of the script into a syntax error, so the callback would either be
+    rejected at registration or would fail when it fires -- in both cases no
+    completion record is ever written.
+    """
+    actions_literal = ", ".join('\\"{}\\"'.format(_maxscript_escape(action)) for action in actions)
     lines = [
         "(",
         "local dccMcpSignalPath = @\"{}\"".format(str(signal_path).replace('"', "")),
@@ -233,7 +240,14 @@ def build_signal_script(
 
 
 def _maxscript_escape(value: str) -> str:
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    """Escape text that is embedded in a MAXScript ``format`` string literal.
+
+    ``%`` is doubled as well: inside a ``format`` string it introduces a
+    placeholder, so an unescaped percent in caller-supplied text would consume
+    the ``localTime`` argument and corrupt the completion record.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return text.replace("%", "%%").replace("\n", " ")
 
 
 def _resolve_signal_path(signal_file: Optional[str]) -> Tuple[Optional[Path], Optional[str]]:
@@ -278,6 +292,7 @@ def _register_callback(runtime: Any, signal_id: str, script: str) -> Tuple[Dict[
     error: Optional[str] = None
     for args, kwargs in (
         ((symbol, script), {"id": signal_id}),
+        ((symbol,), {"script": script, "id": signal_id}),
         ((symbol, script), {}),
         ((symbol, script, signal_id), {}),
     ):

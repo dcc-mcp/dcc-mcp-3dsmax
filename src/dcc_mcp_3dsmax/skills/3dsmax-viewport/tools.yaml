@@ -86,28 +86,30 @@ tools:
           description: Replace an existing output file.
     output_schema: *output_schema
     timeout_hint_secs: 60
-    read_only: true
+    # Bringing the frame buffer window forward changes host state, so this is
+    # not a read-only tool even though it only produces an image.
+    read_only: false
     destructive: false
     idempotent: false
     annotations:
-      read_only_hint: true
+      read_only_hint: false
       destructive_hint: false
       idempotent_hint: false
       open_world_hint: true
 
     intent: "Capture the 3ds Max desktop, cropped to a renderer frame buffer."
-    tool_role: read_only
+    tool_role: action
     risk: low
     search_aliases: ["capture_screen", "capture screen", "vray vfb capture", "corona vfb capture", "fstorm frame buffer"]
     side_effects:
       creates: false
-      modifies: false
+      modifies: true
       deletes: false
       exports: false
       imports: false
       file_output: true
       render: false
-      targets: []
+      targets: ["viewport"]
     produces:
       - "file:image"
 
@@ -159,28 +161,30 @@ tools:
           description: Replace existing per-view files.
     output_schema: *output_schema
     timeout_hint_secs: 180
-    read_only: true
+    # Switching the viewport to each standard view changes the user's view for
+    # the duration of the capture, so this is not a read-only tool.
+    read_only: false
     destructive: false
     idempotent: false
     annotations:
-      read_only_hint: true
+      read_only_hint: false
       destructive_hint: false
       idempotent_hint: false
       open_world_hint: true
 
-    intent: "Capture multiple standard views without leaving the user's view moved."
-    tool_role: read_only
+    intent: "Capture multiple standard views, restoring the user's view afterwards."
+    tool_role: action
     risk: medium
     search_aliases: ["capture_multi_view", "multi view capture", "contact sheet", "orthographic views", "turntable views"]
     side_effects:
       creates: false
-      modifies: false
+      modifies: true
       deletes: false
       exports: false
       imports: false
       file_output: true
       render: false
-      targets: []
+      targets: ["viewport"]
     produces:
       - "file:image"
       - "viewport_captures"

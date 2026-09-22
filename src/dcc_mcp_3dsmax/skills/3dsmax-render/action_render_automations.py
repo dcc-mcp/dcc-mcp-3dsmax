@@ -23,16 +23,25 @@ def main(
     runtime = get_runtime()
     if disarm:
         return disarm_render_automations(runtime, label=label)
-    normalized = [str(action).strip().lower() for action in actions] if actions else None
-    supported = list(RENDER_AUTOMATION_ACTIONS)
-    if normalized is not None:
-        unsupported = [action for action in normalized if action not in supported]
-        if unsupported:
+    normalized: Optional[list] = None
+    if actions is not None:
+        # A bare string would iterate character by character and be rejected as
+        # a list of unsupported single-letter actions; report the real problem.
+        if isinstance(actions, str):
             return {
                 "success": False,
                 "status": "error",
-                "message": "Unsupported render automation action(s): {}".format(", ".join(sorted(unsupported))),
-                "data": {"actions": normalized, "supported_actions": supported},
+                "message": "actions must be a list of strings, not a bare string",
+                "data": {"actions": actions, "supported_actions": list(RENDER_AUTOMATION_ACTIONS)},
+            }
+        try:
+            normalized = [str(action).strip().lower() for action in actions]
+        except TypeError:
+            return {
+                "success": False,
+                "status": "error",
+                "message": "actions must be a list of strings",
+                "data": {"actions": str(actions), "supported_actions": list(RENDER_AUTOMATION_ACTIONS)},
             }
     return render_automations(
         runtime,

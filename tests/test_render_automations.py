@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -289,6 +290,12 @@ def test_render_automations_save_output_requires_a_path(monkeypatch, tmp_path):
     assert "save_output" in result["message"]
 
 
+def _format_literal(script: str) -> str:
+    """Return the MAXScript format string literal, without its delimiters."""
+    line = next(line for line in script.splitlines() if line.startswith('format "') and "completed" in line)
+    return line[len('format "') : line.rindex('" (localTime)')]
+
+
 def test_signal_script_writes_a_json_record(tmp_path):
     target = tmp_path / "signal.json"
     script = signals.build_signal_script(
@@ -302,9 +309,70 @@ def test_signal_script_writes_a_json_record(tmp_path):
 
     assert str(target) in script
     assert "abc123" in script
-    assert '"log", "notify"' in script
+    assert '\\"log\\", \\"notify\\"' in script
     assert '\\"completed\\": true' in script
     assert 'done \\"now\\"' in script
+
+
+def test_signal_script_escapes_every_quote_inside_the_format_string(tmp_path):
+    """A bare quote would end the MAXScript literal and break the callback.
+
+    This is the check that the generated script is syntactically usable: every
+    quote inside the format string must be escaped, and the only literal
+    percent signs are the ``localTime`` placeholder.
+    """
+    script = signals.build_signal_script(
+        tmp_path / "signal.json",
+        signal_id="id",
+        label='lab"el',
+        actions=["log", "notify", "save_output"],
+        message='50% done "now"',
+        output_path='C:/out "v2"/frame.png',
+    )
+    literal = _format_literal(script)
+
+    assert '"' not in literal.replace('\\"', "")
+    # One single "%" (the localTime placeholder); every other one is doubled.
+    assert literal.replace("%%", "").count("%") == 1
+    assert '\\"lab\\"el\\"' in literal
+    assert '50%% done \\"now\\"' in literal
+    assert '\\"actions\\": [\\"log\\", \\"notify\\", \\"save_output\\"]' in literal
+
+
+def test_signal_script_keeps_the_json_parseable_after_maxscript_unescaping(tmp_path):
+    """Un-escaping the literal the way MAXScript would must yield valid JSON."""
+    script = signals.build_signal_script(
+        tmp_path / "signal.json",
+        signal_id="abc123",
+        label="nightly render",
+        actions=["log", "notify"],
+        message="50% done",
+        output_path="C:/out/frame.png",
+    )
+    literal = _format_literal(script)
+    # MAXScript substitutes a lone "%" from the argument list and collapses
+    # "%%" to a literal percent: replay that in the same order.
+    unescaped = literal.replace('\\"', '"').replace("\\n", "\n")
+    payload = re.sub(r"(?<!%)%(?!%)", "2026-01-01 00:00:00", unescaped).replace("%%", "%")
+
+    record = json.loads(payload)
+    assert record["completed"] is True
+    assert record["actions"] == ["log", "notify"]
+    assert record["message"] == "50% done"
+    assert record["label"] == "nightly render"
+    assert record["time"] == "2026-01-01 00:00:00"
+    assert record["output_path"] == "C:/out/frame.png"
+
+
+def test_render_automations_rejects_actions_passed_as_a_bare_string(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+
+    result = _load_action("action_render_automations.py").main(
+        actions="log", wait=False, signal_file=str(tmp_path / "signal.json")
+    )
+
+    assert result["success"] is False
+    assert "must be a list of strings" in result["message"]
 
 
 # ---------------------------------------------------------------------------

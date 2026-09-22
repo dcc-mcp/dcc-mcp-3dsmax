@@ -528,6 +528,53 @@ def test_agent_viewport_close_reports_a_host_that_keeps_it(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_agent_viewport_close_reports_a_close_that_raises(monkeypatch):
+    """A refused close must fail: success would say the opposite of the truth."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.enable_agent_viewport_factory()
+    action = _load_action("action_agent_viewport.py")
+    action.main(action="ensure")
+    handle = runtime.agent_viewports["dcc_mcp_agent_viewport"]
+    handle.close = _raise_busy
+
+    result = action.main(action="close")
+
+    assert result["success"] is False
+    assert result["data"]["closed"] is False
+    assert "Could not close the agent viewport" in result["message"]
+    assert any("viewport is busy" in warning for warning in result["data"]["warnings"])
+    # The viewport is still open, so the registry must still know about it.
+    assert action.main(action="status")["data"]["exists"] is True
+
+
+def test_agent_viewport_close_reports_a_host_with_no_close_contract(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.enable_agent_viewport_factory()
+    action = _load_action("action_agent_viewport.py")
+    action.main(action="ensure")
+    handle = runtime.agent_viewports["dcc_mcp_agent_viewport"]
+    handle.close = None
+    runtime.getExtendedViewport = lambda name: None
+
+    result = action.main(action="close")
+
+    assert result["success"] is False
+    assert result["data"]["closed"] is False
+    assert result["data"]["probed"]["methods"]
+
+
+def test_agent_viewport_registry_is_scoped_to_the_host(monkeypatch):
+    """A viewport from one host must not be handed to another."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.enable_agent_viewport_factory()
+    action = _load_action("action_agent_viewport.py")
+    action.main(action="ensure")
+
+    other = _Runtime(rect=(0, 0, 640, 480))
+    assert viewport_utils.find_agent_viewport(other, "dcc_mcp_agent_viewport") is None
+    assert viewport_utils.find_agent_viewport(runtime, "dcc_mcp_agent_viewport") is not None
+
+
 def test_set_viewport_applies_options_and_reports_the_readback(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
     agent = _Viewport("top")

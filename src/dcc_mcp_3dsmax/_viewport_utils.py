@@ -181,8 +181,6 @@ def coerce_rect(value: Any, contract: str) -> Tuple[Optional[Dict[str, int]], Op
         bottom = _first_number(value, ("bottom",))
         width = _first_number(value, ("width", "w"))
         height = _first_number(value, ("height", "h"))
-        width = _first_number(value, ("width", "w"))
-        height = _first_number(value, ("height", "h"))
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) == 4:
         numbers = [_as_number(item) for item in value]
         if any(number is None for number in numbers):
@@ -523,6 +521,7 @@ def capture_multi_view(
         errors.append({"view": "<restore>", "error": restore_error})
 
     sheet_info: Optional[Dict[str, Any]] = None
+    composite_failed = False
     if composite and not errors:
         sheet_target = sheet_path or (output_dir / "multi_view{}".format(extension))
         sheet_info, composite_warning = compose_contact_sheet(
@@ -530,6 +529,7 @@ def capture_multi_view(
         )
         if composite_warning is not None:
             warnings.append(composite_warning)
+            composite_failed = sheet_info is None
 
     data = {
         "captures": captures,
@@ -545,6 +545,12 @@ def capture_multi_view(
         return render_error(
             "Multi-view capture did not complete: {}".format(errors[0]["error"]),
             **data,
+        )
+    if composite_failed:
+        # The tiles are on disk, so this is not a failure, but the caller asked
+        # for a contact sheet: the message has to say it was not composed.
+        return render_success(
+            "Captured {} view(s); the contact sheet was not composed".format(len(captures)), **data
         )
     return render_success("Captured {} view(s)".format(len(captures)), **data)
 
@@ -778,7 +784,8 @@ AGENT_VIEWPORT_COUNT_ATTRS = ("extendedViewportCount", "viewportCount", "numView
 AGENT_VIEWPORT_CLOSE_METHODS = ("close", "Close", "destroy")
 AGENT_VIEWPORT_CLOSE_CALLABLES = ("closeExtendedViewport", "closeViewport", "closeFloatingViewport")
 
-_AGENT_VIEWPORTS: Dict[str, Any] = {}
+# Keyed by ``(id(runtime), name)``: a viewport belongs to the host that created it.
+_AGENT_VIEWPORTS: Dict[Tuple[int, str], Any] = {}
 
 
 def reset_agent_viewports() -> None:
@@ -786,8 +793,35 @@ def reset_agent_viewports() -> None:
     _AGENT_VIEWPORTS.clear()
 
 
+def forget_agent_viewport(runtime: Any, name: str) -> None:
+    """Drop one agent viewport from the local registry."""
+    _AGENT_VIEWPORTS.pop(_registry_key(runtime, name), None)
+
+
+def _registry_key(runtime: Any, name: str) -> Tuple[int, str]:
+    """Key the registry by host identity as well as name.
+
+    A viewport belongs to the host that created it. Keying by name alone would
+    hand a viewport from a previous session (or a previous host object) to a
+    caller that asks for the same name later.
+    """
+    return (id(runtime), str(name))
+
+
 def find_agent_viewport(runtime: Any, name: str) -> Any:
-    """Return the agent viewport with ``name`` when the host still exposes it."""
+    """Return the agent viewport with ``name`` when it still exists.
+
+    The host lookup wins; the local registry only covers hosts that expose no
+    lookup contract at all.
+    """
+    found = host_agent_viewport(runtime, name)
+    if found is not None:
+        return found
+    return _AGENT_VIEWPORTS.get(_registry_key(runtime, name))
+
+
+def host_agent_viewport(runtime: Any, name: str) -> Any:
+    """Ask the host whether it still exposes the named agent viewport."""
     for lookup in AGENT_VIEWPORT_LOOKUPS:
         func = _safe_getattr(runtime, lookup)
         if not callable(func):
@@ -803,7 +837,7 @@ def find_agent_viewport(runtime: Any, name: str) -> Any:
             continue
         if found is not None:
             return found
-    return _AGENT_VIEWPORTS.get(name)
+    return None
 
 
 def agent_viewport_status(runtime: Any, name: str) -> Dict[str, Any]:
@@ -849,8 +883,8 @@ def ensure_agent_viewport(
             )
         created = True
         if viewport is not None:
-            _AGENT_VIEWPORTS[name] = viewport
-            if find_agent_viewport(runtime, name) is None:
+            _AGENT_VIEWPORTS[_registry_key(runtime, name)] = viewport
+            if host_agent_viewport(runtime, name) is None:
                 warnings.append(
                     "Created the agent viewport with {}; the host exposes no lookup that reports it back".format(
                         factory
@@ -917,20 +951,27 @@ def close_agent_viewport(runtime: Any, name: str = "dcc_mcp_agent_viewport") -> 
             except Exception as exc:  # noqa: BLE001 - reported, never silently skipped.
                 warnings.append("{} failed: {}".format(attribute, exc))
             break
-    if not closed and not warnings:
+    if not closed:
+        # A viewport that is still open must never be reported as closed: the
+        # message and the flag would both say the opposite of the truth, and
+        # the next ensure would create a second one.
         return render_error(
-            "The host exposes no contract to close the agent viewport",
+            "Could not close the agent viewport",
             name=name,
+            closed=False,
             probed={"methods": list(AGENT_VIEWPORT_CLOSE_METHODS), "runtime": list(AGENT_VIEWPORT_CLOSE_CALLABLES)},
+            warnings=warnings,
+            errors=[{"setting": "close", "error": "; ".join(warnings) or "no close contract on this host"}],
         )
-    _AGENT_VIEWPORTS.pop(name, None)
-    if closed and find_agent_viewport(runtime, name) is not None:
+    if host_agent_viewport(runtime, name) is not None:
         return render_error(
             "The host still reports the agent viewport after closing it",
             name=name,
+            closed=False,
             warnings=warnings,
         )
-    return render_success("Closed the agent viewport", name=name, closed=closed, warnings=warnings)
+    forget_agent_viewport(runtime, name)
+    return render_success("Closed the agent viewport", name=name, closed=True, warnings=warnings)
 
 
 def _create_agent_viewport(runtime: Any, name: str) -> Tuple[Any, Optional[str], Optional[str]]:
