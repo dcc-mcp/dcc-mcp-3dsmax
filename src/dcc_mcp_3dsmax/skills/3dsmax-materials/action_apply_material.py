@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 # Import local modules
-from dcc_mcp_3dsmax._material_utils import find_material
+from dcc_mcp_3dsmax._material_utils import assign_material, find_material, material_error, material_success
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -12,43 +12,52 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 def main(material_name: str = None, node_names: list = None) -> dict:
     """Apply a material to specified objects or selection.
 
+    Nodes that cannot be resolved and nodes whose assignment the host did not
+    keep are reported instead of being dropped from the count, so
+    ``applied_count`` always means \"nodes that verify as carrying the
+    material\".
+
     Returns
     -------
     dict
         The action response.
     """
     if not material_name:
-        return {"success": False, "message": "material_name is required", "data": {}}
+        return material_error("material_name is required")
 
     rt = get_runtime()
 
     mat = find_material(rt, material_name)
 
     if mat is None:
-        return {"success": False, "message": f"Material not found: {material_name}", "data": {}}
+        return material_error("Material not found", material_name=material_name)
 
     # Get target nodes
+    skipped = []
     if node_names:
-        nodes = [rt.getNodeByName(n) for n in node_names]
-        nodes = [n for n in nodes if n is not None]
+        nodes = []
+        for node_name in node_names:
+            node = rt.getNodeByName(node_name)
+            if node is None:
+                skipped.append(str(node_name))
+                continue
+            nodes.append(node)
     else:
         # Use current selection
         nodes = list(rt.selection)
 
     if not nodes:
-        return {"success": False, "message": "No nodes to apply material to", "data": {}}
+        return material_error("No nodes to apply material to", material_name=material_name, skipped=skipped)
 
-    # Apply material
-    applied_count = 0
-    for node in nodes:
-        node.material = mat
-        applied_count += 1
-
-    return {
-        "success": True,
-        "message": f"Applied material '{material_name}' to {applied_count} node(s)",
-        "data": {
-            "material_name": material_name,
-            "applied_count": applied_count,
-        },
+    applied, errors = assign_material(nodes, mat)
+    data = {
+        "material_name": material_name,
+        "applied": applied,
+        "applied_count": len(applied),
+        "requested_count": len(nodes),
+        "skipped": skipped,
+        "errors": errors,
     }
+    if errors or skipped:
+        return material_error("Could not apply the material to every requested node", **data)
+    return material_success("Applied material '{}' to {} node(s)".format(material_name, len(applied)), **data)

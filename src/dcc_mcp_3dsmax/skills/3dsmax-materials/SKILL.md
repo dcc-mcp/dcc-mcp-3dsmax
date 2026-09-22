@@ -47,6 +47,20 @@ tools touch the live scene through `pymxs`, so they declare `affinity: main`.
 Tool contracts live in `tools.yaml`. `apply_material` uses current selection
 when `node_names` is omitted.
 
+## Verified writes
+
+Every write in this skill is verified by readback and reported per attribute or
+per node, so a caller can always tell "written" from "not written":
+
+- `create_standard_material`, `create_physical_material`, and
+  `create_pbr_material` return `applied` / `applied_count` / `errors` and fail
+  when a requested attribute did not land.
+- `apply_material` reports `skipped` (node names that could not be resolved)
+  and `errors` (nodes whose assignment the host did not keep) and fails when
+  either is non-empty; `applied_count` counts only verified assignments.
+- `reset_material` verifies each reset and fails when a node still reports its
+  previous material.
+
 ## Renderer-aware parameters and slots
 
 `create_material_from_textures`, `assign_bitmap_texture`, and

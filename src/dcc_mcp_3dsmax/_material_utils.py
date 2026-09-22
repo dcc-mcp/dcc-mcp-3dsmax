@@ -169,8 +169,13 @@ def resolve_material_targets(
     return result
 
 
-def create_material(runtime: Any, *, name: str, kind: str, color: Optional[Sequence[float]] = None) -> Any:
-    """Create a native material with a conservative fallback chain."""
+def create_material(runtime: Any, *, name: str, kind: str) -> Any:
+    """Create a native material with a conservative fallback chain.
+
+    Callers write attributes through ``apply_material_attribute``, which
+    verifies each write; this helper only constructs and registers, so it never
+    has a write result it would have to drop.
+    """
     constructors = {
         "physical": ("PhysicalMaterial", "Physical_Material", "StandardMaterial"),
         "pbr": ("PhysicalMaterial", "Physical_Material", "StandardMaterial"),
@@ -185,8 +190,6 @@ def create_material(runtime: Any, *, name: str, kind: str, color: Optional[Seque
     if material is None:
         material = type("Material", (), {})()
     material.name = name
-    if color is not None:
-        set_material_attribute(material, "base_color", color, runtime=runtime)
     _register_material(runtime, material)
     return material
 
@@ -214,27 +217,57 @@ def set_material_attribute(material: Any, attribute: str, value: Any, *, runtime
     return ["Unsupported material attribute: {}".format(attribute)]
 
 
-def assign_material(nodes: Sequence[Any], material: Any) -> List[Dict[str, Any]]:
-    """Assign material to nodes and return node summaries."""
+def assign_material(nodes: Sequence[Any], material: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Assign a material to nodes and verify each assignment.
+
+    Returns the verified rows and the rows the host did not keep. A host that
+    swallows the assignment must not be reported as a node that carries the
+    material.
+    """
     rows = []
+    errors = []
     for node in nodes:
-        node.material = material
-        rows.append({"node": node_identity(node), "material": material_identity(material)})
-    return rows
+        row = {"node": node_identity(node), "material": material_identity(material)}
+        try:
+            node.material = material
+        except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
+            row["error"] = "Could not assign the material: {}".format(exc)
+            errors.append(row)
+            continue
+        if getattr(node, "material", None) is not material:
+            row["error"] = "Material readback did not match the assignment"
+            errors.append(row)
+            continue
+        rows.append(row)
+    return rows, errors
 
 
-def reset_materials(nodes: Sequence[Any], default_material: Optional[Any] = None) -> List[Dict[str, Any]]:
-    """Reset nodes to a default or empty material assignment."""
+def reset_materials(
+    nodes: Sequence[Any], default_material: Optional[Any] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Reset nodes to a default or empty material assignment and verify each.
+
+    Returns the verified rows and the rows the host did not keep.
+    """
     rows = []
+    errors = []
     for node in nodes:
-        node.material = default_material
-        rows.append(
-            {
-                "node": node_identity(node),
-                "material": material_identity(default_material) if default_material is not None else None,
-            }
-        )
-    return rows
+        row = {
+            "node": node_identity(node),
+            "material": material_identity(default_material) if default_material is not None else None,
+        }
+        try:
+            node.material = default_material
+        except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
+            row["error"] = "Could not reset the material: {}".format(exc)
+            errors.append(row)
+            continue
+        if getattr(node, "material", None) is not default_material:
+            row["error"] = "Material readback did not match the reset value"
+            errors.append(row)
+            continue
+        rows.append(row)
+    return rows, errors
 
 
 def create_bitmap(runtime: Any, texture_path: str) -> Any:

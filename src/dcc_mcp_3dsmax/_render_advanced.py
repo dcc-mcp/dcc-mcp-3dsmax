@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._render_utils import (
+    apply_runtime_setting,
     artifact_info,
     current_renderer,
     render_error,
@@ -15,6 +15,8 @@ from dcc_mcp_3dsmax._render_utils import (
     set_camera,
     set_render_output,
     set_resolution,
+    setting_matches,
+    summarize_setting_results,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,21 +41,32 @@ def render_hdr_scene(
 ) -> Dict[str, Any]:
     """Render to an HDR/EXR image with high dynamic range output settings."""
     if width is not None and height is not None:
-        set_resolution(runtime, width, height)
+        resolution_result = set_resolution(runtime, width, height)
+        if not resolution_result.get("success"):
+            return resolution_result
     if camera_name is not None or camera_handle is not None:
         camera_result = set_camera(runtime, camera_name=camera_name, camera_handle=camera_handle)
         if not camera_result.get("success"):
             return camera_result
-    set_render_output(runtime, output_path=str(output_path), save_file=True)
-    fmt_warnings = _configure_hdr_output_format(
+    output_result = set_render_output(runtime, output_path=str(output_path), save_file=True)
+    if not output_result.get("success"):
+        return output_result
+    fmt_result = configure_hdr_output_format(
         runtime, hdr_format=hdr_format, bit_depth=bit_depth, compression=compression
     )
+    if fmt_result["errors"]:
+        return render_error(
+            "Could not configure the HDR output format",
+            artifact=artifact_info(output_path),
+            format_settings=fmt_result,
+            format_warnings=fmt_result["warnings"],
+        )
     renderer = _find_renderer(runtime)
     if not callable(renderer):
         return render_error(
             "No render operation is available",
             artifact=artifact_info(output_path),
-            warnings=fmt_warnings,
+            format_warnings=fmt_result["warnings"],
         )
     try:
         result = _render_to_output(runtime, renderer, output_path)
@@ -63,19 +76,19 @@ def render_hdr_scene(
             artifact=artifact_info(output_path),
             exception_type=type(exc).__name__,
             error=str(exc),
-            warnings=fmt_warnings,
+            format_warnings=fmt_result["warnings"],
         )
     if result is False:
         return render_error(
             "HDR render did not complete",
             artifact=artifact_info(output_path),
-            warnings=fmt_warnings,
+            format_warnings=fmt_result["warnings"],
         )
     if not output_path.exists():
         return render_error(
             "HDR render did not produce an output file",
             artifact=artifact_info(output_path),
-            warnings=fmt_warnings,
+            format_warnings=fmt_result["warnings"],
         )
     return render_success(
         "Rendered HDR output",
@@ -83,34 +96,48 @@ def render_hdr_scene(
         hdr_format=hdr_format,
         bit_depth=bit_depth,
         settings=render_settings(runtime),
-        format_warnings=fmt_warnings,
+        format_settings=fmt_result,
+        format_warnings=fmt_result["warnings"],
     )
 
 
-def _configure_hdr_output_format(
+def configure_hdr_output_format(
     runtime: Any,
     *,
     hdr_format: str,
-    bit_depth: int,
+    bit_depth: Optional[int],
     compression: Optional[str],
-) -> list:
-    """Attempt to set HDR output format through the host API."""
-    warnings = []
+) -> Dict[str, Any]:
+    """Set HDR output format options and report what the host accepted.
+
+    A bit depth the host silently ignores would make the render look like HDR
+    output while it is not, so every knob is verified and reported instead of
+    being assumed.
+    """
+    warnings: List[str] = []
+    setter_found = False
     for setter_attr in ("setOutputFormat", "setOutputFileFormat", "SetOutputFormat"):
         setter = getattr(runtime, setter_attr, None)
         if callable(setter):
+            setter_found = True
             try:
                 setter(hdr_format)
             except Exception as exc:  # noqa: BLE001
                 warnings.append("Could not set output format: {}".format(exc))
             break
-    for attr, value in [("outputBitDepth", bit_depth), ("outputCompression", compression)]:
-        if value is not None:
-            try:
-                setattr(runtime, attr, value)
-            except Exception:  # noqa: BLE001
-                pass
-    return warnings
+    if not setter_found:
+        warnings.append(
+            "The host exposes no output format setter; the output extension decides the format"
+        )
+    results = []
+    if bit_depth is not None:
+        results.append(apply_runtime_setting(runtime, "outputBitDepth", int(bit_depth), label="bit_depth"))
+    if compression is not None:
+        results.append(apply_runtime_setting(runtime, "outputCompression", compression, label="compression"))
+    summary = summarize_setting_results(results)
+    summary["warnings"] = warnings + summary["warnings"]
+    summary["format"] = hdr_format
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +173,16 @@ def render_multi_pass(
 ) -> Dict[str, Any]:
     """Render the scene with multiple render elements (AOVs)."""
     if width is not None and height is not None:
-        set_resolution(runtime, width, height)
+        resolution_result = set_resolution(runtime, width, height)
+        if not resolution_result.get("success"):
+            return resolution_result
     if camera_name is not None or camera_handle is not None:
         camera_result = set_camera(runtime, camera_name=camera_name, camera_handle=camera_handle)
         if not camera_result.get("success"):
             return camera_result
-    set_render_output(runtime, output_path=str(output_path), save_file=True)
+    output_result = set_render_output(runtime, output_path=str(output_path), save_file=True)
+    if not output_result.get("success"):
+        return output_result
     resolved_elements = _resolve_elements(elements)
     active_count, element_warnings = _enable_render_elements(runtime, resolved_elements)
     renderer = _find_renderer(runtime)
@@ -317,7 +348,7 @@ def configure_renderer(runtime: Any, *, settings: Mapping[str, Any]) -> Dict[str
         if readback is None:
             warnings.append("Could not read back {} to verify the value".format(key))
             continue
-        if not _setting_matches(readback, value):
+        if not setting_matches(readback, value):
             errors.append({"setting": key, "requested": value, "actual": readback})
             continue
         verified.append(key)
@@ -354,17 +385,6 @@ def _read_setting(renderer: Any, key: str) -> Any:
         return getattr(renderer, key)
     except Exception:  # noqa: BLE001 - unverifiable settings are reported as warnings.
         return None
-
-
-def _setting_matches(readback: Any, value: Any) -> bool:
-    if isinstance(value, bool) or isinstance(readback, bool):
-        return bool(readback) == bool(value)
-    if isinstance(value, (int, float)):
-        try:
-            return math.isclose(float(readback), float(value), rel_tol=1e-6, abs_tol=1e-6)
-        except (TypeError, ValueError):
-            return False
-    return str(readback) == str(value)
 
 
 def _set_current_renderer(runtime: Any, renderer: Any) -> None:

@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._material_utils import (
     COLOR_ATTRS as LEGACY_COLOR_ATTRS,
@@ -32,7 +32,7 @@ from dcc_mcp_3dsmax._material_utils import (
 from dcc_mcp_3dsmax._material_utils import (
     NUMERIC_ATTRS as LEGACY_NUMERIC_ATTRS,
 )
-from dcc_mcp_3dsmax._material_utils import bitmap_connections, wrap_normal_map
+from dcc_mcp_3dsmax._material_utils import bitmap_connections, set_material_attribute, wrap_normal_map
 from dcc_mcp_3dsmax._render_utils import current_renderer
 from dcc_mcp_3dsmax._scene_utils import node_identity
 
@@ -308,6 +308,109 @@ def verify_generic_attribute(
         "candidates": list(candidates),
         "warnings": warnings,
         "error": "No native attribute holds the requested {} value".format(parameter),
+    }
+
+
+def apply_material_attribute(
+    material: Any,
+    attribute: str,
+    value: Any,
+    *,
+    runtime: Any = None,
+    renderer: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write one canonical material attribute and verify it by readback.
+
+    This is the single fail-closed entry point for material attribute writes.
+    Renderer-native plans are used when the family knows the parameter; the
+    historical generic names are the fallback. Nothing is reported as applied
+    unless the host reads the requested value back, so a host that swallows an
+    unknown property never produces a success that describes a write which did
+    not happen.
+    """
+    family = detect_renderer_family(runtime, material=material, requested=renderer)
+    if attribute in NUMERIC_PLANS.get(family, {}):
+        result = set_material_number(material, attribute, value, runtime=runtime, renderer=family)
+        return {
+            "applied": result.get("applied", False),
+            "attribute": attribute,
+            "native_attribute": result.get("attribute"),
+            "renderer": result.get("renderer", family),
+            "candidates": result.get("candidates", []),
+            "warnings": result.get("warnings", []),
+            "error": result.get("error"),
+        }
+    if attribute in COLOR_PLANS.get(family, {}):
+        result = set_material_color(material, attribute, value, runtime=runtime, renderer=family)
+        return {
+            "applied": result.get("applied", False),
+            "attribute": attribute,
+            "native_attribute": result.get("attribute"),
+            "renderer": result.get("renderer", family),
+            "candidates": result.get("candidates", []),
+            "warnings": result.get("warnings", []),
+            "error": result.get("error"),
+        }
+    warnings = list(set_material_attribute(material, attribute, value, runtime=runtime))
+    unsupported = [item for item in warnings if item.startswith("Unsupported material attribute")]
+    if unsupported:
+        return {
+            "applied": False,
+            "attribute": attribute,
+            "native_attribute": None,
+            "renderer": family,
+            "candidates": [],
+            "warnings": warnings,
+            "error": unsupported[0],
+        }
+    # ``set_material_attribute`` reports host rejections as warnings, so a host
+    # that refused every candidate would still look like a success. Verify the
+    # write by reading it back before reporting anything as applied.
+    verification = verify_generic_attribute(material, attribute, value, runtime=runtime)
+    warnings.extend(verification.get("warnings", []))
+    if not verification.get("applied"):
+        return {
+            "applied": False,
+            "attribute": attribute,
+            "native_attribute": None,
+            "renderer": family,
+            "candidates": verification.get("candidates", []),
+            "warnings": warnings,
+            "error": verification.get("error", "attribute_not_applied"),
+        }
+    return {
+        "applied": True,
+        "attribute": attribute,
+        "native_attribute": verification.get("attribute"),
+        "renderer": family,
+        "candidates": [],
+        "warnings": warnings,
+        "error": None,
+    }
+
+
+def summarize_attribute_results(results: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Collapse per-attribute write results into applied / errors / warnings."""
+    applied: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for result in results:
+        warnings.extend(result.get("warnings") or [])
+        if result.get("applied"):
+            applied.append(
+                {
+                    "attribute": result.get("attribute"),
+                    "native_attribute": result.get("native_attribute"),
+                    "renderer": result.get("renderer"),
+                }
+            )
+            continue
+        errors.append(dict(result))
+    return {
+        "applied": applied,
+        "applied_count": len(applied),
+        "errors": errors,
+        "warnings": warnings,
     }
 
 

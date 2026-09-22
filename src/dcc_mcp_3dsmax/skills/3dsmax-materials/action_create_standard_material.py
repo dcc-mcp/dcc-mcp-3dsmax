@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 # Import local modules
-from dcc_mcp_3dsmax._material_utils import create_material, set_material_attribute
+from dcc_mcp_3dsmax._material_utils import create_material, material_error, material_identity, material_success
+from dcc_mcp_3dsmax._renderer_materials import apply_material_attribute, summarize_attribute_results
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -17,6 +18,10 @@ def main(
 ) -> dict:
     """Create a Standard material with the given parameters.
 
+    Every requested attribute is verified by readback: a host that ignores one
+    of them is reported as a failure instead of a material that silently keeps
+    its default value.
+
     Returns
     -------
     dict
@@ -28,17 +33,26 @@ def main(
     rt = get_runtime()
 
     mat = create_material(rt, name=name, kind="standard")
-    set_material_attribute(mat, "diffuse", diffuse, runtime=rt)
-    set_material_attribute(mat, "specular", specular, runtime=rt)
-    set_material_attribute(mat, "glossiness", glossiness, runtime=rt)
-
-    return {
-        "success": True,
-        "message": f"Created material: {name}",
-        "data": {
-            "material_name": name,
-            "diffuse": diffuse,
-            "specular": specular,
-            "glossiness": glossiness,
-        },
+    results = [
+        apply_material_attribute(mat, attribute, value, runtime=rt)
+        for attribute, value in (
+            ("diffuse", diffuse),
+            ("specular", specular),
+            ("glossiness", glossiness),
+        )
+    ]
+    summary = summarize_attribute_results(results)
+    data = {
+        "material": material_identity(mat, runtime=rt),
+        "material_name": name,
+        "diffuse": diffuse,
+        "specular": specular,
+        "glossiness": glossiness,
+        "applied": summary["applied"],
+        "applied_count": summary["applied_count"],
+        "errors": summary["errors"],
+        "warnings": summary["warnings"],
     }
+    if summary["errors"]:
+        return material_error("Could not apply every requested material attribute", **data)
+    return material_success("Created material: {}".format(name), **data)
