@@ -530,6 +530,66 @@ def test_render_automations_removes_a_stale_signal_file(monkeypatch, tmp_path):
     assert any("stale signal file" in warning for warning in result["data"]["warnings"])
 
 
+def test_render_automations_keeps_the_record_when_removal_fails(monkeypatch, tmp_path):
+    """A callback the host kept must stay in the registry.
+
+    Forgetting it first would leave a live callback that no later call can
+    find: disarm would report "no armed automation" while the host still fires
+    the callback on the next render.
+    """
+    _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks(raise_on_remove=True)))
+    action = _load_action("action_render_automations.py")
+    armed = action.main(actions=["log"], wait=False, signal_file=str(tmp_path / "signal.json"), label="nightly")
+    signal_id = armed["data"]["signal_id"]
+
+    result = action.main(disarm=True, label="nightly")
+
+    assert result["success"] is False
+    assert result["data"]["failed"] == [{"signal_id": signal_id, "error": "Callback removal failed: callback system is locked"}]
+    assert "nightly" in result["data"]["still_armed"]
+    assert signals.armed_signals().get("nightly", {}).get("signal_id") == signal_id
+
+
+def test_render_automations_refuses_to_rearm_over_a_stuck_signal(monkeypatch, tmp_path):
+    """Re-arming over a callback the host kept would double-fire on the same file."""
+    _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks(raise_on_remove=True)))
+    action = _load_action("action_render_automations.py")
+    signal_file = tmp_path / "signal.json"
+    first = action.main(actions=["log"], wait=False, signal_file=str(signal_file), label="nightly")
+
+    second = action.main(actions=["log"], wait=False, signal_file=str(signal_file), label="nightly")
+
+    assert second["success"] is False
+    assert "still registered" in second["message"]
+    assert first["data"]["signal_id"] in second["message"]
+    # The original record is intact, so a later disarm can still reach it.
+    assert signals.armed_signals().get("nightly", {}).get("signal_id") == first["data"]["signal_id"]
+
+
+def test_render_automations_reports_still_armed_when_cleanup_fails(monkeypatch, tmp_path):
+    """A completed render whose callback stayed registered is still armed."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+    signal_file = tmp_path / "signal.json"
+    record = {"completed": True, "signal_id": "x", "time": "now"}
+
+    def render_then_wait(interval):
+        signal_file.write_text(json.dumps(record), encoding="utf-8")
+
+    result = signals.render_automations(
+        runtime,
+        actions=["log"],
+        wait=True,
+        timeout_sec=1.0,
+        signal_file=str(signal_file),
+        label="nightly",
+        sleep=render_then_wait,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["cleanup"]["removed"] is True
+    assert result["data"]["armed"] is False
+
+
 def test_render_automations_rejects_a_bad_timeout(monkeypatch, tmp_path):
     _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
 

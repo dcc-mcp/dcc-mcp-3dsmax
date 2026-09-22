@@ -98,11 +98,24 @@ def render_automations(
         if key == (label or signal_id) or str(record.get("signal_file")) == str(signal_path)
     ]
     for key in stale_keys:
-        previous = _ARMED_SIGNALS.pop(key)
+        previous = _ARMED_SIGNALS[key]
         removal = _remove_callback(runtime, previous)
         warnings.extend(removal["warnings"])
-        if not removal["removed"]:
-            warnings.append("Could not remove the previously armed signal {}".format(previous["signal_id"]))
+        if removal["removed"]:
+            # Only forget a signal the host actually released: dropping the
+            # record first would leave a live callback no later call can find.
+            _ARMED_SIGNALS.pop(key, None)
+            continue
+        # Arming a second callback over one the host kept would leave two
+        # live callbacks writing the same signal file, so refuse instead.
+        return render_error(
+            "The previously armed signal {} is still registered on the host; disarm it before arming a new one".format(
+                previous["signal_id"]
+            ),
+            signal_id=previous["signal_id"],
+            signal_file=str(previous["signal_file"]),
+            warnings=warnings,
+        )
 
     script = build_signal_script(
         signal_path,
@@ -153,11 +166,13 @@ def render_automations(
     if not completed:
         data["completed"] = False
         data["status"] = "timeout"
-        data["armed"] = True
         if wait_error is not None:
+            cleanup = _disarm(runtime, record, warnings)
+            data["armed"] = not cleanup["removed"]
+            data["cleanup"] = cleanup
             data["errors"] = [{"setting": "signal_file", "error": wait_error}]
-            _disarm(runtime, record, warnings)
             return render_error(wait_error, **data)
+        data["armed"] = True
         warnings.append("No render finished within {}s; the signal is still armed".format(timeout))
         return render_error(
             "No render finished within {}s; the signal is still armed".format(timeout), **data
@@ -166,7 +181,8 @@ def render_automations(
     cleanup = _disarm(runtime, record, warnings)
     data["completed"] = True
     data["status"] = "completed"
-    data["armed"] = False
+    # Still armed when the host kept the callback: the next render would fire it.
+    data["armed"] = not cleanup["removed"]
     data["record"] = payload
     data["cleanup"] = cleanup
     return render_success("Render finished; reported the completion signal", **data)
@@ -181,12 +197,13 @@ def disarm_render_automations(runtime: Any, label: Optional[str] = None) -> Dict
     warnings: List[str] = []
     failed: List[Dict[str, Any]] = []
     for key in keys:
-        record = _ARMED_SIGNALS.pop(key, None)
+        record = _ARMED_SIGNALS.get(key)
         if record is None:
             continue
         result = _remove_callback(runtime, record)
         warnings.extend(result["warnings"])
         if result["removed"]:
+            _ARMED_SIGNALS.pop(key, None)
             cleared, clear_error = _clear_signal_file(Path(record["signal_file"]))
             if clear_error is not None:
                 warnings.append(clear_error)
@@ -376,9 +393,11 @@ def _remove_callback(runtime: Any, record: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _disarm(runtime: Any, record: Mapping[str, Any], warnings: List[str]) -> Dict[str, Any]:
+    """Remove one armed signal, forgetting it only once the host released it."""
     result = _remove_callback(runtime, record)
     warnings.extend(result["warnings"])
-    _ARMED_SIGNALS.pop(str(record.get("label") or record.get("signal_id")), None)
+    if result["removed"]:
+        _ARMED_SIGNALS.pop(str(record.get("label") or record.get("signal_id")), None)
     return result
 
 
