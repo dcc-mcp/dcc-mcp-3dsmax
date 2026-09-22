@@ -496,7 +496,9 @@ def set_layer_properties(runtime: Any, *, layer_name: str, properties: Dict[str,
         return display_error("Display layer was not found", layer_name=layer_name, applied=[], errors=[])
     try:
         normalized = {name: _normalize_layer_value(name, value) for name, value in properties.items()}
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
+        # Scalars reach len() inside _color_list and raise TypeError, while
+        # short channel lists raise ValueError; both are rejected the same way.
         return display_error("Invalid layer property value: {}".format(exc), layer_name=layer_name, errors=[])
     results = [
         apply_object_attribute(

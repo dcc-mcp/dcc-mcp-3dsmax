@@ -158,6 +158,32 @@ def test_custom_property_tools_list_get_set_and_delete(monkeypatch):
     assert "asset_type" not in runtime.hero.user_properties
 
 
+def test_layer_color_rejects_scalar_values_without_raising(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    action = _load_action("action_set_layer_properties.py")
+
+    for scalar in (5, True, None):
+        result = action.main(layer_name="Default", properties={"color": scalar})
+
+        assert result["success"] is False
+        assert result["status"] == "error"
+        assert result["message"].startswith("Invalid layer property value:")
+        assert "len()" in result["message"]
+        assert result["data"]["errors"] == []
+        # The rejection happens before anything is handed to the host.
+        assert getattr(runtime.layers["Default"], "wireColor", None) is None
+
+
+def test_layer_color_short_channel_list_keeps_clean_error(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+
+    result = _load_action("action_set_layer_properties.py").main(layer_name="Default", properties={"color": [1, 2]})
+
+    assert result["success"] is False
+    assert result["status"] == "error"
+    assert result["message"] == "Invalid layer property value: Color values require three channels"
+
+
 def test_display_tools_report_explicit_target_errors(monkeypatch):
     _install_fake_pymxs(monkeypatch)
 
