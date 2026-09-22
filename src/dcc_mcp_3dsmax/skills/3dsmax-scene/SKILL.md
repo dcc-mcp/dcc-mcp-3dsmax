@@ -13,8 +13,8 @@ metadata:
     version: "1.0.0"
     layer: domain
     stage: scene
-    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch scene patch atomic preflight undo"
-    tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation"
+    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch scene patch atomic preflight undo hierarchy subtree children instances instance sets dependencies refs dependents delta query by class by property snapshot"
+    tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation, hierarchy, instances, dependencies, query"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
     search_aliases: ["scene", "scene io", "open max", "save max", "merge max"]
@@ -36,7 +36,7 @@ metadata:
       file_output: true
       render: false
       targets: ["scene", "scene_file", "scene_node", "group", "selection", "pivot"]
-    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report", "max_file_info", "max_file_matches"]
+    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report", "max_file_info", "max_file_matches", "node_tree", "instance_groups", "dependency_graph", "scene_summary", "scene_delta"]
 ---
 
 # 3ds Max Scene and Object Skill
@@ -128,3 +128,62 @@ unless `allow_ungrouped=true`, in which case the result reports
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.
+
+`list_scene_nodes` answers with a flat list that carries a parent name, which
+is enough to ask who a node's parent is but not what sits under it.
+`get_hierarchy` answers the second question: it walks the parent links and
+returns a nested tree. Omit the target to walk every parentless node. The tree
+is never quietly short: the node limit, the depth cap, a parent that is not in
+the scene node list, and a cycle in the parent links are each counted and named
+in `warnings` and in `truncated`, `parent_outside_scene`, and `cycle_members`.
+A cycle has no parentless member, so one representative per cycle is seeded as
+a root to break it rather than letting the cycle vanish from the tree.
+
+`get_instances` reports nodes that derive from one shared object, so editing
+one edits all of them - the difference between moving one prop and moving
+forty. `InstanceMgr.GetInstances` is used when the host exposes it; otherwise
+nodes are grouped by the shared base-object handle, and the result says which
+method was used. A host that can answer neither way is **refused**, because
+"no instances" and "I cannot tell" are different answers and only one of them
+is safe to act on. Nodes that could not be classified are returned in
+`unresolved` with a reason, never dropped.
+
+`get_dependencies` reads the dependency graph through the MAXScript `refs`
+interface: `direct_dependents` from `refs.dependents`, `dependent_nodes` from
+`refs.dependentnodes` followed recursively, and `depends_on` from
+`refs.dependsOn`. A shared material, an instanced base object, and a parenting
+link are all dependency edges and none of them are visible in a node list. A
+host without a working `refs` interface is refused for the same reason
+`get_instances` is; a host where only some `refs` calls work returns the
+sections that worked and names the rest in `warnings`.
+
+`query_scene` is the single entry point for the six read-side scene questions,
+selected by `mode`. It exists so an agent does not have to guess which of six
+separate actions answers its question and then pay for the wrong guess:
+
+| mode | answers |
+|---|---|
+| `overview` | node count, visible and hidden counts, selection count, and a per-class histogram - counts only, no node list |
+| `filter` | the node list, narrowed by a case-insensitive name substring |
+| `class` | the node list, narrowed by class name, `exact` by default or `contains` |
+| `property` | one property read per node, narrowed by value when `property_value` is given |
+| `selection` | the nodes currently selected |
+| `delta` | what was added, removed, renamed, or changed against a snapshot the caller captured earlier |
+
+Every mode takes the same `name_filter`, `include_hidden`, and `limit`
+arguments. `overview` and `delta` answer with counts instead of a node list, so
+they stay cheap on a large scene.
+
+`delta` is stateless: it requires a `baseline` snapshot and refuses to guess
+one. Run `query_scene` with `include_snapshot` true and pass the returned
+`snapshot` back as `baseline`. Nodes are matched by `object_id` when the
+baseline carries one and by name otherwise, which is what makes a rename
+visible instead of looking like a removal plus an addition. Pass `property_name`
+to compare one property as well; a baseline that carries no value for it is
+reported in `warnings` instead of being read as "nothing changed".
+
+In `property` mode a node the host refused to read is listed in `skipped` with
+the reason, not treated as a node that lacks the property. Private property
+names (any name starting with an underscore) are refused outright. Every mode
+returns a `warnings` list, and a question this host could not answer always ends
+up in it rather than disappearing from the result.

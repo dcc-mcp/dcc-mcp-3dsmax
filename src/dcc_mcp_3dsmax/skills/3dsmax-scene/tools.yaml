@@ -2092,3 +2092,304 @@ tools:
         The whole batch is written inside one host undo hold, so one call leaves one undo entry and one
         undo_last call reverses it. A write that fails to verify cancels the hold, rolling every edit
         back; the result reports undo.grouped, which is false only when the host could not open a hold.
+  - name: get_hierarchy
+    description: >-
+      Report the recursive parent/child tree of the current scene. Use when the
+      question is "what is under this node", which the flat list_scene_nodes
+      output cannot answer. Omit both node_name and handle to walk every
+      parentless node; a cycle in the parent links is reported, never dropped.
+    source_file: action_get_hierarchy.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          description: >-
+            Name of the subtree root. Required unless handle is given; when
+            neither is given every parentless node starts a tree.
+        handle:
+          type: integer
+          description: Object handle of the subtree root. Required unless node_name is given.
+        max_depth:
+          type: integer
+          minimum: 0
+          maximum: 32
+          description: >-
+            Deepest level to report. Level 0 is the root only. Omit for the
+            32-level cap; children below the cap are counted in
+            unlisted_children.
+        include_hidden:
+          type: boolean
+          default: true
+          description: >-
+            Include hidden nodes when true. When false a hidden node takes its
+            subtree with it, and the skipped count is reported.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          default: 500
+          description: Maximum number of nodes to emit.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Report the recursive scene subtree under a node, or the whole tree."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_hierarchy", "scene hierarchy", "node tree", "subtree", "children"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["node_tree"]
+  - name: get_instances
+    description: >-
+      Group scene nodes into instance sets: nodes that derive from one shared
+      object, so editing one edits all of them. Pass node_name or handle for
+      the set one node belongs to, or omit both for every set with more than one
+      member. A host that cannot answer is refused rather than reported as
+      having no instances.
+    source_file: action_get_instances.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          description: Name of the node to look up. Required unless handle is given.
+        handle:
+          type: integer
+          description: Object handle of the node to look up. Required unless node_name is given.
+        include_unique:
+          type: boolean
+          default: false
+          description: >-
+            Also report groups with a single member when no node target is
+            given.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          default: 200
+          description: Maximum number of nodes to list per group.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Report which scene nodes are instances of one shared object."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_instances", "instances", "instanced nodes", "shared object"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["instance_groups"]
+  - name: get_dependencies
+    description: >-
+      Report what a node depends on and what depends on it, read through the
+      MAXScript refs interface: refs.dependents for direct dependents,
+      refs.dependentnodes for dependent nodes followed recursively, and
+      refs.dependsOn for the reverse. A host without a working refs interface is
+      refused, because an empty graph is the answer to "nothing depends on
+      this", not to "I could not look".
+    source_file: action_get_dependencies.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        node_name:
+          type: string
+          minLength: 1
+          description: Target node name. Required unless handle is given.
+        handle:
+          type: integer
+          description: Target object handle. Required unless node_name is given.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          default: 200
+          description: Maximum number of entries to list per section.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 20
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Report the dependency graph around one node through refs."
+    tool_role: read_only
+    risk: low
+    search_aliases: ["get_dependencies", "dependencies", "refs", "dependent nodes", "depends on"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["dependency_graph"]
+  - name: query_scene
+    description: >-
+      One entry point for the six read-side scene questions, selected by mode:
+      overview for counts and a per-class histogram, filter for the node list
+      narrowed by name, class for the node list narrowed by class name,
+      property for one property read per node narrowed by value, selection for
+      the selected nodes, and delta for what changed against a snapshot the
+      caller captured earlier. Overview and delta answer with counts rather than
+      a node list; every mode reports a warning instead of hiding a question the
+      host could not answer.
+    source_file: action_query_scene.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [overview, filter, class, property, selection, delta]
+          default: overview
+          description: Question to answer.
+        name_filter:
+          type: string
+          description: >-
+            Case-insensitive node-name substring applied in every mode. At most
+            256 characters.
+        class_name:
+          type: string
+          description: Class name to match in mode class. Required in that mode.
+        class_match:
+          type: string
+          enum: [exact, contains]
+          default: exact
+          description: >-
+            How class_name is compared in mode class: exact is case-insensitive
+            equality, contains is a case-insensitive substring.
+        property_name:
+          type: string
+          minLength: 1
+          description: >-
+            Property to read in mode property, or to compare in mode delta.
+            Refused when it starts with an underscore.
+        property_value:
+          description: >-
+            In mode property, keep only the nodes whose property matches this
+            value.
+        include_hidden:
+          type: boolean
+          default: true
+          description: Include hidden nodes when true.
+        baseline:
+          description: >-
+            Required in mode delta. A node snapshot to compare against: an array
+            of node names, or an array of objects carrying node_name, object_id,
+            and optionally value or values. The snapshot field returned when
+            include_snapshot is true has exactly this shape.
+        include_snapshot:
+          type: boolean
+          default: false
+          description: >-
+            Return a snapshot of the matched nodes so it can be passed back as
+            the baseline of a later delta query.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 2000
+          default: 200
+          description: Maximum number of nodes to return or snapshot.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 30
+    read_only: true
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Answer one scene question: overview, filter, class, property, selection, or delta."
+    tool_role: read_only
+    risk: low
+    search_aliases:
+      ["query_scene", "query scene", "scene query", "find nodes by class", "find nodes by property", "scene delta"]
+    side_effects:
+      creates: false
+      modifies: false
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: []
+    produces: ["scene_nodes", "scene_summary", "scene_delta"]
