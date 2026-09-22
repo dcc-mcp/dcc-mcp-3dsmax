@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from dcc_mcp_3dsmax._scene_utils import is_camera_node, iter_scene_nodes, node_identity, resolve_node_object
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 PREVIEW_EXTENSIONS = {".avi", ".mp4", ".mov"}
+
+# Outcome of a single render-setting write. A write is only ``applied`` when the
+# host reads the requested value back; ``unverified`` means the host accepted
+# the call but the value cannot be read back, and ``rejected`` means the host
+# refused the write or kept a different value.
+SETTING_APPLIED = "applied"
+SETTING_UNVERIFIED = "unverified"
+SETTING_REJECTED = "rejected"
+
 QUALITY_PRESETS = {
     "draft": {"sampling": 0.25, "antialiasing": False},
     "preview": {"sampling": 0.5, "antialiasing": True},
@@ -197,13 +207,17 @@ def render_scene(
 ) -> Dict[str, Any]:
     """Render the current scene to an image file through host-provided helpers."""
     if width is not None and height is not None:
-        set_resolution(runtime, width, height)
+        resolution_result = set_resolution(runtime, width, height)
+        if not resolution_result.get("success"):
+            return resolution_result
     if camera_name is not None or camera_handle is not None:
         camera_result = set_camera(runtime, camera_name=camera_name, camera_handle=camera_handle)
         if not camera_result.get("success"):
             return camera_result
 
-    set_render_output(runtime, output_path=str(output_path), save_file=True)
+    output_result = set_render_output(runtime, output_path=str(output_path), save_file=True)
+    if not output_result.get("success"):
+        return output_result
     renderer = (
         getattr(runtime, "render", None)
         or getattr(runtime, "renderScene", None)
@@ -239,15 +253,173 @@ def render_scene(
     return render_success("Rendered scene", artifact=artifact_info(output_path), settings=render_settings(runtime))
 
 
+def setting_matches(readback: Any, value: Any) -> bool:
+    """Report whether a read-back value equals the requested one."""
+    if isinstance(value, bool) or isinstance(readback, bool):
+        return bool(readback) == bool(value)
+    if isinstance(value, (int, float)):
+        try:
+            return math.isclose(float(readback), float(value), rel_tol=1e-6, abs_tol=1e-6)
+        except (TypeError, ValueError):
+            return False
+    return str(readback) == str(value)
+
+
+def _read_runtime_setting(runtime: Any, attribute: str) -> Any:
+    """Read one runtime setting, reporting ``None`` when it cannot be read."""
+    try:
+        return getattr(runtime, attribute)
+    except Exception:  # noqa: BLE001 - an unreadable setting is reported, never assumed.
+        return None
+
+
+def _setting_row(
+    name: str,
+    attribute: str,
+    status: str,
+    requested: Any,
+    actual: Any,
+    message: Optional[str],
+    *,
+    optional: bool,
+) -> Dict[str, Any]:
+    """Build one per-setting result row.
+
+    ``optional`` marks a value the caller did not ask for (a preset-derived
+    knob, for example). A host that refuses it is reported as unverified
+    instead of failing the whole call, but it is still reported.
+    """
+    if status == SETTING_REJECTED and optional:
+        status = SETTING_UNVERIFIED
+    row: Dict[str, Any] = {
+        "setting": name,
+        "attribute": attribute,
+        "status": status,
+        "requested": requested,
+        "actual": actual,
+        "error": message if status == SETTING_REJECTED else None,
+        "warning": message if status == SETTING_UNVERIFIED else None,
+    }
+    return row
+
+
+def apply_runtime_setting(
+    runtime: Any,
+    attribute: str,
+    value: Any,
+    *,
+    label: Optional[str] = None,
+    optional: bool = False,
+    compare: Optional[Callable[[Any, Any], bool]] = None,
+) -> Dict[str, Any]:
+    """Write one runtime render setting and verify the host kept it.
+
+    ``pymxs`` wrappers accept unknown properties without persisting them, so a
+    bare ``setattr`` is not evidence that anything changed. Every write is read
+    back and classified as applied, unverified, or rejected. ``compare``
+    replaces the default equality test for values that need one (paths, node
+    wrappers); it receives ``(readback, requested)``.
+    """
+    name = label or attribute
+    try:
+        setattr(runtime, attribute, value)
+    except Exception as exc:  # noqa: BLE001 - an explicit host rejection is a failure.
+        return _setting_row(
+            name,
+            attribute,
+            SETTING_REJECTED,
+            value,
+            None,
+            "Could not set {}: {}".format(attribute, exc),
+            optional=optional,
+        )
+    readback = _read_runtime_setting(runtime, attribute)
+    if readback is None:
+        return _setting_row(
+            name,
+            attribute,
+            SETTING_UNVERIFIED,
+            value,
+            None,
+            "Could not read back {} to verify the value".format(attribute),
+            optional=optional,
+        )
+    if not (compare(readback, value) if compare is not None else setting_matches(readback, value)):
+        return _setting_row(
+            name,
+            attribute,
+            SETTING_REJECTED,
+            value,
+            readback,
+            "{} read back {!r} after writing {!r}".format(attribute, readback, value),
+            optional=optional,
+        )
+    return _setting_row(name, attribute, SETTING_APPLIED, value, readback, None, optional=optional)
+
+
+def summarize_setting_results(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Collapse per-setting write results into applied / errors / warnings."""
+    warnings = [row["warning"] for row in results if row["status"] == SETTING_UNVERIFIED and row.get("warning")]
+    return {
+        "applied": [row["setting"] for row in results if row["status"] == SETTING_APPLIED],
+        "applied_count": sum(1 for row in results if row["status"] == SETTING_APPLIED),
+        "unverified": [row["setting"] for row in results if row["status"] == SETTING_UNVERIFIED],
+        "errors": [row for row in results if row["status"] == SETTING_REJECTED],
+        "warnings": warnings,
+        "setting_results": [dict(row) for row in results],
+    }
+
+
+def _same_node(candidate: Any, node: Any) -> bool:
+    """Compare two node wrappers by identity, handle, or name."""
+    if candidate is node:
+        return True
+    for attribute in ("handle", "name"):
+        expected = getattr(node, attribute, None)
+        actual = getattr(candidate, attribute, None)
+        if expected is None or actual is None:
+            continue
+        if attribute == "handle":
+            try:
+                return int(actual) == int(expected)
+            except (TypeError, ValueError):
+                continue
+        return str(actual) == str(expected)
+    return False
+
+
+def _same_path(readback: Any, value: Any) -> bool:
+    """Compare two output paths the way the host stores them."""
+    return setting_matches(_normalize_path(readback), _normalize_path(value))
+
+
+def _normalize_path(value: Any) -> str:
+    return os.path.normcase(os.path.normpath(str(Path(str(value)).expanduser())))
+
+
 def set_render_output(
     runtime: Any, *, output_path: Optional[str] = None, save_file: Optional[bool] = None
 ) -> Dict[str, Any]:
     """Set common render output options."""
+    results = []
     if output_path is not None:
-        runtime.rendOutputFilename = str(Path(output_path).expanduser())
+        results.append(
+            apply_runtime_setting(
+                runtime,
+                "rendOutputFilename",
+                str(Path(output_path).expanduser()),
+                label="output_path",
+                compare=_same_path,
+            )
+        )
     if save_file is not None:
-        runtime.rendSaveFile = bool(save_file)
-    return render_success("Updated render output options", settings=render_settings(runtime))
+        results.append(apply_runtime_setting(runtime, "rendSaveFile", bool(save_file), label="save_file"))
+    summary = summarize_setting_results(results)
+    data = dict(summary)
+    data["settings"] = render_settings(runtime)
+    if summary["errors"]:
+        return render_error("Could not update every render output option", **data)
+    return render_success("Updated render output options", **data)
 
 
 def set_frame_range(runtime: Any, start_frame: int, end_frame: int) -> Dict[str, Any]:
@@ -256,18 +428,32 @@ def set_frame_range(runtime: Any, start_frame: int, end_frame: int) -> Dict[str,
         return render_error(
             "end_frame must be greater than or equal to start_frame", start_frame=start_frame, end_frame=end_frame
         )
-    runtime.animationRangeStart = int(start_frame)
-    runtime.animationRangeEnd = int(end_frame)
-    runtime.frameStart = int(start_frame)
-    runtime.frameEnd = int(end_frame)
-    return render_success("Updated frame range", settings=render_settings(runtime))
+    results = [
+        apply_runtime_setting(runtime, "animationRangeStart", int(start_frame), label="start_frame"),
+        apply_runtime_setting(runtime, "animationRangeEnd", int(end_frame), label="end_frame"),
+        apply_runtime_setting(runtime, "frameStart", int(start_frame), label="render_start_frame"),
+        apply_runtime_setting(runtime, "frameEnd", int(end_frame), label="render_end_frame"),
+    ]
+    summary = summarize_setting_results(results)
+    data = dict(summary)
+    data["settings"] = render_settings(runtime)
+    if summary["errors"]:
+        return render_error("Could not update the frame range", start_frame=start_frame, end_frame=end_frame, **data)
+    return render_success("Updated frame range", **data)
 
 
 def set_resolution(runtime: Any, width: int, height: int) -> Dict[str, Any]:
     """Set render resolution."""
-    runtime.renderWidth = int(width)
-    runtime.renderHeight = int(height)
-    return render_success("Updated render resolution", settings=render_settings(runtime))
+    results = [
+        apply_runtime_setting(runtime, "renderWidth", int(width), label="width"),
+        apply_runtime_setting(runtime, "renderHeight", int(height), label="height"),
+    ]
+    summary = summarize_setting_results(results)
+    data = dict(summary)
+    data["settings"] = render_settings(runtime)
+    if summary["errors"]:
+        return render_error("Could not update the render resolution", width=width, height=height, **data)
+    return render_success("Updated render resolution", **data)
 
 
 def set_camera(
@@ -279,33 +465,49 @@ def set_camera(
         return render_error(result.get("message", "Camera could not be resolved"), resolution=result)
     if not is_camera_node(camera, runtime=runtime):
         return render_error("Resolved node is not a camera", node=node_identity(camera))
-    runtime.activeCamera = camera
+    # A camera is a wrapper, not a scalar: compare by identity, handle, or name.
+    results = [apply_runtime_setting(runtime, "activeCamera", camera, label="camera", compare=_same_node)]
+    # ``summarize_setting_results`` already reports the setting warnings; this
+    # list only carries failures from the viewport follow-up below.
+    warnings = []
     viewport = getattr(runtime, "viewport", None)
     if viewport is not None:
         setter = getattr(viewport, "setCamera", None)
         if callable(setter):
             try:
                 setter(camera)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001 - report, never hide, a viewport failure.
+                warnings.append("Could not update the viewport camera: {}".format(exc))
         try:
             viewport.camera = camera
-        except Exception:  # noqa: BLE001
-            pass
-    return render_success("Updated render camera", camera=node_identity(camera), settings=render_settings(runtime))
+        except Exception as exc:  # noqa: BLE001 - report, never hide, a viewport failure.
+            warnings.append("Could not assign the viewport camera: {}".format(exc))
+    summary = summarize_setting_results(results)
+    data = dict(summary)
+    data["warnings"] = summary["warnings"] + warnings
+    data["camera"] = node_identity(camera)
+    data["settings"] = render_settings(runtime)
+    if summary["errors"]:
+        return render_error("Could not update the render camera", **data)
+    return render_success("Updated render camera", **data)
 
 
 def set_quality_preset(runtime: Any, preset: str) -> Dict[str, Any]:
     """Set a render quality preset."""
     if preset not in QUALITY_PRESETS:
         return render_error("Unsupported quality preset", preset=preset, supported_presets=sorted(QUALITY_PRESETS))
-    runtime.renderQualityPreset = preset
+    results = [apply_runtime_setting(runtime, "renderQualityPreset", preset, label="preset")]
     for key, value in QUALITY_PRESETS[preset].items():
-        try:
-            setattr(runtime, "render_{}".format(key), value)
-        except Exception:  # noqa: BLE001
-            pass
-    return render_success("Updated render quality preset", preset=preset, settings=render_settings(runtime))
+        # The preset name is what the caller asked for; the sampling and
+        # antialiasing knobs behind it are best effort and only reported.
+        results.append(apply_runtime_setting(runtime, "render_{}".format(key), value, label=key, optional=True))
+    summary = summarize_setting_results(results)
+    data = dict(summary)
+    data["preset"] = preset
+    data["settings"] = render_settings(runtime)
+    if summary["errors"]:
+        return render_error("Could not apply the render quality preset", **data)
+    return render_success("Updated render quality preset", **data)
 
 
 def _camera_name(camera: Any) -> Optional[str]:
