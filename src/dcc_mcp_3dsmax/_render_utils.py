@@ -370,6 +370,11 @@ def summarize_setting_results(results: Sequence[Dict[str, Any]]) -> Dict[str, An
     }
 
 
+# Public alias: viewport/IPR helpers capture into a sibling temp file and
+# rename it into place so a success always means a flushed, non-empty file.
+atomic_capture_target = _atomic_capture_target
+
+
 def _same_node(candidate: Any, node: Any) -> bool:
     """Compare two node wrappers by identity, handle, or name."""
     if candidate is node:

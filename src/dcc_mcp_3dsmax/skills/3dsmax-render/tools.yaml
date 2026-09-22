@@ -506,3 +506,113 @@ tools:
       targets: ["render_settings"]
     produces:
       - "renderer_config"
+
+  - name: render_automations
+    description: >-
+      Arm a completion signal for the next render and, when wait=true, report
+      when it finishes. The host writes a JSON signal file when the render
+      completes. Waiting blocks the calling thread, so the default is
+      wait=false: arm the signal and poll the returned signal_file yourself.
+    source_file: action_render_automations.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        actions:
+          type: array
+          items: {type: string, enum: [log, notify, save_output]}
+          description: Automations to run on completion. Defaults to ["log"].
+        wait:
+          {type: boolean, default: false, description: "Wait for the render to finish and report it. Waits block the calling thread, so the default is false (arm and poll signal_file)."}
+        timeout_sec:
+          {type: number, minimum: 0, default: 120, description: How long to wait for the completion signal.}
+        signal_file:
+          {type: string, minLength: 1, description: Optional JSON signal file path. Defaults to a temp file.}
+        message:
+          {type: string, description: Message carried by the notify action.}
+        output_path:
+          {type: string, description: Output path recorded by the save_output action.}
+        label:
+          {type: string, description: Optional label used to track and disarm the automation.}
+        disarm:
+          {type: boolean, default: false, description: Remove armed automations instead of adding one.}
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 180
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Arm a completion signal for the next render and report its outcome."
+    tool_role: action
+    risk: medium
+    search_aliases: ["render_automations", "render automations", "render callback", "render completion signal"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: true
+      imports: false
+      file_output: true
+      render: false
+      targets: ["render_callbacks", "file:signal"]
+    produces:
+      - "render_signal"
+
+  - name: vray_ipr
+    description: >-
+      Start, stop, refresh, or query the V-Ray interactive production rendering
+      (IPR) preview. Every action is verified against the host preview state;
+      a host that reports no state is reported as unverified, never as success.
+    source_file: action_vray_ipr.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [status, start, stop, refresh]
+          default: status
+          description: IPR action to perform.
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
+
+    intent: "Control the V-Ray interactive production rendering preview."
+    tool_role: action
+    risk: medium
+    search_aliases: ["vray_ipr", "vray ipr", "interactive production rendering", "vray preview", "ipr"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: true
+      targets: ["vray_ipr"]
+    produces:
+      - "ipr_state"

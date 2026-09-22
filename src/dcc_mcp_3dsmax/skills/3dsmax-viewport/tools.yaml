@@ -7,6 +7,7 @@ tools:
     source_file: action_capture_viewport.py
     execution: sync
     affinity: main
+    enforce_thread_affinity: true
     input_schema:
       type: object
       additionalProperties: false
@@ -15,18 +16,14 @@ tools:
           type: string
           minLength: 1
           description: Optional output PNG path. Defaults to the system temp directory.
-    output_schema:
+    output_schema: &output_schema
       type: object
       additionalProperties: true
       properties:
-        success:
-          type: boolean
-        status:
-          type: string
-        message:
-          type: string
-        data:
-          type: object
+        success: {type: boolean}
+        status: {type: string}
+        message: {type: string}
+        data: {type: object}
     timeout_hint_secs: 10
     read_only: true
     destructive: false
@@ -51,3 +48,283 @@ tools:
       render: false
       targets: []
     produces: ['file:image']
+
+  - name: capture_screen
+    description: >-
+      Capture the 3ds Max desktop to an image file, optionally cropped to the
+      V-Ray, Corona, or FStorm frame buffer (or the 3ds Max render frame
+      window). A crop the host cannot honour is reported as a failure instead
+      of silently capturing the full desktop.
+    source_file: action_capture_screen.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        output_path:
+          type: string
+          minLength: 1
+          description: Optional output image path (.png/.jpg/.jpeg/.bmp/.tif/.tiff). Defaults to the temp directory.
+        source:
+          type: string
+          enum: [auto, screen, max, vray, corona, fstorm]
+          default: auto
+          description: Frame buffer to crop to. "screen" captures the whole desktop.
+        crop:
+          type: boolean
+          default: true
+          description: Crop the capture to the frame buffer region.
+        open_frame_buffer:
+          type: boolean
+          default: true
+          description: Bring the frame buffer window forward before capturing.
+        overwrite:
+          type: boolean
+          default: false
+          description: Replace an existing output file.
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    # Bringing the frame buffer window forward changes host state, so this is
+    # not a read-only tool even though it only produces an image.
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: true
+
+    intent: "Capture the 3ds Max desktop, cropped to a renderer frame buffer."
+    tool_role: action
+    risk: low
+    search_aliases: ["capture_screen", "capture screen", "vray vfb capture", "corona vfb capture", "fstorm frame buffer"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: true
+      render: false
+      targets: ["viewport"]
+    produces:
+      - "file:image"
+
+  - name: capture_multi_view
+    description: >-
+      Capture several standard views (front, left, top, perspective, ...) into
+      separate images and optionally tile them into one contact sheet. The
+      user's active view is snapshotted before the first switch and restored
+      afterwards, and the restore is verified by reading the view back.
+    source_file: action_capture_multi_view.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [output_dir]
+      properties:
+        output_dir:
+          type: string
+          minLength: 1
+          description: Existing directory that receives one image per view.
+        views:
+          type: array
+          items:
+            type: string
+            enum: [front, back, left, right, top, bottom, perspective, orthographic, iso, user]
+          description: Views to capture. Defaults to front, left, top, perspective.
+        composite:
+          type: boolean
+          default: true
+          description: Tile the captures into one contact sheet.
+        sheet_path:
+          type: string
+          minLength: 1
+          description: Optional contact sheet path. Defaults to output_dir/multi_view.png.
+        columns:
+          type: integer
+          minimum: 1
+          description: Contact sheet columns. Defaults to a square-ish grid.
+        stem:
+          type: string
+          minLength: 1
+          default: view
+          description: Prefix for the per-view files.
+        overwrite:
+          type: boolean
+          default: false
+          description: Replace existing per-view files.
+    output_schema: *output_schema
+    timeout_hint_secs: 180
+    # Switching the viewport to each standard view changes the user's view for
+    # the duration of the capture, so this is not a read-only tool.
+    read_only: false
+    destructive: false
+    idempotent: false
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: true
+
+    intent: "Capture multiple standard views, restoring the user's view afterwards."
+    tool_role: action
+    risk: medium
+    search_aliases: ["capture_multi_view", "multi view capture", "contact sheet", "orthographic views", "turntable views"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: true
+      render: false
+      targets: ["viewport"]
+    produces:
+      - "file:image"
+      - "viewport_captures"
+
+  - name: agent_viewport
+    description: >-
+      Create, inspect, or close a dedicated agent viewport: a separate floating
+      viewport with its own shading and camera, so the user's active view is
+      never moved. A host with no extended/floating viewport factory is
+      reported as a failure instead of falling back to the user's viewport.
+    source_file: action_agent_viewport.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        action:
+          type: string
+          enum: [ensure, status, close]
+          default: ensure
+          description: Ensure (create or reuse), inspect, or close the agent viewport.
+        name:
+          type: string
+          minLength: 1
+          default: dcc_mcp_agent_viewport
+          description: Agent viewport name.
+        shading:
+          type: string
+          enum: [realistic, shaded, consistent_colors, wireframe, facets, flat, smooth]
+          description: Shading mode applied to the agent viewport.
+        shading_value:
+          type: integer
+          description: Raw shading enum index for hosts that index their modes differently.
+        camera_name:
+          type: string
+          minLength: 1
+          description: Camera assigned to the agent viewport.
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Create and inspect a dedicated agent viewport that never moves the user's view."
+    tool_role: action
+    risk: medium
+    search_aliases: ["agent_viewport", "agent viewport", "extended viewport", "floating viewport", "separate viewport"]
+    side_effects:
+      creates: true
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["viewport"]
+    produces:
+      - "viewport_state"
+
+  - name: set_viewport
+    description: >-
+      Set shading, layout, camera, and display toggles (edged faces, grid, safe
+      frame, statistics) on the agent viewport or the active viewport. Every
+      option is read back after the write: a value the host refuses is reported
+      as a failure, never as a success with the value quietly dropped.
+    source_file: action_set_viewport.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+          enum: [agent, active]
+          default: agent
+          description: Which viewport to change. "agent" never touches the user's view.
+        name:
+          type: string
+          minLength: 1
+          default: dcc_mcp_agent_viewport
+          description: Agent viewport name, used when target is "agent".
+        shading:
+          type: string
+          enum: [realistic, shaded, consistent_colors, wireframe, facets, flat, smooth]
+          description: Shading mode.
+        shading_value:
+          type: integer
+          description: Raw shading enum index for hosts that index modes differently.
+        layout:
+          type: string
+          enum: [single, two_horizontal, two_vertical, four]
+          description: Viewport layout.
+        edged_faces:
+          type: boolean
+          description: Show edged faces.
+        grid:
+          type: boolean
+          description: Show the home grid.
+        safe_frame:
+          type: boolean
+          description: Show the safe frame.
+        statistics:
+          type: boolean
+          description: Show viewport statistics.
+        camera_name:
+          type: string
+          minLength: 1
+          description: Camera to view through.
+    output_schema: *output_schema
+    timeout_hint_secs: 60
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+
+    intent: "Set verified display and shading options on a viewport."
+    tool_role: action
+    risk: medium
+    search_aliases: ["set_viewport", "set viewport", "viewport shading", "viewport display options", "viewport layout"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: ["viewport"]
+    produces:
+      - "viewport_state"
