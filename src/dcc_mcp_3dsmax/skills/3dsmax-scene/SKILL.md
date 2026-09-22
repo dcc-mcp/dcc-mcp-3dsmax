@@ -13,8 +13,8 @@ metadata:
     version: "1.0.0"
     layer: domain
     stage: scene
-    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch scene patch atomic preflight undo hierarchy subtree children instances instance sets dependencies refs dependents delta query by class by property snapshot"
-    tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation, hierarchy, instances, dependencies, query"
+    search-hint: "3ds Max new open save save-as merge scene status dirty nodes cameras selection visibility parenting transforms properties rename create clone instance reference orientation freeze external max file inspect merge search batch scene patch atomic preflight undo hierarchy subtree children instances instance sets dependencies refs dependents delta query by class by property snapshot named selection set selection sets group ungroup open close attach detach groups"
+    tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation, hierarchy, instances, dependencies, query, selection-sets, groups"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
     search_aliases: ["scene", "scene io", "open max", "save max", "merge max"]
@@ -35,8 +35,8 @@ metadata:
       imports: true
       file_output: true
       render: false
-      targets: ["scene", "scene_file", "scene_node", "group", "selection", "pivot"]
-    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "bounding_box", "visibility_state", "object_properties", "orientation_report", "max_file_info", "max_file_matches", "node_tree", "instance_groups", "dependency_graph", "scene_summary", "scene_delta"]
+      targets: ["scene", "scene_file", "scene_node", "group", "selection", "selection_set", "pivot"]
+    produces: ["scene_status", "scene_file", "scene_info", "node_list", "selection_state", "selection_set", "selection_set_list", "group_state", "bounding_box", "visibility_state", "object_properties", "orientation_report", "max_file_info", "max_file_matches", "node_tree", "instance_groups", "dependency_graph", "scene_summary", "scene_delta"]
 ---
 
 # 3ds Max Scene and Object Skill
@@ -125,6 +125,41 @@ to verify cancels the hold so the whole batch is rolled back. Use `dry_run` to
 check a batch first. Hosts that cannot open an undo hold refuse the batch
 unless `allow_ungrouped=true`, in which case the result reports
 `undo.grouped=false` and each edit may leave its own undo entry.
+
+## Named selection sets
+
+`list_selection_sets`, `create_selection_set`, `replace_selection_set`,
+`delete_selection_set`, and `select_selection_set` cover 3ds Max named
+selection sets. Read them with `list_selection_sets` first: a set is addressed
+by name, and the names are the only handle the host exposes.
+
+`create_selection_set` never overwrites silently. A name that is already taken
+fails the call with a message pointing at `replace_existing=true`, because
+returning success while the set still holds different nodes is the exact
+false-premise this skill avoids. `replace_selection_set` is the explicit
+overwrite and refuses a name that does not exist yet.
+
+Every write is confirmed by reading the set back. `create` and `replace` return
+`verified` plus the member nodes the host actually reports; `delete` re-reads
+the set list and fails when the name is still there; `select` reads the
+selection back and fails when a member did not get selected. A host that cannot
+be read back is reported through `warnings` with `verified: false` rather than
+as a confirmed change. Use `add=true` on `select_selection_set` to extend the
+current selection instead of replacing it.
+
+## Groups
+
+`group_nodes` creates a group; `ungroup_nodes`, `set_group_open`,
+`attach_to_group`, and `detach_from_group` cover the rest of the group
+lifecycle. All four address a group by its head node, so resolve the head with
+`list_scene_nodes` or `get_hierarchy` first.
+
+`ungroup_nodes` dissolves the heads and keeps the members, and reports each
+group it could not dissolve. `set_group_open` opens a group for member editing
+or closes it again and reads the open state back. `attach_to_group` reports each
+node whose parent the host did not set to the group head;
+`detach_from_group` reports each node that still names its old parent, and
+returns `previous_group` so the caller can re-attach with `attach_to_group`.
 
 Node-targeted tools accept explicit node names or stable object handles and
 return structured not-found or ambiguous-match errors instead of guessing.

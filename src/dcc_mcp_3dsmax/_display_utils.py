@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes, node_identity, resolve_node_objects
+from dcc_mcp_3dsmax._scene_utils import (
+    ATTR_APPLIED,
+    apply_object_attribute,
+    iter_scene_nodes,
+    node_identity,
+    resolve_node_objects,
+    summarize_attribute_results,
+)
 
 
 def display_success(message: str, **data: Any) -> Dict[str, Any]:
@@ -46,9 +54,12 @@ def resolve_display_targets(
     return {"success": True, "status": "success", "message": "Resolved scene nodes", "objects": nodes}
 
 
-def list_layers(runtime: Any, *, include_nodes: bool = False) -> Dict[str, Any]:
+def list_layers(runtime: Any, *, include_nodes: bool = False, include_properties: bool = False) -> Dict[str, Any]:
     """List display/layer groups."""
-    layers = [_layer_summary(layer, include_nodes=include_nodes) for layer in _iter_layers(runtime)]
+    layers = [
+        _layer_summary(layer, include_nodes=include_nodes, include_properties=include_properties)
+        for layer in _iter_layers(runtime)
+    ]
     return display_success("Listed display layers", layers=layers, count=len(layers))
 
 
@@ -109,17 +120,77 @@ def assign_nodes_to_layer(
             "Display layer was not found", layer_name=layer_name, changed_node_count=0, warnings=warnings
         )
     changed = []
+    rejected = []
+    unverified = []
     for node in nodes:
         _add_node_to_layer(layer, node, warnings)
-        _set_optional_attr(node, "layer", layer_name)
-        changed.append(node_identity(node))
-    return display_success(
-        "Assigned nodes to display layer",
-        layer=_layer_summary(layer),
-        nodes=changed,
-        changed_node_count=len(changed),
-        warnings=warnings,
-    )
+        _mirror_layer_name(node, layer_name, warnings)
+        identity = node_identity(node)
+        membership = _layer_membership(layer, node)
+        if membership is True:
+            changed.append(identity)
+        elif membership is False:
+            rejected.append({"node": identity, "message": "The host did not keep the node in the layer"})
+        else:
+            warnings.append(
+                "Could not read back layer membership for {}".format(
+                    identity.get("node_name") or identity.get("object_id")
+                )
+            )
+            unverified.append(identity)
+            changed.append(identity)
+    data = {
+        "layer": _layer_summary(layer),
+        "nodes": changed,
+        "unverified": unverified,
+        "errors": rejected,
+        "changed_node_count": len(changed),
+        "warnings": warnings,
+    }
+    if rejected:
+        return display_error("Could not assign every node to the display layer", **data)
+    return display_success("Assigned nodes to display layer", **data)
+
+
+def _mirror_layer_name(node: Any, layer_name: str, warnings: List[str]) -> None:
+    """Mirror the layer name onto the node when the host exposes that property.
+
+    ``node.layer`` is a convenience mirror; membership in the layer's node list is
+    what makes an assignment real, so a host that refuses the mirror is reported
+    as a warning rather than failing the assignment.
+    """
+    row = apply_object_attribute(node, "layer", layer_name, optional=True)
+    if row["status"] != ATTR_APPLIED and row["warning"]:
+        warnings.append(row["warning"])
+
+
+def _layer_membership(layer: Any, node: Any) -> Optional[bool]:
+    """Report whether ``node`` is held by ``layer``, or ``None`` when unreadable."""
+    members = getattr(layer, "nodes", None)
+    if members is None:
+        return None
+    try:
+        members = list(members)
+    except TypeError:
+        return None
+    handle = getattr(node, "handle", None)
+    name = str(getattr(node, "name", "") or "")
+    for member in members:
+        if member is node:
+            return True
+        member_handle = getattr(member, "handle", None)
+        if handle is not None and member_handle is not None:
+            try:
+                if int(member_handle) == int(handle):
+                    return True
+            except (TypeError, ValueError):
+                pass
+        if name and str(getattr(member, "name", "") or "") == name:
+            return True
+    assigned = getattr(node, "layer", None)
+    if assigned is not None and str(assigned) == str(getattr(layer, "name", "")):
+        return True
+    return False
 
 
 def display_state_summary(node: Any) -> Dict[str, Any]:
@@ -135,6 +206,17 @@ def display_state_summary(node: Any) -> Dict[str, Any]:
     }
 
 
+# Node display-state properties. Alternate names are tried in order and the
+# first one the host exposes is the one that gets written and read back.
+NODE_DISPLAY_PROPERTY_MAP: Dict[str, Tuple[str, ...]] = {
+    "hidden": ("isHidden", "hidden"),
+    "frozen": ("isFrozen", "frozen"),
+    "wire_color": ("wireColor", "wire_color"),
+    "object_color": ("objectColor", "object_color"),
+    "display_mode": ("displayMode", "display_mode"),
+}
+
+
 def set_display_state(
     node: Any,
     *,
@@ -144,28 +226,39 @@ def set_display_state(
     object_color: Optional[Sequence[int]] = None,
     display_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Set common node display-state metadata."""
-    changed = []
+    """Set common node display-state metadata and verify each write."""
+    requested: List[Tuple[str, Any]] = []
     if hidden is not None:
-        _set_optional_attr(node, "isHidden", bool(hidden))
-        changed.append("hidden")
+        requested.append(("hidden", bool(hidden)))
     if frozen is not None:
-        _set_optional_attr(node, "isFrozen", bool(frozen))
-        _set_optional_attr(node, "frozen", bool(frozen))
-        changed.append("frozen")
+        requested.append(("frozen", bool(frozen)))
     if wire_color is not None:
-        _set_optional_attr(node, "wireColor", _color_list(wire_color))
-        _set_optional_attr(node, "wire_color", _color_list(wire_color))
-        changed.append("wire_color")
+        requested.append(("wire_color", _color_list(wire_color)))
     if object_color is not None:
-        _set_optional_attr(node, "objectColor", _color_list(object_color))
-        _set_optional_attr(node, "object_color", _color_list(object_color))
-        changed.append("object_color")
+        requested.append(("object_color", _color_list(object_color)))
     if display_mode is not None:
-        _set_optional_attr(node, "displayMode", str(display_mode))
-        _set_optional_attr(node, "display_mode", str(display_mode))
-        changed.append("display_mode")
-    return display_success("Updated display state", state=display_state_summary(node), changed_fields=changed)
+        requested.append(("display_mode", str(display_mode)))
+
+    results = [
+        apply_object_attribute(
+            node, NODE_DISPLAY_PROPERTY_MAP[name][0], value, label=name, candidates=NODE_DISPLAY_PROPERTY_MAP[name]
+        )
+        for name, value in requested
+    ]
+    summary = summarize_attribute_results(results)
+    data = {
+        "state": display_state_summary(node),
+        "changed_fields": summary["applied"],
+        "applied": summary["applied"],
+        "unverified": summary["unverified"],
+        "errors": summary["errors"],
+        "warnings": summary["warnings"],
+    }
+    if not requested:
+        return display_error("No display state was requested", **data)
+    if summary["errors"]:
+        return display_error("Could not apply every requested display state change", **data)
+    return display_success("Updated node display state", **data)
 
 
 def custom_properties(node: Any) -> Dict[str, Any]:
@@ -283,7 +376,7 @@ def _new_layer(runtime: Any, name: str) -> Tuple[Any, List[str]]:
     return None, warnings
 
 
-def _layer_summary(layer: Any, *, include_nodes: bool = False) -> Dict[str, Any]:
+def _layer_summary(layer: Any, *, include_nodes: bool = False, include_properties: bool = False) -> Dict[str, Any]:
     nodes = list(getattr(layer, "nodes", []) or [])
     payload = {
         "name": str(getattr(layer, "name", "")),
@@ -293,7 +386,121 @@ def _layer_summary(layer: Any, *, include_nodes: bool = False) -> Dict[str, Any]
     }
     if include_nodes:
         payload["nodes"] = [node_identity(node) for node in nodes]
+    if include_properties:
+        payload["properties"] = layer_property_summary(layer)
     return payload
+
+
+# Layer properties exposed by 3ds Max layer objects. Each entry maps a tool
+# parameter to the property names hosts are known to use, tried in order, so a
+# write is only reported applied when one of them reads back the requested value.
+LAYER_PROPERTY_MAP: Dict[str, Tuple[str, ...]] = {
+    "visible": ("on", "isOn"),
+    "hidden": ("isHidden", "hidden"),
+    "frozen": ("isFrozen", "frozen"),
+    "renderable": ("renderable",),
+    "cast_shadows": ("castShadows",),
+    "receive_shadows": ("receiveShadows",),
+    "motion_blur": ("motionBlur",),
+    "primary_visibility": ("primaryVisibility",),
+    "secondary_visibility": ("secondaryVisibility",),
+    "visible_in_reflections": ("visibleInReflections",),
+    "visible_in_refractions": ("visibleInRefractions",),
+    "box_mode": ("boxMode",),
+    "back_cull": ("backCull",),
+    "all_edges": ("allEdges",),
+    "ignore_extents": ("ignoreExtents",),
+    "show_trajectory": ("showTrajectory",),
+    "show_frozen_in_gray": ("showFrozenInGray",),
+    "xray": ("xray",),
+    "display_by_layer": ("displayByLayer",),
+    "inherit_visibility": ("inheritVisibility",),
+    "color": ("wireColor", "color"),
+}
+
+LAYER_PROPERTY_NAMES = tuple(sorted(LAYER_PROPERTY_MAP))
+
+
+def layer_property_summary(layer: Any) -> Dict[str, Any]:
+    """Read back every known layer property that the host exposes."""
+    summary: Dict[str, Any] = {}
+    for name, candidates in LAYER_PROPERTY_MAP.items():
+        value = None
+        for attribute in candidates:
+            try:
+                value = getattr(layer, attribute)
+            except Exception:  # noqa: BLE001 - an unexposed property is reported as None.
+                continue
+            break
+        summary[name] = _jsonable(value)
+    return summary
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert a host value into JSON-safe data."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    channels = _numeric_channels(value)
+    if channels is not None:
+        return [int(channel) if float(channel).is_integer() else channel for channel in channels]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+def _numeric_channels(value: Any) -> Optional[List[float]]:
+    """Return numeric channels for colors and vectors, or ``None``."""
+    if isinstance(value, (bool, str, bytes, Mapping)):
+        return None
+    if isinstance(value, Sequence):
+        try:
+            channels = [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+        return channels or None
+    for axes in (("r", "g", "b"), ("x", "y", "z")):
+        if all(hasattr(value, axis) for axis in axes):
+            try:
+                return [float(getattr(value, axis)) for axis in axes]
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def set_layer_properties(runtime: Any, *, layer_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+    """Write layer properties and verify the host kept every one of them."""
+    if not properties:
+        return display_error("No layer properties were requested", layer_name=layer_name, applied=[], errors=[])
+    unknown = [name for name in properties if name not in LAYER_PROPERTY_MAP]
+    if unknown:
+        return display_error(
+            "Unknown layer properties: {}".format(", ".join(sorted(unknown))),
+            layer_name=layer_name,
+            unknown=sorted(unknown),
+            supported=list(LAYER_PROPERTY_NAMES),
+        )
+    layer = _find_layer(runtime, layer_name)
+    if layer is None:
+        return display_error("Display layer was not found", layer_name=layer_name, applied=[], errors=[])
+    results = [
+        apply_object_attribute(
+            layer, LAYER_PROPERTY_MAP[name][0], value, label=name, candidates=LAYER_PROPERTY_MAP[name]
+        )
+        for name, value in properties.items()
+    ]
+    summary = summarize_attribute_results(results)
+    data = {
+        "layer": _layer_summary(layer, include_properties=True),
+        "applied": summary["applied"],
+        "applied_property_count": summary["applied_count"],
+        "unverified": summary["unverified"],
+        "errors": summary["errors"],
+        "warnings": summary["warnings"],
+        "property_results": summary["property_results"],
+    }
+    if summary["errors"]:
+        return display_error("Could not apply every requested layer property", layer_name=layer_name, **data)
+    return display_success("Updated display layer properties", layer_name=layer_name, **data)
 
 
 def _add_node_to_layer(layer: Any, node: Any, warnings: List[str]) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from dcc_mcp_3dsmax._display_utils import display_success, resolve_display_targets, set_display_state
+from dcc_mcp_3dsmax._display_utils import display_error, display_success, resolve_display_targets, set_display_state
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 
@@ -26,15 +26,45 @@ def main(
     )
     if not targets.get("success"):
         return targets
-    changes = [
-        set_display_state(
+    requested = {
+        "hidden": hidden,
+        "frozen": frozen,
+        "wire_color": wire_color,
+        "object_color": object_color,
+        "display_mode": display_mode,
+    }
+    if not any(value is not None for value in requested.values()):
+        return display_error("No display state was requested", changes=[], changed_node_count=0)
+
+    changes = []
+    errors = []
+    unverified = []
+    warnings = []
+    applied_fields = []
+    for node in targets["objects"]:
+        outcome = set_display_state(
             node,
             hidden=hidden,
             frozen=frozen,
             wire_color=wire_color,
             object_color=object_color,
             display_mode=display_mode,
-        )["data"]
-        for node in targets["objects"]
-    ]
-    return display_success("Updated node display state", changes=changes, changed_node_count=len(changes))
+        )
+        data = outcome["data"]
+        changes.append(data)
+        applied_fields.extend(data.get("applied", []))
+        errors.extend(data.get("errors", []))
+        unverified.extend(data.get("unverified", []))
+        warnings.extend(data.get("warnings", []))
+
+    payload = {
+        "changes": changes,
+        "changed_node_count": len(changes),
+        "applied": sorted(set(applied_fields)),
+        "unverified": sorted(set(unverified)),
+        "errors": errors,
+        "warnings": warnings,
+    }
+    if errors:
+        return display_error("Could not apply every requested display state change", **payload)
+    return display_success("Updated node display state", **payload)
