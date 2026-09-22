@@ -52,7 +52,8 @@ light shapes and photometric units each provider declares, how the active
 renderer is routed, and the native property candidates for every control. Pass
 `probe=true` to build one throwaway light per available factory, record which
 controls the host exposes and which enum indices it accepts, and then delete it
-again (the deletion is verified).
+again (the deletion is verified). Because `probe=true` creates and deletes
+nodes, the tool is declared as a mutating action rather than a read-only tool.
 
 `create_renderer_light` builds up to 32 lights in one transaction through one
 provider (`auto` follows the active renderer):
@@ -86,9 +87,11 @@ the native index directly and bypass the table.
 `set_light_properties` shares the same provider table. It detects the provider
 from the target light's native class (override with `provider`), so shape,
 units, emitter size, color temperature, and texture color space can be adjusted
-on an existing light with the same verification guarantees. When a control
-fails, the values written earlier in the same call are restored and the restore
-result is reported in the failure payload.
+on an existing light with the same verification guarantees. `color_space` is
+applied to the texture map already wired on the light and fails when the light
+has no texture slot. When a control fails, the values written earlier in the
+same call — including the texture slot and its color space — are restored and
+the restore result is reported in the failure payload.
 
 ## Failure semantics for every light tool
 
@@ -124,4 +127,7 @@ transaction (up to 32 lights per call):
 See the failure semantics above: the same readback, validation, and rollback
 rules apply. V-Ray only accepts its own controls, so `radius`, `exposure`,
 `samples`, `spread`, `color_temperature`, and `kind` are rejected per field
-before anything is created rather than being ignored.
+before anything is created rather than being ignored. `shape_value` and
+`units_value` are resolved through the declared V-Ray tables into `shape` /
+`units`, so a raw index reaches the host; an index outside the table is
+rejected per field instead of being dropped.

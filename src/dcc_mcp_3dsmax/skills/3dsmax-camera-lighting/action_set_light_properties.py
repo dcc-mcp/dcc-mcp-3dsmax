@@ -55,10 +55,12 @@ def main(
     """Set light properties after validating the target node.
 
     Common controls (enabled / intensity / color / shadows) work on every light.
-    Renderer light controls (shape, units, size, color temperature, color space)
-    are written through the provider that owns the target light and are verified
-    by readback: a control the light rejects is reported as a failure with the
-    attribute candidates, and the previous values are restored.
+    Renderer light controls (shape, units, size, color temperature) are written
+    through the provider that owns the target light. ``color_space`` is applied
+    to the texture map already wired on the light and fails when the light has
+    no texture slot. Every control is verified by readback: a control the light
+    rejects is reported as a failure with the attribute candidates, and the
+    previous values are restored.
     """
     runtime = get_runtime()
     result, light = resolve_node_object(runtime, node_name=light_name, handle=light_handle)
@@ -86,13 +88,6 @@ def main(
         "color_space": color_space,
     }
     spec = {key: value for key, value in values.items() if value is not None}
-    if spec.get("color_space") is not None and not spec.get("texture_path"):
-        return cam_error(
-            "color_space can only be set together with a texture slot",
-            light=node_identity(light),
-            hint="Use create_renderer_light to wire a texture with a color space.",
-        )
-
     if not spec and enabled is None:
         return cam_error("No light properties were requested", light=node_identity(light))
 

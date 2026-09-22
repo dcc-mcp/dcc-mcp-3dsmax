@@ -5,14 +5,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence
 
 from dcc_mcp_3dsmax._camera_light_utils import cam_error
-from dcc_mcp_3dsmax._light_providers import (
-    GENERIC_FIELDS,
-    VRAY_FIELDS,
-    create_renderer_lights,
-)
+from dcc_mcp_3dsmax._light_providers import create_renderer_lights
 from dcc_mcp_3dsmax.api import get_runtime, with_max
-
-FLAT_FIELDS = tuple(dict.fromkeys(GENERIC_FIELDS + VRAY_FIELDS)) + ("provider",)
 
 
 @with_max

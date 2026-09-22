@@ -239,8 +239,34 @@ class _ProviderRuntime:
     def OmniLight(self) -> Any:
         return self._make(_OmniLight)
 
-    def VRayLight(self) -> Any:  # pragma: no cover - only referenced by routing tests
-        raise AssertionError("V-Ray is out of scope for provider routing tests")
+
+class VRayLightDouble(_Light):
+    """Stand-in for a VRayLight node (the name drives provider detection)."""
+
+    def __init__(self, handle: int, name: str = "") -> None:
+        super().__init__(handle, name)
+        self.type = 0
+        self.units = 0
+        self.multiplier = 1.0
+        self.castShadows = True
+        self.normalizeColor = True
+        self.U_size = 10.0
+        self.V_size = 10.0
+        self.texmap = None
+        self.target = None
+
+
+class _VRayRuntime(_ProviderRuntime):
+    """Host double whose active renderer and light factory are V-Ray."""
+
+    def __init__(self) -> None:
+        super().__init__("V_Ray_6")
+
+    def VRayLight(self) -> VRayLightDouble:  # noqa: N802 - mirrors pymxs naming.
+        return self._make(VRayLightDouble)
+
+    def VRayBitmap(self) -> _BitmapTexture:  # noqa: N802 - mirrors pymxs naming.
+        return _BitmapTexture()
 
 
 def _install_pymxs(monkeypatch, runtime):
@@ -661,6 +687,61 @@ def test_set_light_properties_reports_and_reverts_a_rejected_control(monkeypatch
     assert runtime.getNodeByName("KeyLight").intensity == 1.0
 
 
+def test_set_light_properties_recolors_the_texture_already_wired(monkeypatch, tmp_path):
+    runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
+    hdri = tmp_path / "studio.hdr"
+    hdri.write_text("hdr", encoding="utf-8")
+    created = _load_action("action_create_renderer_light.py").main(
+        name="DomeLight",
+        provider="arnold",
+        texture_path=str(hdri),
+        color_space="Raw",
+    )
+    assert created["success"] is True, created
+
+    updated = _load_action("action_set_light_properties.py").main(light_name="DomeLight", color_space="sRGB")
+
+    assert updated["success"] is True, updated
+    light = runtime.getNodeByName("DomeLight")
+    assert light.texmap.filename == str(hdri)
+    assert light.texmap.color_space == "sRGB"
+    assert updated["data"]["light"]["color_space"] == "sRGB"
+
+
+def test_set_light_properties_reports_a_missing_texture_slot_for_color_space(monkeypatch):
+    _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
+    created = _load_action("action_create_renderer_light.py").main(name="Bare", provider="arnold")
+    assert created["success"] is True, created
+
+    updated = _load_action("action_set_light_properties.py").main(light_name="Bare", color_space="sRGB")
+
+    assert updated["success"] is False
+    failure = updated["data"]["failures"][0]
+    assert failure["field"] == "color_space"
+    assert "no texture slot" in failure["error"]
+
+
+def test_set_light_properties_restores_a_recolored_texture_on_failure(monkeypatch, tmp_path):
+    runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
+    hdri = tmp_path / "studio.hdr"
+    hdri.write_text("hdr", encoding="utf-8")
+    created = _load_action("action_create_renderer_light.py").main(
+        name="DomeLight", provider="arnold", texture_path=str(hdri), color_space="Raw"
+    )
+    assert created["success"] is True, created
+
+    updated = _load_action("action_set_light_properties.py").main(
+        light_name="DomeLight", color_space="sRGB", color_temperature=5000.0
+    )
+
+    # The Arnold double has no Kelvin property, so the whole call fails and the
+    # color space written earlier in the same call is put back.
+    assert updated["success"] is False
+    assert runtime.getNodeByName("DomeLight").texmap.color_space == "Raw"
+    restored = updated["data"]["failures"][0]["restored_previous_values"]
+    assert [entry["field"] for entry in restored] == ["color_space"]
+
+
 def test_set_light_properties_still_updates_host_native_lights(monkeypatch):
     runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Default_Scanline_Renderer"))
     runtime.objects.append(_OmniLight(runtime._next_handle, "Omni01"))
@@ -714,6 +795,7 @@ def test_set_light_properties_requires_a_target_and_a_request(monkeypatch):
         ("CoronaSun", "corona"),
         ("mrAreaOmni", "photometric"),
         ("FreeLight", "photometric"),
+        ("mr_Sun", "photometric"),
         ("VRayLight", "vray"),
         ("OmniLight", "standard"),
     ],
@@ -727,41 +809,70 @@ def test_detect_provider_maps_native_classes(class_name, expected):
     assert providers.detect_provider(runtime, _Node()) == expected
 
 
+def test_detect_provider_covers_every_declared_token():
+    """Every token in the detection table must be reachable after normalization."""
+    runtime = _ProviderRuntime()
+    for token, expected in providers._NODE_CLASS_PROVIDERS:
+        node = _Light(1, "probe")
+        node.className = token
+        runtime.classOf = lambda node: node.className
+        assert providers.detect_provider(runtime, node) == expected, token
+
+
+def test_tool_metadata_matches_observed_behavior():
+    """A tool that can build and delete nodes must not advertise read-only."""
+    import yaml
+
+    tools = yaml.safe_load((SKILL_DIR / "tools.yaml").read_text(encoding="utf-8"))["tools"]
+    by_name = {tool["name"]: tool for tool in tools}
+    capabilities = by_name["lighting_capabilities"]
+
+    # probe=true builds one light per factory and deletes it again.
+    assert capabilities["read_only"] is False
+    assert capabilities["annotations"]["read_only_hint"] is False
+    assert capabilities["side_effects"]["creates"] is True
+    assert capabilities["side_effects"]["deletes"] is True
+
+    # The units and shape enums must accept every token a provider declares,
+    # otherwise a provider capability is unreachable through the schema.
+    declared_units: set = set()
+    declared_shapes: set = set()
+    for provider in providers.PROVIDERS.values():
+        declared_units.update(provider.units)
+        declared_shapes.update(provider.shapes)
+    for tool_name in ("create_renderer_light", "set_light_properties"):
+        properties = by_name[tool_name]["input_schema"]["properties"]
+        assert not declared_units - set(properties["units"]["enum"]), tool_name
+        assert not declared_shapes - set(properties["shape"]["enum"]), tool_name
+
+
+def test_vray_provider_maps_raw_enum_indices_onto_the_declared_tables(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+
+    result = _load_action("action_create_renderer_light.py").main(
+        provider="vray", name="VrayRaw", shape_value=2, units_value=2
+    )
+
+    assert result["success"] is True, result
+    light = runtime.getNodeByName("VrayRaw")
+    assert light.type == 2
+    assert light.units == 2
+    assert result["data"]["lights"][0]["shape_value"] == 2
+    assert result["data"]["lights"][0]["units_value"] == 2
+
+
+def test_vray_provider_rejects_raw_enum_indices_outside_the_table(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _VRayRuntime())
+
+    result = _load_action("action_create_renderer_light.py").main(provider="vray", name="VrayRaw", shape_value=99)
+
+    assert result["success"] is False
+    fields = result["data"]["errors"][0]["fields"]
+    assert [entry["field"] for entry in fields] == ["shape_value"]
+    assert runtime.objects == []
+
+
 def test_vray_provider_delegates_and_rejects_generic_only_fields(monkeypatch, tmp_path):
-    class VRayLightDouble(_Light):
-        def __init__(self, handle: int, name: str = "") -> None:
-            super().__init__(handle, name)
-            self.type = 0
-            self.units = 0
-            self.multiplier = 1.0
-            self.castShadows = True
-            self.normalizeColor = True
-            self.U_size = 10.0
-            self.V_size = 10.0
-            self.texmap = None
-            self.target = None
-
-    class _VRayRuntime(_ProviderRuntime):
-        def __init__(self) -> None:
-            super().__init__("V_Ray_6")
-            self._vray_lights = []
-
-        def VRayLight(self):  # noqa: N802 - mirrors pymxs naming.
-            light = VRayLightDouble(self._next_handle)
-            light.units = 0
-            light.multiplier = 1.0
-            light.castShadows = True
-            light.normalizeColor = True
-            light.U_size = 10.0
-            light.V_size = 10.0
-            light.texmap = None
-            self._next_handle += 1
-            self.objects.append(light)
-            return light
-
-        def VRayBitmap(self):  # noqa: N802 - mirrors pymxs naming.
-            return _BitmapTexture()
-
     runtime = _install_pymxs(monkeypatch, _VRayRuntime())
 
     created = _load_action("action_create_renderer_light.py").main(

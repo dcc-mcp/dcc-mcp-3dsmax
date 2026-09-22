@@ -400,7 +400,9 @@ _NODE_CLASS_PROVIDERS: Tuple[Tuple[str, str], ...] = (
     ("targetlight", "photometric"),
     ("photometric", "photometric"),
     ("sunlight", "photometric"),
-    ("mr_sun", "photometric"),
+    # ``detect_provider`` strips separators before matching, so tokens here must
+    # be written without underscores: ``mr_Sun`` normalizes to ``mrsun``.
+    ("mrsun", "photometric"),
 )
 
 
@@ -730,11 +732,12 @@ def _create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[s
     """Delegate V-Ray specs to the verified V-Ray implementation."""
     from dcc_mcp_3dsmax._vray_utils import create_vray_lights
 
+    vray = PROVIDERS["vray"]
     errors: List[Dict[str, Any]] = []
+    resolved: List[Dict[str, Any]] = []
     for index, spec in enumerate(specs):
         unknown = set(spec) - set(VRAY_FIELDS) - {"provider"}
-        unsupported = set(spec) & set(VRAY_UNSUPPORTED_FIELDS)
-        unsupported = sorted(unknown | unsupported)
+        unsupported = sorted(unknown | (set(spec) & set(VRAY_UNSUPPORTED_FIELDS)))
         if unsupported:
             errors.append(
                 {
@@ -742,6 +745,23 @@ def _create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[s
                     "message": "Unsupported V-Ray light fields: {}".format(", ".join(unsupported)),
                 }
             )
+            continue
+        invalid = _invalid_vray_enum_values(vray, spec)
+        if invalid:
+            errors.append({"index": index, "message": "Invalid light values", "fields": invalid})
+            continue
+
+        item = {key: value for key, value in spec.items() if key != "provider"}
+        if "intensity" in item:
+            item["multiplier"] = item.pop("intensity")
+        # Raw enum indices resolve through the declared V-Ray tables, so the
+        # index the caller asked for is the index the host receives.
+        if item.get("shape_value") is not None:
+            item["shape"] = vray.shape_names[int(item.pop("shape_value"))]
+        if item.get("units_value") is not None:
+            item["units"] = vray.unit_names[int(item.pop("units_value"))]
+        resolved.append(item)
+
     if errors:
         return cam_error(
             "Rejected light specs before creating anything",
@@ -750,18 +770,42 @@ def _create_vray_lights(runtime: Any, specs: Sequence[Dict[str, Any]]) -> Dict[s
             failure_reason="light_spec_invalid",
             **rollback_summary([]),
         )
+    return create_vray_lights(runtime, resolved)
 
-    mapped: List[Dict[str, Any]] = []
-    for spec in specs:
-        item = {key: value for key, value in spec.items() if key != "provider"}
-        if "intensity" in item:
-            item["multiplier"] = item.pop("intensity")
-        if "shape_value" in item:
-            item.pop("shape_value")
-        if "units_value" in item:
-            item.pop("units_value")
-        mapped.append(item)
-    return create_vray_lights(runtime, mapped)
+
+def _invalid_vray_enum_values(provider: LightProvider, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Reject raw V-Ray enum indices that no declared name maps to."""
+    invalid: List[Dict[str, Any]] = []
+    for raw_field, name_field, names in (
+        ("shape_value", "shape", provider.shape_names),
+        ("units_value", "units", provider.unit_names),
+    ):
+        raw = spec.get(raw_field)
+        if raw is None:
+            continue
+        if spec.get(name_field) is not None:
+            invalid.append(
+                {
+                    "field": raw_field,
+                    "value": _jsonable(raw),
+                    "reason": "pass either {} or {}, not both".format(name_field, raw_field),
+                }
+            )
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            invalid.append({"field": raw_field, "value": _jsonable(raw), "reason": "expected an integer index"})
+            continue
+        if value < 0 or value >= len(names):
+            invalid.append(
+                {
+                    "field": raw_field,
+                    "value": _jsonable(raw),
+                    "reason": "expected an index between 0 and {}".format(len(names) - 1),
+                }
+            )
+    return invalid
 
 
 def _validate_specs(provider: LightProvider, specs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -971,7 +1015,7 @@ def apply_light_controls(
     failures: List[Dict[str, Any]] = []
     warnings: List[str] = []
     applied: List[Dict[str, Any]] = []
-    previous: Dict[str, Tuple[str, Any]] = {}
+    previous: Dict[str, Dict[str, Any]] = {}
 
     for field in WRITE_ORDER:
         if spec.get(field) is None:
@@ -1015,12 +1059,47 @@ def apply_light_controls(
             _enable_temperature(runtime, node, definition, warnings)
 
         if field == "texture_path":
+            before = _snapshot(runtime, node, definition.controls.get("texture", ()))
             result = _apply_texture(runtime, node, definition, spec, warnings)
+            if result.get("applied"):
+                previous[field] = {
+                    "target": node,
+                    "attribute": str(result["attribute"]),
+                    "value": before,
+                    "captured": True,
+                }
+        elif field == "color_space":
+            # No new texture: adjust the color space of the map already wired.
+            slot = read_first_attr(runtime, node, definition.controls.get("texture", ()))
+            if slot is None:
+                failures.append(
+                    {
+                        "field": field,
+                        "requested": _jsonable(value),
+                        "candidates": list(definition.controls.get("texture", ())),
+                        "error": "The light has no texture slot wired to recolor",
+                    }
+                )
+                continue
+            before = _snapshot(runtime, slot, attributes)
+            result = write_verified_attr(runtime, slot, attributes, value, mode=mode)
+            if result.get("applied"):
+                previous[field] = {
+                    "target": slot,
+                    "attribute": str(result["attribute"]),
+                    "value": before,
+                    "captured": True,
+                }
         else:
             before = _snapshot(runtime, node, attributes)
             result = write_verified_attr(runtime, node, attributes, value, mode=mode)
             if result.get("applied"):
-                previous[field] = (str(result["attribute"]), before)
+                previous[field] = {
+                    "target": node,
+                    "attribute": str(result["attribute"]),
+                    "value": before,
+                    "captured": before is not None,
+                }
         warnings.extend(result.get("warnings", []))
         if result.get("applied"):
             applied.append({"field": field, "attribute": result.get("attribute"), "value": _jsonable(value)})
@@ -1059,7 +1138,7 @@ def apply_light_controls(
             )
 
     if failures and restore_on_failure and previous:
-        restored, restore_failures = _restore(runtime, node, previous)
+        restored, restore_failures = _restore(runtime, previous)
         for failure in failures:
             failure["restored_previous_values"] = restored
         if restore_failures:
@@ -1217,21 +1296,27 @@ def _snapshot(runtime: Any, node: Any, attributes: Sequence[str]) -> Any:
 
 def _restore(
     runtime: Any,
-    node: Any,
-    previous: Mapping[str, Tuple[str, Any]],
+    previous: Mapping[str, Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Put previously written attributes back and report what did not restore."""
+    """Put previously written attributes back and report what did not restore.
+
+    The snapshot keeps the object each value came from, so a control written on
+    a nested texture is restored on that texture instead of on the light.
+    """
     restored: List[Dict[str, Any]] = []
     warnings: List[str] = []
-    for field_name, (attribute, value) in previous.items():
-        if value is None:
+    for field_name, entry in previous.items():
+        attribute = str(entry["attribute"])
+        value = entry["value"]
+        target = entry["target"]
+        if not entry.get("captured"):
             warnings.append("No previous {} value was captured, so it was left as written".format(field_name))
             continue
-        result = write_verified_attr(runtime, node, (attribute,), value, mode="exact")
+        result = write_verified_attr(runtime, target, (attribute,), value, mode="exact")
         if result.get("applied"):
             restored.append({"field": field_name, "attribute": attribute, "value": _jsonable(value)})
             continue
-        fallback = write_verified_attr(runtime, node, (attribute,), value, mode="number")
+        fallback = write_verified_attr(runtime, target, (attribute,), value, mode="number")
         if fallback.get("applied"):
             restored.append({"field": field_name, "attribute": attribute, "value": _jsonable(value)})
             continue
@@ -1250,7 +1335,8 @@ def _verify_spec(
     for field in WRITE_ORDER:
         if spec.get(field) is None:
             continue
-        if field in ("texture_path", "color_space"):
+        if field == "texture_path":
+            # Verified at write time through the texture readback.
             continue
         expected = _expected_readback(provider, spec, field)
         if expected is None:
@@ -1285,6 +1371,8 @@ def _expected_readback(provider: LightProvider, spec: Mapping[str, Any], field: 
         return float(spec[field])
     if field in BOOL_FIELDS:
         return bool(spec[field])
+    if field == "color_space":
+        return str(spec["color_space"])
     return None
 
 
@@ -1294,6 +1382,9 @@ def _field_readback(runtime: Any, node: Any, provider: LightProvider, field: str
         field = "shape"
     elif field == "units_value":
         field = "units"
+    if field == "color_space":
+        slot = read_first_attr(runtime, node, tuple(provider.controls.get("texture", ())))
+        return None if slot is None else _read_text(runtime, slot, provider.controls.get("color_space", ()))
     attributes = tuple(provider.controls.get(field, ()))
     if field in ("shape", "units"):
         return _read_enum(runtime, node, attributes)

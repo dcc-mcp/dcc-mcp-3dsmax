@@ -207,11 +207,9 @@ tools:
         color: *color_schema
         shadows: {type: boolean}
         provider: {type: string, enum: [auto, arnold, corona, photometric, vray, standard]}
-        shape:
-          type: string
-          enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]
+        shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
         shape_value: {type: integer, minimum: 0}
-        units: {type: string, enum: [renderer, default, normalized, w, lm, cd, candela, lx, lux, radiance]}
+        units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
         units_value: {type: integer, minimum: 0}
         exposure: {type: number}
         color_temperature: {type: number, minimum: 0, description: Color temperature in Kelvin.}
@@ -389,25 +387,27 @@ tools:
           description: Build and delete one light per factory to record real host support.
     output_schema: *output_schema
     timeout_hint_secs: 30
-    read_only: true
+    # probe=true builds one light per factory and deletes it again, so the tool
+    # is not read-only even though the default call only reads state.
+    read_only: false
     destructive: false
-    idempotent: true
-    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    idempotent: false
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false}
 
     intent: "Discover which light providers, shapes, units, and controls the host supports."
-    tool_role: read_only
-    risk: low
+    tool_role: action
+    risk: medium
     search_aliases:
       ["lighting_capabilities", "lighting capabilities", "light provider", "arnold light", "corona light"]
     side_effects:
-      creates: false
-      modifies: false
-      deletes: false
+      creates: true
+      modifies: true
+      deletes: true
       exports: false
       imports: false
       file_output: false
       render: false
-      targets: []
+      targets: ['scene_node', 'light']
     produces: ['lighting_capability_report']
 
   - name: create_renderer_light
@@ -440,13 +440,9 @@ tools:
               kind:
                 type: string
                 enum: [area, dome, photometric, sun, sky, omni, spot, directional, skylight]
-              shape:
-                type: string
-                enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh]
+              shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
               shape_value: {type: integer, minimum: 0}
-              units:
-                type: string
-                enum: [renderer, default, w, lm, cd, candela, lx, lux, radiance]
+              units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
               units_value: {type: integer, minimum: 0}
               position: *vector_schema
               target_position: *vector_schema
@@ -475,13 +471,9 @@ tools:
         kind:
           type: string
           enum: [area, dome, photometric, sun, sky, omni, spot, directional, skylight]
-        shape:
-          type: string
-          enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh]
+        shape: {type: string, enum: [quad, rectangle, plane, disk, disc, sphere, cylinder, mesh, environment, dome]}
         shape_value: {type: integer, minimum: 0}
-        units:
-          type: string
-          enum: [renderer, default, w, lm, cd, candela, lx, lux, radiance]
+        units: {type: string, enum: [renderer, default, w, lm, lumen, luminous_power, cd, candela, cd_m2, luminance, lx, lux, radiance, w_sr_m2, radiant_power]}
         units_value: {type: integer, minimum: 0}
         position: *vector_schema
         target_position: *vector_schema

@@ -62,7 +62,7 @@ server = dcc_mcp_3dsmax.start_server()
 - **README.md** — Installation, features, environment variables, quick start.
 - **install.md** — Agent-facing setup instructions.
 - **skills/dcc-mcp-3dsmax-setup/SKILL.md** — Automated setup skill.
-- **docs/BUNDLED_SKILLS.md** — Complete inventory of all 15 skill families and ~130 tools.
+- **docs/BUNDLED_SKILLS.md** — Complete inventory of every bundled skill family and its exported tools.
 - **docs/SIDECAR.md** — Runtime bridge protocol.
 - **examples/** — start_server.py, start_sidecar_bridge.py.
 
@@ -102,7 +102,10 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 
 ---
 
-## Bundled Skills (16 families, ~135 tools)
+## Bundled Skills (16 families)
+
+The table below is the authoritative inventory; `docs/BUNDLED_SKILLS.md` mirrors
+the same tool names in ``skill__tool`` form.
 
 | Skill | Stage | Tools |
 |-------|-------|-------|
