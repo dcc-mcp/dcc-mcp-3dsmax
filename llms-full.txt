@@ -247,7 +247,7 @@ server.shutdown()                  # stop and cleanup
 
 `3dsmax-display` (11): `list_layers`, `set_layer_properties`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property`
 
-`3dsmax-camera-lighting` (7): `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig`
+`3dsmax-camera-lighting` (10): `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig`, `create_vray_light`, `lighting_capabilities`, `create_renderer_light`
 
 `3dsmax-scripting` (8): `execute_python`, `execute_maxscript`, `run_python_check`, `list_runtime_symbols`, `inspect_runtime_symbol`, `list_macros`, `resolve_node_reference`, `reload_adapter_module`
 

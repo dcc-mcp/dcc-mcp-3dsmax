@@ -102,7 +102,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 
 ---
 
-## Bundled Skills (16 families, ~133 tools)
+## Bundled Skills (16 families, ~135 tools)
 
 | Skill | Stage | Tools |
 |-------|-------|-------|
@@ -121,7 +121,7 @@ def create_box(width: float = 100.0, height: float = 100.0, depth: float = 100.0
 | `3dsmax-viewport` | authoring | `capture_viewport` |
 | `3dsmax-validation` | authoring | `validate_naming`, `validate_transforms`, `validate_pivots`, `validate_mesh_topology`, `validate_smoothing_groups`, `validate_material_assignments`, `validate_texture_paths`, `validate_uv_channels`, `validate_uv_overlaps`, `run_asset_readiness_checks` |
 | `3dsmax-display` | authoring | `list_layers`, `create_layer`, `delete_layer`, `assign_nodes_to_layer`, `list_node_display_state`, `set_node_display_state`, `list_custom_properties`, `get_custom_property`, `set_custom_property`, `delete_custom_property` |
-| `3dsmax-camera-lighting` | authoring | `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig` |
+| `3dsmax-camera-lighting` | authoring | `list_cameras`, `list_lights`, `create_camera`, `set_active_camera`, `create_light`, `set_light_properties`, `create_three_point_light_rig`, `create_vray_light`, `lighting_capabilities`, `create_renderer_light` |
 
 ---
 
