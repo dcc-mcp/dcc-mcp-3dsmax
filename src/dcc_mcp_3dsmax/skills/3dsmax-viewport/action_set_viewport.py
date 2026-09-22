@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from dcc_mcp_3dsmax._render_utils import SETTING_REJECTED, SETTING_UNVERIFIED, render_error, render_success
+from dcc_mcp_3dsmax._render_utils import (
+    SETTING_APPLIED,
+    SETTING_REJECTED,
+    SETTING_UNVERIFIED,
+    render_error,
+    render_success,
+)
 from dcc_mcp_3dsmax._viewport_utils import (
     SHADING_MODES,
     VIEWPORT_LAYOUTS,
@@ -104,7 +110,9 @@ def main(
         "target": target,
         "viewport": viewport_summary(viewport),
         "options": rows,
-        "applied": [row["option"] for row in rows if row["status"] != SETTING_REJECTED],
+        # Only a verified read-back counts as applied; an unverified host is
+        # reported in warnings, the same way agent_viewport reports it.
+        "applied": [row["option"] for row in rows if row["status"] == SETTING_APPLIED],
         "rejected": [row["option"] for row in rejected],
         "warnings": warnings,
     }

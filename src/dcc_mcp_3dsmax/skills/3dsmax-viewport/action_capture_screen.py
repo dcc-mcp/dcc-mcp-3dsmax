@@ -20,7 +20,14 @@ def main(
     overwrite: bool = False,
 ) -> Dict[str, Any]:
     """Capture the desktop, optionally cropped to the V-Ray / Corona / FStorm frame buffer."""
-    target = output_path or str(Path(tempfile.gettempdir()) / "dcc_mcp_3dsmax_screen.png")
+    if output_path:
+        target = output_path
+    else:
+        # The default target is scratch space, so overwriting it is expected;
+        # requiring overwrite=true would make every default call fail after
+        # the first one.
+        target = str(Path(tempfile.gettempdir()) / "dcc_mcp_3dsmax_screen.png")
+        overwrite = True
     path, error = validate_output_path(target, allowed_extensions=IMAGE_EXTENSIONS, overwrite=overwrite)
     if error is not None:
         return error

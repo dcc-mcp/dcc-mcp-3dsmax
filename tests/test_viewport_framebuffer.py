@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from dcc_mcp_3dsmax import _viewport_utils as viewport_utils  # noqa: E402
 
 VIEWPORT_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-viewport"
+RENDER_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-render"
 
 
 def _load_action(script_name: str):
     path = VIEWPORT_SKILL_DIR / script_name
     spec = importlib.util.spec_from_file_location(path.stem + "_viewport_test_module", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_render_action(script_name: str):
+    """Load an action from the render skill (vray_ipr lives there)."""
+    path = RENDER_SKILL_DIR / script_name
+    spec = importlib.util.spec_from_file_location(path.stem + "_vp_render_test_module", str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -653,6 +664,81 @@ def test_set_viewport_assigns_and_verifies_a_camera(monkeypatch):
     assert missing["success"] is False
 
 
+def test_capture_multi_view_protects_the_contact_sheet(monkeypatch, tmp_path):
+    """The contact sheet is an output of this call, so overwrite guards it too."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    action = _load_action("action_capture_multi_view.py")
+    (tmp_path / "multi_view.png").write_text("old", encoding="utf-8")
+
+    result = action.main(str(tmp_path), views=["front"], composite=True)
+
+    assert result["success"] is False
+    assert "already exist" in result["message"]
+    assert any("multi_view.png" in path for path in result["data"]["existing"])
+    assert runtime.viewport.switches == []
+
+
+def test_capture_multi_view_validates_the_contact_sheet_path(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    action = _load_action("action_capture_multi_view.py")
+
+    bad_extension = action.main(str(tmp_path), views=["front"], sheet_path=str(tmp_path / "sheet.txt"))
+    assert bad_extension["success"] is False
+    assert "extension" in bad_extension["message"]
+
+    missing_dir = action.main(str(tmp_path), views=["front"], sheet_path=str(tmp_path / "nope" / "sheet.png"))
+    assert missing_dir["success"] is False
+    assert "directory does not exist" in missing_dir["message"]
+
+
+def test_capture_screen_default_path_is_reusable(monkeypatch, tmp_path):
+    """The default target is scratch space: default calls must not collide."""
+    _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    action = _load_action("action_capture_screen.py")
+
+    first = action.main()
+    second = action.main()
+
+    assert first["success"] is True and second["success"] is True
+    assert first["data"]["artifact"]["path"] == second["data"]["artifact"]["path"]
+
+
+def test_capture_screen_still_guards_an_explicit_path(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    target = tmp_path / "vfb.png"
+    target.write_text("old", encoding="utf-8")
+
+    result = _load_action("action_capture_screen.py").main(str(target))
+
+    assert result["success"] is False
+    assert "already exists" in result["message"]
+
+
+def test_set_viewport_counts_only_verified_writes_as_applied(monkeypatch):
+    """An unverified write is reported in warnings, not counted as applied."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+
+    class _SilentViewport(_Viewport):
+        def __init__(self) -> None:
+            super().__init__("perspective")
+            self.calls: list = []
+
+        def setGridVisibility(self, value):  # noqa: N802 - mirrors pymxs naming.
+            self.calls.append(value)
+
+    silent = _SilentViewport()
+    del silent.showGrid
+    runtime.viewport = silent
+
+    result = _load_action("action_set_viewport.py").main(target="active", grid=False, edged_faces=True)
+
+    assert result["success"] is True
+    assert result["data"]["applied"] == ["edged_faces"]
+    assert silent.calls == [False]
+    assert any("did not report" in warning for warning in result["data"]["warnings"])
+
+
 def test_set_viewport_active_target_reports_unverified_writes(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
 
@@ -877,6 +963,116 @@ class _RectBox:
         self.height = height
 
 
+class _Flag:
+    """Descriptor that records writes to a runtime attribute."""
+
+    def __init__(self) -> None:
+        self.opened: list = []
+
+    def __set__(self, instance, value):
+        self.opened.append(value)
+
+    def __get__(self, instance, owner=None):
+        return False
+
+
+def test_capture_multi_view_reports_a_camera_that_was_moved(monkeypatch, tmp_path):
+    """Orbiting leaves the view token untouched: only the transform changes.
+
+    Comparing the token alone would report the user's camera as restored while
+    it is looking somewhere else, with no warning at all.
+    """
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.viewport.view = "perspective"
+    original_tm = runtime.viewport.tm
+    moved = _Matrix([(2, 0, 0), (0, 2, 0), (0, 0, 2), (10, 10, 10)])
+
+    def capture_and_move(path):
+        runtime.viewport.tm = moved
+        Path(path).write_text("viewport", encoding="utf-8")
+
+    runtime.captureViewport = capture_and_move
+    # A host that accepts setTM and ignores it: the transform stays moved.
+    runtime.viewport.setTM = lambda matrix: None
+
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is False
+    assert result["data"]["view_restored"] is False
+    assert "still reads" in result["message"]
+    assert runtime.viewport.tm is not original_tm
+
+
+def test_capture_multi_view_restores_both_the_view_and_the_transform(monkeypatch, tmp_path):
+    """A host that restores both halves is reported as restored."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.viewport.view = "perspective"
+    original_tm = runtime.viewport.tm
+
+    result = _load_action("action_capture_multi_view.py").main(
+        str(tmp_path), views=["top", "front"], composite=False
+    )
+
+    assert result["success"] is True
+    assert result["data"]["view_restored"] is True
+    assert runtime.viewport.view == "perspective"
+    assert runtime.viewport.tm is original_tm
+
+
+def test_vray_ipr_maps_host_state_tokens(monkeypatch):
+    """A value contract like "stopped" must not be coerced with bool()."""
+
+    class _TokenRenderer(_Renderer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.state = "#stopped"
+            self.started = []
+            self.stopped = []
+
+        def vrayGetIPRState(self):  # noqa: N802 - mirrors pymxs naming.
+            return self.state
+
+        def startIPR(self):  # noqa: N802 - mirrors pymxs naming.
+            self.started.append("start")
+            self.state = "#running"
+
+        def stopIPR(self):  # noqa: N802 - mirrors pymxs naming.
+            self.stopped.append("stop")
+            self.state = "#stopped"
+
+    renderer = _TokenRenderer()
+    _install_fake_pymxs(monkeypatch, _Runtime(renderer=renderer))
+    action = _load_render_action("action_vray_ipr.py")
+
+    status = action.main("status")
+    assert status["success"] is True
+    assert status["data"]["running"] is False
+
+    started = action.main("start")
+    assert started["success"] is True
+    assert started["data"]["running"] is True
+
+    stopped = action.main("stop")
+    assert stopped["success"] is True
+    assert stopped["data"]["running"] is False
+
+
+def test_vray_ipr_reports_an_uninterpretable_state_as_unknown(monkeypatch):
+    """A host value this adapter cannot read is unknown, not a guess."""
+
+    class _OddRenderer(_Renderer):
+        def vrayGetIPRState(self):  # noqa: N802 - mirrors pymxs naming.
+            return "rendering-frame-3"
+
+    _install_fake_pymxs(monkeypatch, _Runtime(renderer=_OddRenderer()))
+
+    result = _load_render_action("action_vray_ipr.py").main("status")
+
+    assert result["success"] is True
+    assert result["data"]["running"] is None
+    assert any("cannot interpret" in warning for warning in result["data"]["warnings"])
+
+
 def test_opening_the_frame_buffer_reports_a_failure(monkeypatch, tmp_path):
     """A frame buffer that cannot be brought forward is a warning, not silence."""
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
@@ -904,18 +1100,13 @@ def test_opening_the_frame_buffer_reports_a_host_without_a_contract(monkeypatch,
 
 def test_opening_the_frame_buffer_through_an_attribute(monkeypatch, tmp_path):
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
-    opened: list = []
 
-    class _Flag:
-        def __set__(self, instance, value):
-            opened.append(value)
-
-        def __get__(self, instance, owner=None):
-            return False
-
-    type(runtime).showVFB = _Flag()
+    # monkeypatch instead of assigning onto the class so the descriptor does
+    # not leak into any later test.
+    flag = _Flag()
+    monkeypatch.setattr(type(runtime), "showVFB", flag, raising=False)
 
     result = _load_action("action_capture_screen.py").main(str(tmp_path / "vfb.png"), source="vray")
 
     assert result["success"] is True
-    assert opened == [True]
+    assert flag.opened == [True]

@@ -509,10 +509,10 @@ tools:
 
   - name: render_automations
     description: >-
-      Arm a completion signal for the next render and report when it finishes.
-      The host writes a JSON signal file when the render completes; the tool
-      waits for that file and returns the record. Use wait=false to arm the
-      signal and poll the returned signal_file yourself.
+      Arm a completion signal for the next render and, when wait=true, report
+      when it finishes. The host writes a JSON signal file when the render
+      completes. Waiting blocks the calling thread, so the default is
+      wait=false: arm the signal and poll the returned signal_file yourself.
     source_file: action_render_automations.py
     execution: sync
     affinity: main
@@ -526,7 +526,7 @@ tools:
           items: {type: string, enum: [log, notify, save_output]}
           description: Automations to run on completion. Defaults to ["log"].
         wait:
-          {type: boolean, default: true, description: Wait for the render to finish and report it.}
+          {type: boolean, default: false, description: "Wait for the render to finish and report it. Waits block the calling thread, so the default is false (arm and poll signal_file)."}
         timeout_sec:
           {type: number, minimum: 0, default: 120, description: How long to wait for the completion signal.}
         signal_file:

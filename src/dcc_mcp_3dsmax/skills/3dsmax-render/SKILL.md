@@ -78,7 +78,14 @@ under `unverified` when a host rejects them, and never fail the preset itself.
 
 `render_automations` arms the host to report when the *next* render finishes:
 it registers a post-render callback whose MAXScript body writes a JSON signal
-file, waits for that file, and returns the record.
+file. The default is `wait=false`: the call arms the signal and returns the
+file for the caller to poll. `wait=true` blocks the calling thread, and on a
+host that runs skill scripts on the 3ds Max main thread the `#postRender`
+callback cannot be processed during the wait, so polling is the safe default.
+
+Values written into the signal file are JSON-encoded first and MAXScript-escaped
+second, so Windows output paths survive both un-escaping steps and the record
+parses as JSON.
 
 - an unsupported action is a failure, never an ignored keyword
 - a host that refuses the callback is a failure, never an armed-looking success

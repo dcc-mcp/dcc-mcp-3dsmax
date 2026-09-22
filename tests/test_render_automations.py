@@ -24,6 +24,10 @@ from dcc_mcp_3dsmax import _viewport_utils as viewport_utils  # noqa: E402
 
 RENDER_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-render"
 
+# 3ds Max only runs on Windows, so paths carry backslashes. Built from chr(92)
+# to keep the literals in this file unambiguous.
+BS = chr(92)
+
 
 def _load_action(script_name: str):
     path = RENDER_SKILL_DIR / script_name
@@ -50,7 +54,7 @@ class _Callbacks:
     def addScript(self, symbol: Any, script: str, id: Optional[str] = None) -> Any:  # noqa: N802, A002
         if self.raise_on_add:
             raise RuntimeError("callback system is locked")
-        key = str(id or symbol)
+        key = id if id is not None else symbol
         self._scripts[key] = script
         self.added.append(key)
         return True
@@ -58,13 +62,12 @@ class _Callbacks:
     def removeScripts(self, id: Optional[str] = None) -> Any:  # noqa: N802, A002
         if self.raise_on_remove:
             raise RuntimeError("callback system is locked")
-        key = str(id)
-        self._scripts.pop(key, None)
-        self.removed.append(key)
+        self._scripts.pop(id, None)
+        self.removed.append(id)
         return True
 
     def getScript(self, id: str) -> Any:  # noqa: N802, A002
-        return self._scripts.get(str(id))
+        return self._scripts.get(id)
 
 
 class _SilentCallbacks(_Callbacks):
@@ -296,6 +299,26 @@ def _format_literal(script: str) -> str:
     return line[len('format "') : line.rindex('" (localTime)')]
 
 
+def _as_maxscript_writes_it(literal: str, timestamp: str = "2026-01-01 00:00:00") -> str:
+    """Replay what MAXScript does: un-escape the literal, then fill in the
+
+    single ``%`` placeholder from the argument list and collapse ``%%``.
+    """
+    out: list = []
+    escapes = {"n": "\n", "t": "\t", "r": "\r"}
+    index = 0
+    while index < len(literal):
+        char = literal[index]
+        if char == "\\" and index + 1 < len(literal):
+            out.append(escapes.get(literal[index + 1], literal[index + 1]))
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    unescaped = "".join(out)
+    return re.sub(r"(?<!%)%(?!%)", timestamp, unescaped).replace("%%", "%")
+
+
 def test_signal_script_writes_a_json_record(tmp_path):
     target = tmp_path / "signal.json"
     script = signals.build_signal_script(
@@ -311,7 +334,8 @@ def test_signal_script_writes_a_json_record(tmp_path):
     assert "abc123" in script
     assert '\\"log\\", \\"notify\\"' in script
     assert '\\"completed\\": true' in script
-    assert 'done \\"now\\"' in script
+    # A quote inside a value is JSON-escaped first and MAXScript-escaped second.
+    assert 'done \\\\\\\"now\\\\\\\"' in script
 
 
 def test_signal_script_escapes_every_quote_inside_the_format_string(tmp_path):
@@ -334,8 +358,10 @@ def test_signal_script_escapes_every_quote_inside_the_format_string(tmp_path):
     assert '"' not in literal.replace('\\"', "")
     # One single "%" (the localTime placeholder); every other one is doubled.
     assert literal.replace("%%", "").count("%") == 1
-    assert '\\"lab\\"el\\"' in literal
-    assert '50%% done \\"now\\"' in literal
+    # A JSON quote is MAXScript-escaped once; a quote inside a value is
+    # JSON-escaped first, so it carries both escapes.
+    assert '\\"lab\\\\\\"el\\"' in literal
+    assert '50%% done \\\\\\"now\\\\\\"' in literal
     assert '\\"actions\\": [\\"log\\", \\"notify\\", \\"save_output\\"]' in literal
 
 
@@ -362,6 +388,169 @@ def test_signal_script_keeps_the_json_parseable_after_maxscript_unescaping(tmp_p
     assert record["label"] == "nightly render"
     assert record["time"] == "2026-01-01 00:00:00"
     assert record["output_path"] == "C:/out/frame.png"
+
+
+def test_signal_script_survives_windows_paths(monkeypatch, tmp_path):
+    """Windows backslashes must reach the file as valid JSON.
+
+    3ds Max only runs on Windows, so output paths carry backslashes. Escaping
+    for MAXScript alone leaves single backslashes in the file, where the JSON
+    parser rejects them -- and the wait loop then reports a timeout for a
+    render that already finished.
+    """
+    signal_path = tmp_path / "signal.json"
+    windows_paths = [
+        "C:" + BS + "renders" + BS + "frame_0001.png",
+        "D:" + BS + "shows" + BS + "demo" + BS + "v2" + BS + "final.exr",
+        BS + BS + "server" + BS + "share" + BS + "beauty.png",
+    ]
+    for output_path in windows_paths:
+        script = signals.build_signal_script(
+            signal_path,
+            signal_id="abc123",
+            label="nightly",
+            actions=["log", "save_output"],
+            message="50% done",
+            output_path=output_path,
+        )
+        literal = _format_literal(script)
+        written = _as_maxscript_writes_it(literal)
+
+        record = json.loads(written)
+        assert record["output_path"] == output_path
+        assert record["signal_id"] == "abc123"
+        assert record["message"] == "50% done"
+        assert record["actions"] == ["log", "save_output"]
+
+
+def test_signal_script_survives_a_path_with_a_json_escape_sequence(tmp_path):
+    r"""A path segment like
+ew is a legal JSON escape, so it would corrupt
+    the record silently instead of failing to parse."""
+    script = signals.build_signal_script(
+        tmp_path / "signal.json",
+        signal_id="abc",
+        label="nightly",
+        actions=["log"],
+        message="done",
+        output_path="C:" + BS + "new" + BS + "table" + BS + "beauty.png",
+    )
+    written = _as_maxscript_writes_it(_format_literal(script))
+
+    record = json.loads(written)
+    assert record["output_path"] == "C:" + BS + "new" + BS + "table" + BS + "beauty.png"
+
+
+def test_wait_for_signal_parses_a_record_written_with_windows_paths(monkeypatch, tmp_path):
+    """The wait loop must accept the file the generated script produces."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+    signal_file = tmp_path / "signal.json"
+    script = signals.build_signal_script(
+        signal_file,
+        signal_id="abc123",
+        label="nightly",
+        actions=["log"],
+        message="50% done",
+        output_path="C:" + BS + "renders" + BS + "frame_0001.png",
+    )
+    written = _as_maxscript_writes_it(_format_literal(script))
+
+    def render_then_wait(interval):
+        signal_file.write_text(written, encoding="utf-8")
+
+    result = signals.render_automations(
+        runtime,
+        actions=["log"],
+        wait=True,
+        timeout_sec=1.0,
+        signal_file=str(signal_file),
+        sleep=render_then_wait,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["status"] == "completed"
+    assert result["data"]["record"]["output_path"] == "C:" + BS + "renders" + BS + "frame_0001.png"
+
+
+def test_render_automations_reports_a_corrupt_signal_as_invalid_not_timeout(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+    signal_file = tmp_path / "signal.json"
+
+    def render_then_wait(interval):
+        signal_file.write_text("{not json", encoding="utf-8")
+
+    result = signals.render_automations(
+        runtime,
+        actions=["log"],
+        wait=True,
+        timeout_sec=0.05,
+        signal_file=str(signal_file),
+        sleep=render_then_wait,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["status"] == "invalid_signal"
+
+
+def test_wait_is_opt_in(monkeypatch, tmp_path):
+    """Waiting blocks the calling thread, so the tool arms by default."""
+    _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+
+    armed = _load_action("action_render_automations.py").main(
+        actions=["log"], signal_file=str(tmp_path / "signal.json")
+    )
+
+    assert armed["success"] is True
+    assert armed["data"]["armed"] is True
+    assert "completed" not in armed["data"]
+
+
+def test_wait_warns_that_it_blocks_the_calling_thread(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
+
+    result = _load_action("action_render_automations.py").main(
+        actions=["log"], wait=True, timeout_sec=0.05, signal_file=str(tmp_path / "signal.json")
+    )
+
+    assert result["success"] is False
+    assert any("blocks the calling thread" in warning for warning in result["data"]["warnings"])
+
+
+def test_callback_ids_are_wrapped_as_host_names(monkeypatch, tmp_path):
+    """MAXScript takes the callback id as a name literal, not a bare string."""
+    callbacks = _Callbacks()
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=callbacks))
+    runtime.name = lambda value: _Name(value)
+    action = _load_action("action_render_automations.py")
+
+    armed = action.main(actions=["log"], wait=False, signal_file=str(tmp_path / "signal.json"))
+    signal_id = armed["data"]["signal_id"]
+
+    assert [str(key).lstrip("#") for key in callbacks.added] == [signal_id]
+    assert all(isinstance(key, _Name) and key.value == signal_id for key in callbacks.scripts)
+
+    disarmed = action.main(disarm=True)
+    assert disarmed["success"] is True
+    assert [str(key).lstrip("#") for key in callbacks.removed] == [signal_id]
+    assert callbacks.scripts == {}
+
+
+class _Name:
+    """Stand-in for a pymxs name literal (``rt.name('postRender')``)."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, _Name):
+            return other.value == self.value
+        return str(other).lstrip("#") == self.value
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __repr__(self) -> str:
+        return "#{}".format(self.value)
 
 
 def test_render_automations_rejects_actions_passed_as_a_bare_string(monkeypatch, tmp_path):
@@ -530,6 +719,43 @@ def test_render_automations_removes_a_stale_signal_file(monkeypatch, tmp_path):
     assert any("stale signal file" in warning for warning in result["data"]["warnings"])
 
 
+def test_render_automations_stays_armed_when_the_host_keeps_the_callback(monkeypatch, tmp_path):
+    """A completed render whose callback stayed registered is still armed."""
+    callbacks = _Callbacks()
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=callbacks))
+    signal_file = tmp_path / "signal.json"
+    record = {"completed": True, "signal_id": "abc", "time": "now"}
+
+    def render_then_wait(interval):
+        signal_file.write_text(json.dumps(record), encoding="utf-8")
+
+    # The host re-registers the callback right after removing it: the removal
+    # cannot be confirmed, so the signal stays armed instead of being forgotten.
+    original_remove = callbacks.removeScripts
+
+    def remove_then_keep(id=None):
+        original_remove(id)
+        callbacks._scripts[id if id is not None else "abc"] = "kept"
+
+    callbacks.removeScripts = remove_then_keep
+
+    result = signals.render_automations(
+        runtime,
+        actions=["log"],
+        wait=True,
+        timeout_sec=1.0,
+        signal_file=str(signal_file),
+        label="nightly",
+        sleep=render_then_wait,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["status"] == "completed"
+    assert result["data"]["cleanup"]["removed"] is False
+    assert result["data"]["armed"] is True
+    assert "nightly" in signals.armed_signals()
+
+
 def test_render_automations_keeps_the_record_when_removal_fails(monkeypatch, tmp_path):
     """A callback the host kept must stay in the registry.
 
@@ -566,7 +792,7 @@ def test_render_automations_refuses_to_rearm_over_a_stuck_signal(monkeypatch, tm
     assert signals.armed_signals().get("nightly", {}).get("signal_id") == first["data"]["signal_id"]
 
 
-def test_render_automations_reports_still_armed_when_cleanup_fails(monkeypatch, tmp_path):
+def test_render_automations_reports_completed_and_disarmed_on_success(monkeypatch, tmp_path):
     """A completed render whose callback stayed registered is still armed."""
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(callbacks=_Callbacks()))
     signal_file = tmp_path / "signal.json"

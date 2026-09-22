@@ -11,7 +11,7 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 @with_max
 def main(
     actions: Optional[Sequence[str]] = None,
-    wait: bool = True,
+    wait: bool = False,
     timeout_sec: float = 120.0,
     signal_file: Optional[str] = None,
     message: Optional[str] = None,

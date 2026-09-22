@@ -49,7 +49,11 @@ def render_automations(
     runtime: Any,
     *,
     actions: Optional[Sequence[str]] = None,
-    wait: bool = True,
+    # Waiting blocks the calling thread. On a host that marshals skill scripts
+    # onto the 3ds Max main thread, the #postRender callback cannot be
+    # processed during the wait, so arming and polling is the safe default and
+    # waiting is opt-in.
+    wait: bool = False,
     timeout_sec: float = 120.0,
     signal_file: Optional[str] = None,
     message: Optional[str] = None,
@@ -159,6 +163,10 @@ def render_automations(
     }
     if not wait:
         return render_success("Render automation armed; poll the signal file for completion", **data)
+    warnings.append(
+        "Waiting blocks the calling thread; on a main-thread host the #postRender "
+        "callback cannot be processed while waiting, so prefer wait=false and polling"
+    )
 
     completed, payload, wait_error = _wait_for_signal(
         signal_path, timeout=timeout, poll_interval=poll_interval, sleeper=sleep or time.sleep
@@ -167,9 +175,13 @@ def render_automations(
         data["completed"] = False
         data["status"] = "timeout"
         if wait_error is not None:
+            # A signal file that exists but cannot be parsed is not a timeout:
+            # something wrote it, and reporting a timeout would send the caller
+            # looking for a render that already finished.
             cleanup = _disarm(runtime, record, warnings)
             data["armed"] = not cleanup["removed"]
             data["cleanup"] = cleanup
+            data["status"] = "invalid_signal"
             data["errors"] = [{"setting": "signal_file", "error": wait_error}]
             return render_error(wait_error, **data)
         data["armed"] = True
@@ -227,24 +239,24 @@ def build_signal_script(
 ) -> str:
     """Build the MAXScript body that writes the completion signal file.
 
-    Every quote that reaches the inside of the MAXScript ``format`` string is
-    escaped. A bare ``"`` would terminate the string literal and turn the rest
-    of the script into a syntax error, so the callback would either be
-    rejected at registration or would fail when it fires -- in both cases no
-    completion record is ever written.
+    The body has to survive two un-escaping steps: MAXScript reads the string
+    literal, and the file it writes is parsed as JSON. Every value is therefore
+    encoded as a JSON literal first and MAXScript-escaped second. A Windows
+    path escaped for MAXScript alone would reach the file as
+    ``C:\\out\\frame.png``, where ``\\o`` is not a legal JSON escape.
     """
-    actions_literal = ", ".join('\\"{}\\"'.format(_maxscript_escape(action)) for action in actions)
+    actions_literal = ", ".join(_json_literal(action) for action in actions)
     lines = [
         "(",
         "local dccMcpSignalPath = @\"{}\"".format(str(signal_path).replace('"', "")),
         "local dccMcpSignal = createFile dccMcpSignalPath",
         "if dccMcpSignal != undefined then (",
-        "format \"{{\\\"completed\\\": true, \\\"signal_id\\\": \\\"{}\\\", \\\"label\\\": \\\"{}\\\", ".format(
-            _maxscript_escape(signal_id), _maxscript_escape(label)
+        "format \"{{\\\"completed\\\": true, \\\"signal_id\\\": {}, \\\"label\\\": {}, ".format(
+            _json_literal(signal_id), _json_literal(label)
         )
         + "\\\"time\\\": \\\"%\\\", \\\"actions\\\": [{}], ".format(actions_literal)
-        + "\\\"output_path\\\": \\\"{}\\\", \\\"message\\\": \\\"{}\\\"}}\\n\" ".format(
-            _maxscript_escape(output_path), _maxscript_escape(message)
+        + "\\\"output_path\\\": {}, \\\"message\\\": {}}}\\n\" ".format(
+            _json_literal(output_path), _json_literal(message)
         )
         + "(localTime) to:dccMcpSignal",
         "close dccMcpSignal",
@@ -254,6 +266,16 @@ def build_signal_script(
         ")",
     ]
     return "\n".join(lines)
+
+
+def _json_literal(value: Any) -> str:
+    """Return a MAXScript-escaped JSON literal for one signal field.
+
+    ``json.dumps`` produces the JSON encoding (quotes included); the second
+    step escapes it again so the MAXScript string literal survives being read
+    back. MAXScript un-escapes when it writes the file, leaving valid JSON.
+    """
+    return _maxscript_escape(json.dumps("" if value is None else str(value)))
 
 
 def _maxscript_escape(value: str) -> str:
@@ -307,11 +329,14 @@ def _register_callback(runtime: Any, signal_id: str, script: str) -> Tuple[Dict[
     symbol = _callback_symbol(runtime, POST_RENDER_SYMBOL)
     probed = ["{}({!r}, script)".format(adder[0], symbol)]
     error: Optional[str] = None
+    # MAXScript takes the callback id as a name literal (``id:#my_id``), the
+    # same way it takes the callback type, so the id is wrapped as well.
+    symbol_id = _callback_symbol(runtime, signal_id)
     for args, kwargs in (
-        ((symbol, script), {"id": signal_id}),
-        ((symbol,), {"script": script, "id": signal_id}),
+        ((symbol, script), {"id": symbol_id}),
+        ((symbol,), {"script": script, "id": symbol_id}),
         ((symbol, script), {}),
-        ((symbol, script, signal_id), {}),
+        ((symbol, script, symbol_id), {}),
     ):
         try:
             handle = adder[1](*args, **kwargs)
@@ -366,7 +391,10 @@ def _remove_callback(runtime: Any, record: Mapping[str, Any]) -> Dict[str, Any]:
         result["error"] = "The host exposes no callback removal method"
         result["warnings"].append(result["error"])
         return result
-    for args, kwargs in (((signal_id,), {}), ((), {"id": signal_id})):
+    # ``removeScripts`` takes the id by keyword, and as a name literal; the
+    # positional form is only a fallback for hosts that accept it.
+    symbol_id = _callback_symbol(runtime, signal_id)
+    for args, kwargs in (((), {"id": symbol_id}), ((symbol_id,), {}), ((signal_id,), {})):
         try:
             remover[1](*args, **kwargs)
             break

@@ -1022,11 +1022,24 @@ def _verify_user_view(
 
 
 def _state_matches(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """Report whether the viewport is back where it started.
+
+    Both halves of the snapshot are compared whenever they are available. A
+    view token alone cannot detect a moved camera: orbiting or panning a
+    perspective view leaves the token untouched and only changes the
+    transform, so comparing the token would report "restored" for a viewport
+    that is looking somewhere else. Nothing comparable means not restored.
+    """
+    compared = False
     if before.get("view") is not None and after.get("view") is not None:
-        return _view_matches(after["view"], _view_token(before["view"]))
+        if not _view_matches(after["view"], _view_token(before["view"])):
+            return False
+        compared = True
     if before.get("tm") is not None and after.get("tm") is not None:
-        return _tm_matches(after["tm"], before["tm"])
-    return False
+        if not _tm_matches(after["tm"], before["tm"]):
+            return False
+        compared = True
+    return compared
 
 
 def viewport_summary(viewport: Any) -> Dict[str, Any]:
@@ -1290,6 +1303,12 @@ IPR_REFRESH_CALLABLES = ("vrayRefreshIPR", "vrayUpdateIPR", "refreshIPR", "updat
 IPR_STATE_CALLABLES = ("vrayIsIPRRunning", "isIPRRunning", "vrayGetIPRState", "getIPRState")
 IPR_STATE_ATTRS = ("IPRRunning", "iprRunning", "isIPRRunning", "ipr_running")
 
+# Some state contracts answer with a value instead of a flag ("stopped",
+# #idle). Coercing those with bool() would report a stopped preview as running,
+# so only known tokens are mapped and anything else is reported as unknown.
+IPR_STATE_TRUE = ("true", "running", "started", "active", "on", "yes", "1")
+IPR_STATE_FALSE = ("false", "stopped", "idle", "off", "no", "0", "inactive", "ready", "none")
+
 
 def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
     """Start, stop, refresh, or query the V-Ray interactive preview."""
@@ -1308,11 +1327,7 @@ def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
     }
     if action == "status":
         if state is None:
-            data["warnings"].append(
-                "The host exposes no V-Ray IPR state contract, so the preview state is unknown (probed: {})".format(
-                    ", ".join(list(IPR_STATE_CALLABLES) + list(IPR_STATE_ATTRS))
-                )
-            )
+            data["warnings"].append(_ipr_unknown_reason(state_contract))
             return render_success("V-Ray IPR state is unknown on this host", **data)
         return render_success("V-Ray IPR is {}".format("running" if state else "stopped"), **data)
 
@@ -1342,9 +1357,9 @@ def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
     data["running"] = after
     data["state_contract"] = after_contract
     data["contract"] = owner
-    if after_contract is None:
+    if after is None:
         data["warnings"].append(
-            "The host exposes no V-Ray IPR state contract, so the {} result is unverified".format(action)
+            "{}; the {} result is unverified".format(_ipr_unknown_reason(after_contract), action)
         )
         return render_success("V-Ray IPR {} was requested but not verified".format(action), **data)
     expected = action in ("start", "refresh")
@@ -1362,27 +1377,67 @@ def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
     )
 
 
+def _ipr_unknown_reason(contract: Optional[str]) -> str:
+    """Explain why the IPR preview state could not be established."""
+    if contract is None:
+        return (
+            "The host exposes no V-Ray IPR state contract, so the preview state is unknown (probed: {})"
+        ).format(", ".join(list(IPR_STATE_CALLABLES) + list(IPR_STATE_ATTRS)))
+    return (
+        "The host IPR state contract {} reported a value this adapter cannot interpret, "
+        "so the preview state is unknown instead of guessed"
+    ).format(contract)
+
+
 def ipr_state(runtime: Any, renderer: Any) -> Tuple[Optional[bool], Optional[str]]:
-    """Read the V-Ray IPR running state, or ``(None, None)`` when unreadable."""
+    """Read the V-Ray IPR running state.
+
+    Returns ``(True/False, contract)`` when a contract answers with a value
+    this adapter understands, and ``(None, contract)`` when the host reports
+    nothing usable -- never a guess.
+    """
     targets: List[Any] = [renderer] if renderer is not None else []
     targets.append(runtime)
+    reported: Optional[str] = None
     for target in targets:
         for name in IPR_STATE_CALLABLES:
             func = _safe_getattr(target, name)
             if not callable(func):
                 continue
             try:
-                return bool(func()), name
+                flag = ipr_state_flag(func())
             except Exception:  # noqa: BLE001 - try the next contract.
                 continue
+            reported = reported or name
+            if flag is not None:
+                return flag, name
         for attribute in IPR_STATE_ATTRS:
             if not attr_present(runtime, target, attribute):
                 continue
             value = _safe_getattr(target, attribute)
             if value is None:
                 continue
-            return bool(value), attribute
-    return None, None
+            reported = reported or attribute
+            flag = ipr_state_flag(value)
+            if flag is not None:
+                return flag, attribute
+    return None, reported
+
+
+def ipr_state_flag(value: Any) -> Optional[bool]:
+    """Map one host IPR state value to a flag, or ``None`` when unrecognized."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if value is None:
+        return None
+    text = str(value).strip().lower().lstrip("#")
+    if text in IPR_STATE_TRUE:
+        return True
+    if text in IPR_STATE_FALSE:
+        return False
+    return None
 
 
 def ipr_callable_names(action: str) -> Tuple[str, ...]:
