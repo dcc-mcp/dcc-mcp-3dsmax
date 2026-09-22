@@ -574,6 +574,60 @@ def test_agent_viewport_close_reports_a_host_with_no_close_contract(monkeypatch)
     assert result["data"]["probed"]["methods"]
 
 
+def test_agent_viewport_close_reports_an_unverifiable_close(monkeypatch):
+    """A host with no lookup contract cannot confirm the close.
+
+    Reporting closed=True with an empty warning list would claim the opposite
+    of what the adapter can prove, and would drop the registry entry for a
+    viewport that may still be open.
+    """
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    # Host has a factory and a working close(), but no lookup contract.
+    handle = _Viewport("top")
+    handle.close = lambda: None
+    runtime.createExtendedViewport = lambda name=None: handle
+    action = _load_action("action_agent_viewport.py")
+    action.main(action="ensure")
+
+    result = action.main(action="close")
+
+    assert result["success"] is True
+    assert result["data"]["closed"] is False
+    assert result["data"]["verified"] is False
+    assert any("no viewport lookup contract" in warning for warning in result["data"]["warnings"])
+    assert result["data"]["warnings"], "an unverifiable close must not be silent"
+    # The registry keeps the entry, so status cannot claim it is gone.
+    assert action.main(action="status")["data"]["exists"] is True
+
+
+def test_agent_viewport_close_is_confirmed_when_the_host_looks_it_up(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+    runtime.enable_agent_viewport_factory()
+    action = _load_action("action_agent_viewport.py")
+    action.main(action="ensure")
+
+    result = action.main(action="close")
+
+    assert result["success"] is True
+    assert result["data"]["closed"] is True
+    assert result["data"]["verified"] is True
+    assert action.main(action="status")["data"]["exists"] is False
+
+
+def test_lookup_agent_viewport_reports_whether_the_host_answered(monkeypatch):
+    """None alone cannot express 'gone' versus 'the host never answered'."""
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
+
+    assert viewport_utils.lookup_agent_viewport(runtime, "nope") == (None, False)
+
+    runtime.getExtendedViewport = lambda name: None
+    assert viewport_utils.lookup_agent_viewport(runtime, "nope") == (None, True)
+
+    handle = _Viewport("top")
+    runtime.getExtendedViewport = lambda name: handle
+    assert viewport_utils.lookup_agent_viewport(runtime, "nope") == (handle, True)
+
+
 def test_agent_viewport_registry_is_scoped_to_the_host(monkeypatch):
     """A viewport from one host must not be handed to another."""
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))

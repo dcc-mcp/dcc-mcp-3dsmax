@@ -822,6 +822,19 @@ def find_agent_viewport(runtime: Any, name: str) -> Any:
 
 def host_agent_viewport(runtime: Any, name: str) -> Any:
     """Ask the host whether it still exposes the named agent viewport."""
+    found, _verified = lookup_agent_viewport(runtime, name)
+    return found
+
+
+def lookup_agent_viewport(runtime: Any, name: str) -> Tuple[Any, bool]:
+    """Ask the host for the named viewport, reporting whether it answered.
+
+    ``None`` is ambiguous on its own: the host may be reporting that no such
+    viewport exists, or it may expose no lookup contract at all. Callers that
+    need to distinguish "gone" from "cannot tell" use the second element:
+    ``(None, True)`` means the host confirmed it is gone, ``(None, False)``
+    means the host never answered.
+    """
     for lookup in AGENT_VIEWPORT_LOOKUPS:
         func = _safe_getattr(runtime, lookup)
         if not callable(func):
@@ -831,13 +844,12 @@ def host_agent_viewport(runtime: Any, name: str) -> Any:
         except TypeError:
             try:
                 found = func(name=name)
-            except Exception:  # noqa: BLE001 - fall through to the local registry.
-                continue
-        except Exception:  # noqa: BLE001 - fall through to the local registry.
-            continue
-        if found is not None:
-            return found
-    return None
+            except Exception:  # noqa: BLE001 - the host did not answer.
+                return None, False
+        except Exception:  # noqa: BLE001 - the host did not answer.
+            return None, False
+        return found, True
+    return None, False
 
 
 def agent_viewport_status(runtime: Any, name: str) -> Dict[str, Any]:
@@ -884,7 +896,8 @@ def ensure_agent_viewport(
         created = True
         if viewport is not None:
             _AGENT_VIEWPORTS[_registry_key(runtime, name)] = viewport
-            if host_agent_viewport(runtime, name) is None:
+            _remaining, verified = lookup_agent_viewport(runtime, name)
+            if not verified:
                 warnings.append(
                     "Created the agent viewport with {}; the host exposes no lookup that reports it back".format(
                         factory
@@ -963,15 +976,33 @@ def close_agent_viewport(runtime: Any, name: str = "dcc_mcp_agent_viewport") -> 
             warnings=warnings,
             errors=[{"setting": "close", "error": "; ".join(warnings) or "no close contract on this host"}],
         )
-    if host_agent_viewport(runtime, name) is not None:
+    remaining, verified = lookup_agent_viewport(runtime, name)
+    if remaining is not None:
         return render_error(
             "The host still reports the agent viewport after closing it",
             name=name,
             closed=False,
             warnings=warnings,
         )
+    if not verified:
+        # The host exposes no lookup contract, so "gone" cannot be confirmed.
+        # Keeping the registry entry is the safe answer: forgetting it would
+        # make a later status report "not open" while it may still be open.
+        warnings.append(
+            "The host exposes no viewport lookup contract, so the close is unverified; "
+            "the agent viewport is still tracked under {}".format(name)
+        )
+        return render_success(
+            "Requested the agent viewport close; the host cannot confirm it",
+            name=name,
+            closed=False,
+            verified=False,
+            warnings=warnings,
+        )
     forget_agent_viewport(runtime, name)
-    return render_success("Closed the agent viewport", name=name, closed=True, warnings=warnings)
+    return render_success(
+        "Closed the agent viewport", name=name, closed=True, verified=True, warnings=warnings
+    )
 
 
 def _create_agent_viewport(runtime: Any, name: str) -> Tuple[Any, Optional[str], Optional[str]]:
