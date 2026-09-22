@@ -514,6 +514,25 @@ def select_selection_set(runtime: Any, *, name: str, add: bool = False) -> Dict[
 
 # ── Groups ─────────────────────────────────────────────────────────────
 
+# Group attach/detach are reached by host function name and, unlike layer or
+# display-state properties, no host install in this repository has confirmed
+# which spelling a given 3ds Max build exposes. Probe the spellings in order
+# and name the ones that were tried when none is available, so the failure says
+# what to look for instead of only that the call is missing. Every write is
+# still verified by readback, so probing a spelling that turns out to exist with
+# different semantics is caught rather than assumed.
+ATTACH_CALL_NAMES = ("attachToGroup", "attachNodesToGroup", "addToGroup")
+DETACH_CALL_NAMES = ("detachFromGroup", "detachNodesFromGroup", "removeFromGroup")
+
+
+def _resolve_group_call(runtime: Any, names: Sequence[str]) -> Optional[Any]:
+    """Return the first callable host function among ``names``."""
+    for name in names:
+        candidate = getattr(runtime, name, None)
+        if callable(candidate):
+            return candidate
+    return None
+
 
 def _child_nodes(node: Any) -> List[Any]:
     children = getattr(node, "children", None)
@@ -651,9 +670,13 @@ def attach_to_group(runtime: Any, *, nodes: Sequence[Any], group: Any) -> Dict[s
     if not nodes:
         return organization_error("No nodes were resolved to attach", errors=[])
     group_name = str(getattr(group, "name", "") or "")
-    attacher = getattr(runtime, "attachToGroup", None)
-    if not callable(attacher):
-        return organization_error("This host does not expose the attachToGroup call", errors=[])
+    attacher = _resolve_group_call(runtime, ATTACH_CALL_NAMES)
+    if attacher is None:
+        return organization_error(
+            "This host exposes none of the group attach calls: {}".format(", ".join(ATTACH_CALL_NAMES)),
+            errors=[],
+            probed=list(ATTACH_CALL_NAMES),
+        )
     results = []
     for node in nodes:
         name = str(getattr(node, "name", "") or "")
@@ -661,30 +684,24 @@ def attach_to_group(runtime: Any, *, nodes: Sequence[Any], group: Any) -> Dict[s
         if readable and same_node(parent, group):
             results.append(_row(name, ATTR_APPLIED, group=group_name, already_attached=True))
             continue
-        errors = []
-        for call in (
-            lambda: attacher(node, group),
-            lambda: attacher(group, node),
-        ):
+        try:
+            attacher(node, group)
+        except Exception:  # noqa: BLE001 - some hosts take the arguments reversed.
             try:
-                call()
-            except Exception as exc:  # noqa: BLE001 - try the other argument order.
-                errors.append(str(exc))
-                continue
-            readable, parent = read_parent(node)
-            if readable and same_node(parent, group):
-                errors = []
-                break
-        if errors:
-            results.append(
-                _row(
-                    name,
-                    ATTR_REJECTED,
-                    "Could not attach {} to {}: {}".format(name, group_name, errors[-1]),
-                    group=group_name,
+                attacher(group, node)
+            except Exception as exc:  # noqa: BLE001 - both argument orders were refused.
+                results.append(
+                    _row(
+                        name,
+                        ATTR_REJECTED,
+                        "Could not attach {} to {}: {}".format(name, group_name, exc),
+                        group=group_name,
+                    )
                 )
-            )
-            continue
+                continue
+        # The call was accepted. A reversed retry would be a second, semantically
+        # different write - attaching the group under the node - so an accepted
+        # call that did not take effect is reported, never written twice.
         readable, parent = read_parent(node)
         if not readable:
             results.append(
@@ -715,9 +732,13 @@ def detach_from_group(runtime: Any, *, nodes: Sequence[Any]) -> Dict[str, Any]:
     """Detach nodes from the group they currently belong to."""
     if not nodes:
         return organization_error("No nodes were resolved to detach", errors=[])
-    detacher = getattr(runtime, "detachFromGroup", None)
-    if not callable(detacher):
-        return organization_error("This host does not expose the detachFromGroup call", errors=[])
+    detacher = _resolve_group_call(runtime, DETACH_CALL_NAMES)
+    if detacher is None:
+        return organization_error(
+            "This host exposes none of the group detach calls: {}".format(", ".join(DETACH_CALL_NAMES)),
+            errors=[],
+            probed=list(DETACH_CALL_NAMES),
+        )
     results = []
     for node in nodes:
         name = str(getattr(node, "name", "") or "")

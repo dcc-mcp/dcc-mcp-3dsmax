@@ -227,7 +227,17 @@ def _numeric_sequence(value: Any) -> Optional[List[float]]:
 
 
 def attribute_matches(readback: Any, value: Any) -> bool:
-    """Report whether a read-back attribute value equals the requested one."""
+    """Report whether a read-back attribute value equals the requested one.
+
+    A ``None`` read-back means the host holds no value for the attribute, which
+    is what a write it silently dropped looks like. It therefore only matches a
+    ``None`` request: ``bool(None)`` is ``False``, so folding it into the
+    boolean comparison would verify a dropped ``False`` as applied.
+    """
+    if readback is None:
+        return value is None
+    if value is None:
+        return False
     if isinstance(value, bool) or isinstance(readback, bool):
         return bool(readback) == bool(value)
     if isinstance(value, (int, float)):
@@ -250,15 +260,16 @@ def _target_label(target: Any) -> str:
     return str(name) if name else type(target).__name__
 
 
-def _exposed_attribute(target: Any, candidates: Sequence[str]) -> Optional[str]:
-    """Return the first candidate attribute the host object actually exposes."""
+def _exposed_attributes(target: Any, candidates: Sequence[str]) -> List[str]:
+    """Return the candidate attributes the host object exposes, in order."""
+    exposed: List[str] = []
     for name in candidates:
         try:
             getattr(target, name)
         except Exception:  # noqa: BLE001 - an unreadable property is not an exposed one.
             continue
-        return name
-    return None
+        exposed.append(name)
+    return exposed
 
 
 def apply_object_attribute(
@@ -277,13 +288,19 @@ def apply_object_attribute(
     order; hosts differ between MAXScript casing and snake_case mirrors. A write
     is only reported applied when the value reads back equal. A write the host
     took but that cannot be read back is reported unverified, never applied.
+
+    3ds Max exposes several of these as a read-only ``is*`` getter next to a
+    writable short name, and which one a host offers is not knowable up front.
+    Each exposed candidate is tried in turn and the first that verifies wins, so
+    a read-only candidate cannot fail a write the host can actually take. A
+    candidate is only abandoned, never written twice once it verifies.
     """
     names = list(candidates) if candidates else [attribute]
     if attribute not in names:
         names.insert(0, attribute)
     name = label or attribute
-    exposed = _exposed_attribute(target, names)
-    if exposed is None:
+    exposed = _exposed_attributes(target, names)
+    if not exposed:
         return _attribute_row(
             name,
             attribute,
@@ -293,42 +310,52 @@ def apply_object_attribute(
             "{} does not expose {}".format(_target_label(target), "/".join(names)),
             optional=optional,
         )
-    try:
-        setattr(target, exposed, value)
-    except Exception as exc:  # noqa: BLE001 - an explicit host rejection is a failure.
-        return _attribute_row(
+
+    write_failures: List[str] = []
+    outcome: Optional[Dict[str, Any]] = None
+    for candidate in exposed:
+        try:
+            setattr(target, candidate, value)
+        except Exception as exc:  # noqa: BLE001 - an explicit rejection; try the next name.
+            write_failures.append("Could not set {}: {}".format(candidate, exc))
+            continue
+        try:
+            readback = getattr(target, candidate)
+        except Exception as exc:  # noqa: BLE001 - an unreadable value is reported, never assumed.
+            outcome = _attribute_row(
+                name,
+                candidate,
+                ATTR_UNVERIFIED,
+                value,
+                None,
+                "Could not read back {} to verify the value: {}".format(candidate, exc),
+                optional=optional,
+            )
+            continue
+        matches = compare(readback, value) if callable(compare) else attribute_matches(readback, value)
+        if matches:
+            return _attribute_row(name, candidate, ATTR_APPLIED, value, readback, None, optional=optional)
+        outcome = _attribute_row(
             name,
-            exposed,
-            ATTR_REJECTED,
-            value,
-            None,
-            "Could not set {}: {}".format(exposed, exc),
-            optional=optional,
-        )
-    try:
-        readback = getattr(target, exposed)
-    except Exception as exc:  # noqa: BLE001 - an unreadable value is reported, never assumed.
-        return _attribute_row(
-            name,
-            exposed,
-            ATTR_UNVERIFIED,
-            value,
-            None,
-            "Could not read back {} to verify the value: {}".format(exposed, exc),
-            optional=optional,
-        )
-    matches = compare(readback, value) if callable(compare) else attribute_matches(readback, value)
-    if not matches:
-        return _attribute_row(
-            name,
-            exposed,
+            candidate,
             ATTR_REJECTED,
             value,
             readback,
-            "{} read back {!r} after writing {!r}".format(exposed, readback, value),
+            "{} read back {!r} after writing {!r}".format(candidate, readback, value),
             optional=optional,
         )
-    return _attribute_row(name, exposed, ATTR_APPLIED, value, readback, None, optional=optional)
+
+    if outcome is not None:
+        return outcome
+    return _attribute_row(
+        name,
+        exposed[0],
+        ATTR_REJECTED,
+        value,
+        None,
+        "; ".join(write_failures),
+        optional=optional,
+    )
 
 
 def _attribute_row(

@@ -467,6 +467,18 @@ def _numeric_channels(value: Any) -> Optional[List[float]]:
     return None
 
 
+def _normalize_layer_value(name: str, value: Any) -> Any:
+    """Coerce one requested layer property into the form the host expects.
+
+    Colors are clamped and checked, the same way node wire colors already are,
+    so an out-of-range or short channel list is rejected here rather than
+    handed to the host and then reported as a mismatch.
+    """
+    if name == "color":
+        return _color_list(value)
+    return value
+
+
 def set_layer_properties(runtime: Any, *, layer_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
     """Write layer properties and verify the host kept every one of them."""
     if not properties:
@@ -482,11 +494,15 @@ def set_layer_properties(runtime: Any, *, layer_name: str, properties: Dict[str,
     layer = _find_layer(runtime, layer_name)
     if layer is None:
         return display_error("Display layer was not found", layer_name=layer_name, applied=[], errors=[])
+    try:
+        normalized = {name: _normalize_layer_value(name, value) for name, value in properties.items()}
+    except ValueError as exc:
+        return display_error("Invalid layer property value: {}".format(exc), layer_name=layer_name, errors=[])
     results = [
         apply_object_attribute(
             layer, LAYER_PROPERTY_MAP[name][0], value, label=name, candidates=LAYER_PROPERTY_MAP[name]
         )
-        for name, value in properties.items()
+        for name, value in normalized.items()
     ]
     summary = summarize_attribute_results(results)
     data = {

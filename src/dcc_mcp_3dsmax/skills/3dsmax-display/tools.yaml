@@ -107,10 +107,11 @@ tools:
     produces: ['layer', 'layer_properties']
     undo:
       supported: true
-      granularity: single_call
+      granularity: batch_call
       notes: >-
-        Layer property writes are recorded as host undo entries; pass the reported
-        `applied_property_count` to `undo_last` when the host records one entry per write.
+        One host write per property with no undo hold opened, so the host may keep one entry or one
+        per property and the adapter cannot query which. Undo once and re-read the properties;
+        repeat while they still differ from what was requested.
 
   - name: create_layer
     description: Create a display layer by name.

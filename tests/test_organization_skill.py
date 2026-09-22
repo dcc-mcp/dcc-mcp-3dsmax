@@ -57,8 +57,11 @@ class _FakeLayer:
     """
 
     on = True
+    isOn = True
     isHidden = False
+    hidden = False
     isFrozen = False
+    frozen = False
     renderable = True
     castShadows = True
     receiveShadows = True
@@ -412,6 +415,75 @@ def test_attach_to_group_fails_when_the_host_ignores_it(monkeypatch):
     assert result["data"]["errors"][0]["target"] == "hero_mesh"
 
 
+def test_attach_to_group_does_not_retry_with_reversed_arguments(monkeypatch):
+    """An accepted attach must not be followed by a reversed second write.
+
+    ``attachToGroup(group, node)`` means the opposite of ``attachToGroup(node,
+    group)`` - it would attach the group under the node. Retrying it after the
+    first call was accepted is a second, semantically different write.
+    """
+    runtime = _install_fake_pymxs(monkeypatch)
+    calls = []
+
+    def attacher(first, second):
+        calls.append((getattr(first, "name", ""), getattr(second, "name", "")))
+
+    runtime.attachToGroup = attacher
+
+    result = _scene("action_attach_to_group.py").main(group_name="hero_group", node_names=["hero_mesh"])
+
+    assert result["success"] is False
+    assert calls == [("hero_mesh", "hero_group")], calls
+
+
+def test_attach_to_group_falls_back_to_a_reversed_call_only_when_the_first_raises(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    calls = []
+
+    def attacher(first, second):
+        pair = (getattr(first, "name", ""), getattr(second, "name", ""))
+        calls.append(pair)
+        if pair == ("hero_mesh", "hero_group"):
+            raise RuntimeError("wrong argument order")
+        second.parent = first
+        first.children.append(second)
+
+    runtime.attachToGroup = attacher
+
+    result = _scene("action_attach_to_group.py").main(group_name="hero_group", node_names=["hero_mesh"])
+
+    assert result["success"] is True
+    assert calls == [("hero_mesh", "hero_group"), ("hero_group", "hero_mesh")]
+    assert runtime.hero.parent is runtime.group_head
+
+
+def test_group_tools_probe_alternate_host_call_names(monkeypatch):
+    """A host that only exposes an alternate group function name still works."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.attachToGroup = None
+    runtime.attachNodesToGroup = lambda node, group: _FakeRuntime.attachToGroup(runtime, node, group)
+
+    attached = _scene("action_attach_to_group.py").main(group_name="hero_group", node_names=["hero_mesh"])
+
+    assert attached["success"] is True
+    assert runtime.hero.parent is runtime.group_head
+
+
+def test_group_tools_report_every_probed_name_when_none_exists(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.attachToGroup = None
+    runtime.detachFromGroup = None
+
+    attach = _scene("action_attach_to_group.py").main(group_name="hero_group", node_names=["hero_mesh"])
+    detach = _scene("action_detach_from_group.py").main(node_names=["hero_mesh"])
+
+    assert attach["success"] is False
+    assert "probed" in attach["data"]
+    assert "attachToGroup" in attach["data"]["probed"]
+    assert detach["success"] is False
+    assert "detachFromGroup" in detach["data"]["probed"]
+
+
 def test_detach_from_group_fails_when_the_parent_survives(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
     _make_group(runtime)
@@ -550,6 +622,87 @@ def test_node_display_state_write_fail_when_the_host_refuses_it(monkeypatch):
 
     assert result["success"] is False
     assert result["data"]["errors"][0]["property"] == "hidden"
+
+
+def test_write_verification_rejects_a_dropped_false(monkeypatch):
+    """A dropped write must fail for ``False`` exactly as it does for ``True``.
+
+    Layer and node flags default to True in 3ds Max, so turning them off is the
+    common direction; ``bool(None)`` collapsing into the boolean comparison used
+    to verify a dropped ``False`` as applied.
+    """
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _DroppingLayer(_FakeLayer):
+        """Accepts every property write and stores nothing, and holds no value.
+
+        Reads report ``None`` rather than a default, which is what a host that
+        never persisted anything looks like.
+        """
+
+        isHidden = None
+        hidden = None
+        isFrozen = None
+        frozen = None
+        renderable = None
+        castShadows = None
+
+        def __setattr__(self, name, value):
+            if name in ("name", "nodes"):
+                object.__setattr__(self, name, value)
+                return None
+            return None  # the write is accepted and dropped
+
+    runtime.layers["Default"] = _DroppingLayer("Default")
+
+    cleared = _display("action_set_layer_properties.py").main(
+        "Default", {"hidden": False, "frozen": False, "renderable": False, "cast_shadows": False}
+    )
+    set_true = _display("action_set_layer_properties.py").main("Default", {"hidden": True})
+
+    assert cleared["success"] is False
+    assert {row["property"] for row in cleared["data"]["errors"]} == {
+        "hidden",
+        "frozen",
+        "renderable",
+        "cast_shadows",
+    }
+    assert set_true["success"] is False
+
+
+def test_write_verification_accepts_a_read_only_candidate_alongside_a_writable_one(monkeypatch):
+    """A read-only `is*` getter must not fail a write the host can take."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class _GetterFirstLayer(_FakeLayer):
+        @property
+        def isFrozen(self):  # noqa: D102 - read-only getter, as several hosts expose.
+            return False
+
+        @isFrozen.setter
+        def isFrozen(self, value):
+            raise AttributeError("isFrozen is read-only")
+
+    runtime.layers["Default"] = _GetterFirstLayer("Default")
+
+    result = _display("action_set_layer_properties.py").main("Default", {"frozen": True})
+
+    assert result["success"] is True
+    assert result["data"]["applied"] == ["frozen"]
+    assert result["data"]["property_results"][0]["attribute"] == "frozen"
+    assert runtime.layers["Default"].frozen is True
+
+
+def test_set_layer_properties_normalizes_color(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    clamped = _display("action_set_layer_properties.py").main("Default", {"color": [300, -5, 30]})
+    too_short = _display("action_set_layer_properties.py").main("Default", {"color": [1, 2]})
+
+    assert clamped["success"] is True
+    assert runtime.layers["Default"].wireColor == [255, 0, 30]
+    assert too_short["success"] is False
+    assert "Invalid layer property value" in too_short["message"]
 
 
 def test_selection_write_is_verified(monkeypatch):
