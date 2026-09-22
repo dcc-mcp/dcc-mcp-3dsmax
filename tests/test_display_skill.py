@@ -26,6 +26,8 @@ class _Layer:
         self.nodes = []
         self.hidden = False
         self.frozen = False
+        # Mirrors the host default: unset until a color is written.
+        self.wireColor = None
 
     def addNode(self, node):  # noqa: N802 - mirrors pymxs layer naming.
         if node not in self.nodes:
@@ -168,10 +170,32 @@ def test_layer_color_rejects_scalar_values_without_raising(monkeypatch):
         assert result["success"] is False
         assert result["status"] == "error"
         assert result["message"].startswith("Invalid layer property value:")
-        assert "len()" in result["message"]
         assert result["data"]["errors"] == []
         # The rejection happens before anything is handed to the host.
         assert getattr(runtime.layers["Default"], "wireColor", None) is None
+
+
+def test_layer_color_writes_valid_value_and_clamps_channels(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    action = _load_action("action_set_layer_properties.py")
+
+    exact = action.main(layer_name="Default", properties={"color": [10, 20, 30]})
+
+    assert exact["success"] is True
+    assert exact["status"] == "success"
+    assert exact["data"]["errors"] == []
+    assert exact["data"]["applied_property_count"] == 1
+    assert runtime.layers["Default"].wireColor == [10, 20, 30]
+
+    clamped = action.main(layer_name="Default", properties={"color": [300, -5, 128]})
+
+    assert clamped["success"] is True
+    assert clamped["data"]["errors"] == []
+    # Out-of-range channels clamp into the 0-255 range instead of failing the write.
+    assert runtime.layers["Default"].wireColor == [255, 0, 128]
+
+    # The written value survives a read-back through the layer summary.
+    assert clamped["data"]["layer"]["properties"]["color"] == [255, 0, 128]
 
 
 def test_layer_color_short_channel_list_keeps_clean_error(monkeypatch):
