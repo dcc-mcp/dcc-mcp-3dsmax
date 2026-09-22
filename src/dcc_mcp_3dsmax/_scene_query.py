@@ -74,6 +74,36 @@ def _name_key(node: Any) -> Tuple[str, str]:
     return (name.lower(), name)
 
 
+def node_key(node: Any) -> Tuple[str, Any]:
+    """Identify a node for graph matching: its handle, or its wrapper as a fallback.
+
+    ``pymxs`` can hand out more than one wrapper for the same node, and
+    ``resolve_node_object`` can fall back to ``getNodeByName``, which may return
+    a wrapper the scene enumeration never produced. Matching on the handle makes
+    parent links, cycle detection, and target lookups survive that; identity is
+    only used when a host gives no handle at all.
+    """
+    handle = _as_int(getattr(node, "handle", None))
+    return ("handle", handle) if handle is not None else ("wrapper", id(node))
+
+
+def match_scene_node(nodes: Sequence[Any], target: Any) -> Optional[Any]:
+    """Return the enumerated node ``target`` refers to, or ``None``.
+
+    Callers must refuse rather than answer when this returns ``None``: a target
+    wrapper the scene enumeration does not contain has no parent link and no
+    children the walk can see, so answering anyway produces a result that looks
+    complete and is not.
+    """
+    if target is None:
+        return None
+    wanted = node_key(target)
+    for node in nodes:
+        if node_key(node) == wanted:
+            return node
+    return None
+
+
 def _clamp_limit(value: Any, default: int, maximum: int, field: str = "limit") -> int:
     """Validate a result-size limit instead of silently clamping a bad one."""
     if value is None:
@@ -258,11 +288,14 @@ class _HierarchyWalker(object):
         self.truncated = False
         self.max_depth = 0
         self.hidden_skipped = 0
+        self.limit_hit = False
+        self.depth_hit = False
         self.cycles: List[Dict[str, Any]] = []
 
     def walk(self, node: Any, depth: int = 0, path: Optional[frozenset] = None) -> Optional[Dict[str, Any]]:
         if self.emitted >= self.limit:
             self.truncated = True
+            self.limit_hit = True
             return None
 
         visible = node_visible(node)
@@ -285,22 +318,23 @@ class _HierarchyWalker(object):
         self.emitted += 1
         self.max_depth = max(self.max_depth, depth)
 
-        child_nodes = self.children.get(id(node), [])
+        child_nodes = self.children.get(node_key(node), [])
         if depth >= self.depth_cap:
             payload["children"] = []
             payload["child_count"] = 0
             if child_nodes:
                 payload["unlisted_children"] = len(child_nodes)
                 self.truncated = True
+                self.depth_hit = True
             return payload
 
         # ``seen`` is the path from the tree root down to this node, inclusive:
         # a child already on it closes a cycle and is not followed again.
-        seen = (path if path is not None else frozenset()) | {id(node)}
+        seen = (path if path is not None else frozenset()) | {node_key(node)}
         children: List[Dict[str, Any]] = []
         children_truncated = False
         for child in child_nodes:
-            child_key = id(child)
+            child_key = node_key(child)
             if child_key in seen:
                 self.cycles.append(
                     {
@@ -351,14 +385,14 @@ def build_hierarchy(
         depth_cap = min(max_depth, MAX_HIERARCHY_DEPTH)
 
     nodes = list(nodes)
-    known_ids = {id(node) for node in nodes}
+    known = {node_key(node) for node in nodes}
 
-    children: Dict[int, List[Any]] = {}
+    children: Dict[Any, List[Any]] = {}
     roots: List[Any] = []
     parent_outside_scene: List[Dict[str, Any]] = []
     for node in nodes:
         parent = getattr(node, "parent", None)
-        if parent is None or id(parent) not in known_ids:
+        if parent is None or node_key(parent) not in known:
             roots.append(node)
             if parent is not None:
                 parent_outside_scene.append(
@@ -369,7 +403,7 @@ def build_hierarchy(
                     }
                 )
             continue
-        children.setdefault(id(parent), []).append(node)
+        children.setdefault(node_key(parent), []).append(node)
 
     for key in children:
         children[key].sort(key=_name_key)
@@ -392,35 +426,35 @@ def build_hierarchy(
     stranded: List[Any] = []
     if root is None:
         reachable = set()
-        pending = [id(node) for node in roots]
+        pending = [node_key(node) for node in roots]
         while pending:
             key = pending.pop()
             if key in reachable:
                 continue
             reachable.add(key)
-            pending.extend(id(child) for child in children.get(key, []))
-        stranded = [node for node in nodes if id(node) not in reachable]
+            pending.extend(node_key(child) for child in children.get(key, []))
+        stranded = [node for node in nodes if node_key(node) not in reachable]
         stranded.sort(key=_name_key)
 
     # One representative per cycle is enough to show the whole cycle: seeding a
     # root from every member would print the same subtree once per member.
-    stranded_ids = {id(node) for node in stranded}
+    stranded_keys = {node_key(node) for node in stranded}
     grouped = set()
     cycle_roots: List[Any] = []
     for node in stranded:
-        if id(node) in grouped:
+        if node_key(node) in grouped:
             continue
         component = set()
         stack = [node]
         while stack:
             current = stack.pop()
-            key = id(current)
+            key = node_key(current)
             if key in component:
                 continue
             component.add(key)
-            stack.extend(child for child in children.get(key, []) if id(child) in stranded_ids)
+            stack.extend(child for child in children.get(key, []) if node_key(child) in stranded_keys)
             parent = getattr(current, "parent", None)
-            if parent is not None and id(parent) in stranded_ids:
+            if parent is not None and node_key(parent) in stranded_keys:
                 stack.append(parent)
         grouped |= component
         cycle_roots.append(node)
@@ -443,10 +477,15 @@ def build_hierarchy(
                 ", ".join(_text(getattr(node, "name", "")) for node in stranded),
             )
         )
-    if walker.truncated:
+    # Each cause gets its own line: one sentence naming three possibilities
+    # leaves the caller unable to tell which knob to turn.
+    if walker.limit_hit:
         warnings.append(
-            "the tree was cut short by the node limit ({}), the depth cap ({}), or a cycle; "
-            "raise limit or max_depth and re-run to see the rest".format(safe_limit, depth_cap)
+            "the tree was cut short by the node limit ({}); raise limit to see the rest".format(safe_limit)
+        )
+    if walker.depth_hit:
+        warnings.append(
+            "the tree was cut short by the depth cap ({}); raise max_depth to see deeper levels".format(depth_cap)
         )
     if walker.hidden_skipped:
         warnings.append(
@@ -642,8 +681,9 @@ def find_instances(
 
     if target is not None:
         target_key = None
+        wanted = node_key(target)
         for node, key in zip(nodes, keys):
-            if node is target:
+            if node_key(node) == wanted:
                 target_key = key
                 break
         if target_key is None:
@@ -749,17 +789,32 @@ def collect_dependencies(runtime: Any, node: Any, *, limit: Any = None) -> Dict[
 # ── unified query ──────────────────────────────────────────────────────
 
 
+def _unwrap_baseline_list(baseline: Dict[str, Any]) -> List[Any]:
+    """Pick the node list out of a result object.
+
+    ``overview`` and ``delta`` answer with counts, so their ``nodes`` list is an
+    empty array even when ``snapshot`` carries the nodes. Taking the first key
+    that happens to be a list would read that empty array as a real baseline and
+    report the whole scene as newly added, silently. Prefer a list that has
+    something in it.
+    """
+    candidates = []
+    for key in ("nodes", "snapshot"):
+        value = baseline.get(key)
+        if isinstance(value, list):
+            candidates.append(value)
+    if not candidates:
+        raise SceneQueryError("baseline must be an array of node entries or an object with a nodes list")
+    for value in candidates:
+        if value:
+            return value
+    return candidates[0]
+
+
 def _normalize_baseline(baseline: Any) -> List[Dict[str, Any]]:
     """Normalize the snapshot a ``delta`` query is compared against."""
     if isinstance(baseline, dict):
-        nested = None
-        for key in ("nodes", "snapshot"):
-            if isinstance(baseline.get(key), list):
-                nested = baseline[key]
-                break
-        if nested is None:
-            raise SceneQueryError("baseline must be an array of node entries or an object with a nodes list")
-        baseline = nested
+        baseline = _unwrap_baseline_list(baseline)
     if not isinstance(baseline, list):
         raise SceneQueryError("baseline must be an array of node entries or names")
 
@@ -854,12 +909,21 @@ def _property_query(
     skipped: List[Dict[str, Any]] = []
     has_expected = property_value is not None
     truncated = False
+    skipped_seen = 0
+    skipped_reasons: set = set()
     for node in nodes:
         available, value, reason = read_node_property(node, property_name)
         if not available:
             # Reported, not dropped: "this node could not be read" is a
             # different answer from "this node does not have the property".
-            skipped.append({"node_name": node_identity(node)["node_name"], "reason": reason})
+            skipped_seen += 1
+            skipped_reasons.add(reason)
+            # Bounded like the matches: an unreadable node is a finding, not a
+            # licence to return an unbounded list of them.
+            if len(skipped) < safe_limit:
+                skipped.append({"node_name": node_identity(node)["node_name"], "reason": reason})
+            else:
+                truncated = True
             continue
         if has_expected and not property_values_match(value, property_value):
             continue
@@ -875,8 +939,9 @@ def _property_query(
         "nodes": matched,
         "count": len(matched),
         "skipped": skipped,
-        "skipped_count": len(skipped),
-        "skipped_reasons": sorted({entry["reason"] for entry in skipped}),
+        "skipped_count": skipped_seen,
+        "skipped_omitted": max(skipped_seen - len(skipped), 0),
+        "skipped_reasons": sorted(skipped_reasons),
         "truncated": truncated,
     }
 
@@ -910,6 +975,7 @@ def _delta_query(
     added: List[Dict[str, Any]] = []
     renamed: List[Dict[str, Any]] = []
     changed: List[Dict[str, Any]] = []
+    unreadable: List[Dict[str, Any]] = []
     unchanged = 0
     matched: set = set()
     comparable = 0
@@ -938,12 +1004,14 @@ def _delta_query(
                 comparable += 1
                 available, value, reason = read_node_property(node, property_name)
                 if not available:
-                    changed.append(
+                    # Its own bucket, as in property mode: a node that could not
+                    # be read is not a node whose value changed, and folding it
+                    # into changed makes changed_count count read failures.
+                    unreadable.append(
                         {
                             "node_name": identity["node_name"],
                             "object_id": identity["object_id"],
                             "before": before,
-                            "after": None,
                             "reason": reason,
                         }
                     )
@@ -992,6 +1060,8 @@ def _delta_query(
         "renamed_count": len(renamed),
         "changed": changed,
         "changed_count": len(changed),
+        "unreadable": unreadable,
+        "unreadable_count": len(unreadable),
         "unchanged_count": unchanged,
         "compared_property": property_name,
         "comparable_count": comparable,
@@ -1030,6 +1100,9 @@ def run_scene_query(
 
     warnings: List[str] = []
     result: Dict[str, Any] = {"mode": mode}
+    # The set a mode actually answered about, so include_snapshot can return a
+    # snapshot that round-trips back as that mode's own baseline.
+    compared_nodes: List[Any] = nodes
 
     if mode == "selection":
         selection, selection_error = scene_selection(runtime)
@@ -1094,8 +1167,24 @@ def run_scene_query(
                 "the returned snapshot back as baseline"
             )
         wanted_property = validate_property_name(property_name) if property_name is not None else None
-        result.update(_delta_query(scoped, runtime, baseline, wanted_property))
+        # Delta compares the whole scene, not the filtered subset. A baseline
+        # captured without a filter is a statement about the whole scene, so
+        # narrowing only the current side would report every filtered-out node
+        # as removed - a node that is still there, reported as deleted.
+        result.update(_delta_query(nodes, runtime, baseline, wanted_property))
+        compared_nodes = nodes
         result.update({"nodes": [], "count": 0, "total_matched": 0, "truncated": False})
+        if name_filter or not include_hidden:
+            warnings.append(
+                "delta compares the whole scene, so name_filter and include_hidden were not applied to the "
+                "comparison; they only narrow the snapshot returned with include_snapshot"
+            )
+        if result["baseline_count"] == 0 and result["current_count"]:
+            warnings.append(
+                "the baseline resolved to 0 entries, so every one of the {} node(s) in the scene is reported "
+                "as added; pass the snapshot list itself rather than a result object whose nodes list is "
+                "empty".format(result["current_count"])
+            )
         if wanted_property and result["comparable_count"] == 0:
             warnings.append(
                 "the baseline carries no value for {}, so property changes could not be compared; only "
@@ -1107,7 +1196,12 @@ def run_scene_query(
                     len(result["ambiguous"]), ", ".join(result["ambiguous"])
                 )
             )
-    if property_value is not None and mode not in ("property", "delta"):
+        if result["unreadable_count"]:
+            warnings.append(
+                "{} node(s) could not be read for {} and are listed in unreadable rather than counted as "
+                "changed".format(result["unreadable_count"], wanted_property)
+            )
+    if property_value is not None and mode != "property":
         warnings.append("property_value is ignored in mode {}".format(mode))
     if class_name is not None and mode != "class":
         warnings.append("class_name is ignored in mode {}".format(mode))
@@ -1116,6 +1210,9 @@ def run_scene_query(
         snapshot_source = scoped
         if mode == "selection":
             snapshot_source = _scope_nodes(scene_selection(runtime)[0], name_filter, include_hidden)
+        elif mode == "delta":
+            # Snapshot what was actually compared, so the result round-trips.
+            snapshot_source = compared_nodes
         snapshot = []
         for node in snapshot_source[:safe_limit]:
             identity = node_identity(node)

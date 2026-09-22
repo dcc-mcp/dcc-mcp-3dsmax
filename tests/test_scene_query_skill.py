@@ -107,7 +107,7 @@ class _Refs(object):
 
 
 class _Runtime(object):
-    def __init__(self, *, with_instance_mgr=False, refs_failures=(), with_refs=True):
+    def __init__(self, *, with_instance_mgr=False, refs_failures=(), with_refs=True, ghost=None):
         shared = _BaseObject(900)
         self.hero = _Node("hero_mesh", 1, base=shared)
         self.hero_instance = _Node("hero_mesh_inst", 2, base=shared)
@@ -119,12 +119,18 @@ class _Runtime(object):
         self.selection = [self.hero]
         self.maxFileName = "unit_test.max"
         self.shared_material = types.SimpleNamespace(name="shared_mat", handle=999)
+        # A wrapper getNodeByName may return instead of the enumerated node:
+        # real hosts hand out more than one wrapper for the same node, and the
+        # resolve_node_object fallback can produce one the enumeration never saw.
+        self.ghost = ghost
         if with_instance_mgr:
             self.InstanceMgr = _InstanceMgr(self)
         if with_refs:
             self.refs = _Refs(self, failures=refs_failures)
 
     def getNodeByName(self, name):
+        if self.ghost is not None and name == self.ghost.name:
+            return self.ghost
         for node in self.objects:
             if node.name == name:
                 return node
@@ -856,3 +862,194 @@ def test_query_scene_schema_lists_every_mode():
     modes = tools["query_scene"]["input_schema"]["properties"]["mode"]["enum"]
 
     assert modes == list(_scene_query.QUERY_MODES)
+
+
+# ── regressions: delta scope, baseline unwrapping, wrapper identity ────
+#
+# These cover the three combinations the first review found: a delta narrowed
+# by the shared filters, a result object passed back as its own baseline, and a
+# target node that resolve_node_object answered with a wrapper the scene
+# enumeration never produced. All three produced a confident answer about
+# something the tool had not looked at.
+
+
+def test_delta_ignores_the_shared_filters_so_in_scene_nodes_are_not_removed(monkeypatch):
+    """A filtered delta must not report unfiltered-but-present nodes as removed."""
+    _install_runtime(monkeypatch)
+
+    snapshot = _query(mode="filter", include_snapshot=True)["data"]["snapshot"]
+
+    hidden = _query(mode="delta", baseline=snapshot, include_hidden=False)
+    assert hidden["data"]["removed_count"] == 0
+    assert hidden["data"]["added_count"] == 0
+    assert any("were not applied to the comparison" in item for item in hidden["data"]["warnings"])
+
+    filtered = _query(mode="delta", baseline=snapshot, name_filter="hero")
+    assert filtered["data"]["removed_count"] == 0
+    assert filtered["data"]["added_count"] == 0
+
+
+def test_delta_still_sees_real_removals(monkeypatch):
+    """The scope fix must not blunt delta: a genuinely removed node is reported."""
+    runtime = _install_runtime(monkeypatch)
+
+    snapshot = _query(mode="filter", include_snapshot=True)["data"]["snapshot"]
+    runtime.objects = [node for node in runtime.objects if node.name != "lone_mesh"]
+
+    result = _query(mode="delta", baseline=snapshot)
+
+    assert result["data"]["removed_count"] == 1
+    assert result["data"]["removed"][0]["node_name"] == "lone_mesh"
+
+
+def test_delta_snapshot_matches_what_it_compared(monkeypatch):
+    """A delta snapshot round-trips: feeding it back reports no change."""
+    _install_runtime(monkeypatch)
+
+    first = _query(mode="delta", baseline=[], include_snapshot=True)
+    assert first["data"]["snapshot_count"] == 6
+
+    second = _query(mode="delta", baseline=first["data"]["snapshot"])
+
+    assert second["data"]["added_count"] == 0
+    assert second["data"]["removed_count"] == 0
+
+
+def test_delta_prefers_a_non_empty_snapshot_over_an_empty_nodes_list(monkeypatch):
+    """overview answers with counts, so its nodes list is empty and is not a baseline."""
+    _install_runtime(monkeypatch)
+
+    overview = _query(mode="overview", include_snapshot=True)["data"]
+    assert overview["nodes"] == []
+    assert overview["snapshot_count"] == 6
+
+    result = _query(mode="delta", baseline=overview)
+
+    assert result["data"]["baseline_count"] == 6
+    assert result["data"]["added_count"] == 0
+
+
+def test_delta_warns_when_the_baseline_resolves_to_nothing(monkeypatch):
+    _install_runtime(monkeypatch)
+
+    result = _query(mode="delta", baseline={"nodes": [], "count": 0})
+
+    assert result["success"] is True
+    assert result["data"]["baseline_count"] == 0
+    assert any("resolved to 0 entries" in item for item in result["data"]["warnings"])
+
+
+def test_hierarchy_a_different_wrapper_for_the_same_handle_still_finds_the_subtree(monkeypatch):
+    """pymxs may hand back another wrapper for a node that is in the scene."""
+    ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
+    runtime = _install_runtime(monkeypatch, ghost=ghost)
+    assert runtime.getNodeByName("hero_mesh") is ghost
+
+    result = _hierarchy(node_name="hero_mesh")
+
+    assert result["success"] is True
+    # The subtree belongs to the enumerated node, not to the wrapper we were handed.
+    assert result["data"]["node_count"] == 4
+    assert "hero_child" in [entry["node_name"] for entry in result["data"]["tree"][0]["children"]]
+
+
+def test_hierarchy_refuses_a_wrapper_the_enumeration_does_not_contain(monkeypatch):
+    """A one-node tree that looks complete is worse than a refusal."""
+    ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
+    runtime = _install_runtime(monkeypatch, ghost=ghost)
+    runtime.objects = [node for node in runtime.objects if node.name != "hero_mesh"]
+
+    result = _hierarchy(node_name="hero_mesh")
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "node_not_in_scene"
+    assert result["data"]["tree"] == []
+
+
+def test_instances_a_different_wrapper_for_the_same_handle_still_resolves(monkeypatch):
+    ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
+    runtime = _install_runtime(monkeypatch, ghost=ghost)
+    assert runtime.getNodeByName("hero_mesh") is ghost
+
+    result = _instances(node_name="hero_mesh")
+
+    assert result["success"] is True
+    assert result["data"]["is_instanced"] is True
+    assert result["data"]["instance_count"] == 2
+
+
+def test_instances_refuses_a_wrapper_the_enumeration_does_not_contain(monkeypatch):
+    """Claiming 'shares its object with 0 node(s)' asserts a fact never looked up."""
+    ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
+    runtime = _install_runtime(monkeypatch, ghost=ghost)
+    runtime.objects = [node for node in runtime.objects if node.name != "hero_mesh"]
+
+    result = _instances(node_name="hero_mesh")
+
+    assert result["success"] is False
+    assert result["data"]["failure_reason"] == "node_not_in_scene"
+
+
+def test_dependencies_accepts_a_different_wrapper_for_the_same_handle(monkeypatch):
+    """The handle match is shared, so all three tools agree on one object."""
+    ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
+    _install_runtime(monkeypatch, ghost=ghost)
+
+    result = _dependencies(node_name="hero_mesh")
+
+    assert result["success"] is True
+    assert result["data"]["node"]["node_name"] == "hero_mesh"
+
+
+# ── regressions: bounded skipped, unreadable bucket, ignored arguments ─
+
+
+def test_property_mode_bounds_the_skipped_list_like_the_matches(monkeypatch):
+    """An unreadable node is a finding, not a licence to return thousands."""
+    _install_runtime(monkeypatch)
+
+    result = _query(mode="property", property_name="nothing_has_this", limit=2)
+
+    assert len(result["data"]["skipped"]) == 2
+    assert result["data"]["skipped_count"] == 6
+    assert result["data"]["skipped_omitted"] == 4
+    assert result["data"]["truncated"] is True
+
+
+def test_delta_does_not_count_read_failures_as_changes(monkeypatch):
+    runtime = _install_runtime(monkeypatch)
+    snapshot = _query(mode="property", property_name="radius")["data"]["nodes"]
+
+    def _refuse(self):
+        raise RuntimeError("the host refused this read")
+
+    runtime.lone.__class__ = type("_RefusingNode", (_Node,), {"radius": property(_refuse)})
+
+    result = _query(mode="delta", baseline=snapshot, property_name="radius")
+
+    assert result["data"]["changed_count"] == 0
+    assert result["data"]["unreadable_count"] == 1
+    assert result["data"]["unreadable"][0]["node_name"] == "lone_mesh"
+    assert result["data"]["unreadable"][0]["before"] == 5.0
+    assert any("could not be read" in item for item in result["data"]["warnings"])
+
+
+def test_property_value_is_reported_as_ignored_in_delta(monkeypatch):
+    _install_runtime(monkeypatch)
+
+    result = _query(mode="delta", baseline=["hero_mesh"], property_value=3)
+
+    assert any("property_value is ignored" in item for item in result["data"]["warnings"])
+
+
+def test_hierarchy_names_each_truncation_cause_separately(monkeypatch):
+    """One sentence naming three causes leaves the caller unable to pick a knob."""
+    _install_runtime(monkeypatch)
+
+    depth = _hierarchy(node_name="hero_mesh", max_depth=0)
+    assert any("depth cap" in item for item in depth["data"]["warnings"])
+    assert not any("node limit" in item for item in depth["data"]["warnings"])
+
+    limit = _hierarchy(limit=2)
+    assert any("node limit" in item for item in limit["data"]["warnings"])
+    assert not any("depth cap" in item for item in limit["data"]["warnings"])

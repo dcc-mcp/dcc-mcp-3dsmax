@@ -170,20 +170,45 @@ separate actions answers its question and then pay for the wrong guess:
 | `selection` | the nodes currently selected |
 | `delta` | what was added, removed, renamed, or changed against a snapshot the caller captured earlier |
 
-Every mode takes the same `name_filter`, `include_hidden`, and `limit`
-arguments. `overview` and `delta` answer with counts instead of a node list, so
-they stay cheap on a large scene.
+Every mode takes the same `limit`. `name_filter` and `include_hidden` narrow the
+node list in `filter`, `class`, `property`, `selection`, and `overview`. They do
+**not** narrow a `delta` comparison: a baseline captured without a filter is a
+statement about the whole scene, so narrowing only the current side would report
+every filtered-out node as removed while it is still there. When either is set,
+`delta` says so in `warnings` and compares the whole scene. `overview` and
+`delta` answer with counts instead of a node list, so they stay cheap on a large
+scene.
 
 `delta` is stateless: it requires a `baseline` snapshot and refuses to guess
 one. Run `query_scene` with `include_snapshot` true and pass the returned
-`snapshot` back as `baseline`. Nodes are matched by `object_id` when the
-baseline carries one and by name otherwise, which is what makes a rename
-visible instead of looking like a removal plus an addition. Pass `property_name`
-to compare one property as well; a baseline that carries no value for it is
-reported in `warnings` instead of being read as "nothing changed".
+`snapshot` back as `baseline`. Pass `snapshot` itself rather than the whole
+result object: `overview` and `delta` return an empty `nodes` list, and handing
+their result back would read as an empty baseline and report the whole scene as
+added. When a result object is passed anyway, a non-empty `snapshot` wins over an
+empty `nodes`, and a baseline that still resolves to nothing is named in
+`warnings`. Nodes are matched by `object_id` when the baseline carries one and by
+name otherwise, which is what makes a rename visible instead of looking like a
+removal plus an addition.
+
+Pass `property_name` to compare one property as well. The `snapshot` returned by
+`include_snapshot` carries no property values, so comparing a property needs a
+baseline taken from `property` mode, whose nodes carry a `value`. A baseline that
+carries no value for the property is reported in `warnings` instead of being read
+as "nothing changed", and a node that could not be read goes to `unreadable`
+rather than being counted as changed.
 
 In `property` mode a node the host refused to read is listed in `skipped` with
-the reason, not treated as a node that lacks the property. Private property
-names (any name starting with an underscore) are refused outright. Every mode
-returns a `warnings` list, and a question this host could not answer always ends
-up in it rather than disappearing from the result.
+the reason, not treated as a node that lacks the property. Both `skipped` and the
+matches are bounded by `limit`; when `skipped` is cut, `skipped_count` still
+reports the true total and `skipped_omitted` reports what was left out. Private
+property names (any name starting with an underscore) are refused outright. Every
+mode returns a `warnings` list, and a question this host could not answer always
+ends up in it rather than disappearing from the result.
+
+Node-targeted tools reject a target that resolves to something the scene node
+list does not contain. `resolve_node_object` can fall back to `getNodeByName`,
+which may return a wrapper the enumeration never produced; such a wrapper has no
+parent links the hierarchy walk can follow and no instance set that was ever
+computed, so answering anyway would produce a one-node tree or a "shares its
+object with 0 node(s)" that asserts something never looked up. Matching is done
+by object handle, so a different wrapper for the same node still resolves.

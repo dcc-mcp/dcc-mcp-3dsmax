@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 # Import local modules
-from dcc_mcp_3dsmax._scene_query import SceneQueryError, find_instances, scene_nodes
+from dcc_mcp_3dsmax._scene_query import SceneQueryError, find_instances, match_scene_node, scene_nodes
 from dcc_mcp_3dsmax._scene_utils import resolve_node_object
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
@@ -46,7 +46,18 @@ def main(
                 "message": resolved.get("message") or "No matching node found",
                 "data": {"failure_reason": "node_not_found", "matches": resolved.get("matches", []), "groups": []},
             }
-        target = node
+        # The enumeration's wrapper is the one that was classified; the wrapper
+        # resolve_node_object handed back may not be in it at all.
+        target = match_scene_node(nodes, node)
+        if target is None:
+            # Claiming 'shares its object with 0 node(s)' would assert a fact
+            # that was never looked up.
+            return {
+                "success": False,
+                "message": "{} resolves to a node the scene enumeration does not contain, so its instance set "
+                "cannot be resolved".format(resolved["node"]["node_name"]),
+                "data": {"failure_reason": "node_not_in_scene", "node": resolved["node"], "groups": []},
+            }
 
     try:
         data = find_instances(nodes, runtime=rt, target=target, include_unique=include_unique, limit=limit)

@@ -18,7 +18,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 # Import local modules
-from dcc_mcp_3dsmax._scene_query import SceneQueryError, collect_dependencies, scene_nodes
+from dcc_mcp_3dsmax._scene_query import (
+    SceneQueryError,
+    collect_dependencies,
+    match_scene_node,
+    scene_nodes,
+)
 from dcc_mcp_3dsmax._scene_utils import resolve_node_object
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
@@ -50,10 +55,11 @@ def main(
             "message": resolved.get("message") or "No matching node found",
             "data": {"failure_reason": "node_not_found", "matches": resolved.get("matches", [])},
         }
-    if not any(candidate is node for candidate in nodes):
-        # ``resolve_node_object`` can fall back to getNodeByName, which returns
-        # a wrapper the scene walk never produced. Say so instead of reading
-        # dependencies through an object the enumeration does not know about.
+    # ``resolve_node_object`` can fall back to getNodeByName, which returns a
+    # wrapper the scene walk never produced. Read through the enumerated node so
+    # every tool in this batch agrees on which object it is talking about.
+    node = match_scene_node(nodes, node)
+    if node is None:
         return {
             "success": False,
             "message": "{} is not in the enumerated scene nodes, so its dependencies cannot be read".format(

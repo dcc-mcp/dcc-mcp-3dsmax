@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 # Import local modules
-from dcc_mcp_3dsmax._scene_query import SceneQueryError, build_hierarchy, scene_nodes
+from dcc_mcp_3dsmax._scene_query import SceneQueryError, build_hierarchy, match_scene_node, scene_nodes
 from dcc_mcp_3dsmax._scene_utils import resolve_node_object
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
@@ -45,7 +45,18 @@ def main(
                 "message": resolved.get("message") or "No matching node found",
                 "data": {"failure_reason": "node_not_found", "matches": resolved.get("matches", []), "tree": []},
             }
-        root = node
+        # Use the node the enumeration produced, not the wrapper resolve_node_object
+        # handed back: only the former has parent links the walk can follow.
+        root = match_scene_node(nodes, node)
+        if root is None:
+            # A wrapper the enumeration does not contain would yield a one-node
+            # tree that looks complete and is missing its whole subtree.
+            return {
+                "success": False,
+                "message": "{} resolves to a node the scene enumeration does not contain, so its subtree cannot "
+                "be walked".format(resolved["node"]["node_name"]),
+                "data": {"failure_reason": "node_not_in_scene", "node": resolved["node"], "tree": []},
+            }
 
     try:
         data = build_hierarchy(

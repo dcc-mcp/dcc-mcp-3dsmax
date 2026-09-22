@@ -2300,7 +2300,10 @@ tools:
       the selected nodes, and delta for what changed against a snapshot the
       caller captured earlier. Overview and delta answer with counts rather than
       a node list; every mode reports a warning instead of hiding a question the
-      host could not answer.
+      host could not answer. Delta compares the whole scene: name_filter and
+      include_hidden do not narrow it, because a baseline captured without a
+      filter is a statement about the whole scene and narrowing only the current
+      side would report filtered-out nodes as removed.
     source_file: action_query_scene.py
     execution: sync
     affinity: main
@@ -2347,8 +2350,11 @@ tools:
           description: >-
             Required in mode delta. A node snapshot to compare against: an array
             of node names, or an array of objects carrying node_name, object_id,
-            and optionally value or values. The snapshot field returned when
-            include_snapshot is true has exactly this shape.
+            and optionally value or values. Pass the snapshot field returned when
+            include_snapshot is true rather than the whole result object -
+            overview and delta return an empty nodes list, which is not a
+            baseline. Property comparison needs a baseline from property mode,
+            whose nodes carry a value.
         include_snapshot:
           type: boolean
           default: false
