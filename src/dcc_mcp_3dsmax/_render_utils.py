@@ -467,7 +467,9 @@ def set_camera(
         return render_error("Resolved node is not a camera", node=node_identity(camera))
     # A camera is a wrapper, not a scalar: compare by identity, handle, or name.
     results = [apply_runtime_setting(runtime, "activeCamera", camera, label="camera", compare=_same_node)]
-    warnings = [row["warning"] for row in results if row.get("warning")]
+    # ``summarize_setting_results`` already reports the setting warnings; this
+    # list only carries failures from the viewport follow-up below.
+    warnings = []
     viewport = getattr(runtime, "viewport", None)
     if viewport is not None:
         setter = getattr(viewport, "setCamera", None)

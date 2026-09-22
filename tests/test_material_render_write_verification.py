@@ -88,6 +88,76 @@ class _SilentAssignmentNode:
         super().__setattr__(name, value)
 
 
+class _Undefined:
+    """Stand in for pymxs ``undefined``, which is not ``None``."""
+
+    def __str__(self) -> str:
+        return "undefined"
+
+
+_UNDEFINED = _Undefined()
+
+
+class _MaterialWrapper:
+    """A fresh wrapper around the same host material.
+
+    pymxs builds a new wrapper object for every attribute read, so
+    ``node.material is material`` is False while ``node.material == material``
+    is True.
+    """
+
+    def __init__(self, target) -> None:
+        self.__dict__["_target"] = target
+
+    def __getattr__(self, name):
+        target = self.__dict__.get("_target")
+        if target is None:
+            raise AttributeError(name)
+        return getattr(target, name)
+
+    def __eq__(self, other) -> bool:
+        target = self.__dict__["_target"]
+        if isinstance(other, _MaterialWrapper):
+            return target is other.__dict__["_target"]
+        return target is other
+
+    def __hash__(self) -> int:
+        return hash(id(self.__dict__["_target"]))
+
+
+class _FreshWrapperNode:
+    """Model a node that keeps the assignment but wraps it on every read."""
+
+    def __init__(
+        self, name: str, handle: int, material=None, *, undefined_readback: bool = False, silent: bool = False
+    ) -> None:
+        self.name = name
+        self.handle = handle
+        self.isHidden = False
+        self.parent = None
+        self._material = material
+        self._undefined_readback = undefined_readback
+        self._silent = silent
+
+    def __setattr__(self, name, value) -> None:
+        if name == "material" and getattr(self, "_silent", False):
+            return
+        super().__setattr__(name, value)
+
+    def _readback(self):
+        if self._material is None:
+            return _UNDEFINED if self._undefined_readback else None
+        return _MaterialWrapper(self._material)
+
+    @property
+    def material(self):
+        return self._readback()
+
+    @material.setter
+    def material(self, value) -> None:
+        self._material = value
+
+
 class _MaterialRuntime:
     def __init__(self, *, material=None, standard=None, node=None) -> None:
         self.standard = standard if standard is not None else _StandardMaterial()
@@ -294,6 +364,56 @@ def test_reset_material_fails_when_a_node_keeps_its_material(monkeypatch):
     assert result["data"]["count"] == 0
     assert result["data"]["errors"][0]["node"]["node_name"] == "hero_mesh"
     assert node.material is material
+
+
+def test_apply_material_succeeds_when_the_host_returns_a_fresh_wrapper(monkeypatch):
+    material = _PhysicalMaterial(name="Hero")
+    node = _FreshWrapperNode("hero_mesh", 42, material=None)
+    _install_material_runtime(monkeypatch, _MaterialRuntime(material=material, node=node))
+
+    result = _load_action(MATERIALS_DIR, "action_apply_material.py").main(
+        material_name="Hero", node_names=["hero_mesh"]
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["applied_count"] == 1
+    assert result["data"]["errors"] == []
+    # The write really landed; only the wrapper identity differs.
+    assert node._material is material
+    assert node.material is not material
+    assert node.material == material
+
+
+def test_apply_material_fails_when_a_fresh_wrapper_carries_another_material(monkeypatch):
+    material = _PhysicalMaterial(name="Hero")
+    other = _PhysicalMaterial(name="Other")
+    node = _FreshWrapperNode("hero_mesh", 42, material=other, silent=True)
+    _install_material_runtime(monkeypatch, _MaterialRuntime(material=material, node=node))
+
+    result = _load_action(MATERIALS_DIR, "action_apply_material.py").main(
+        material_name="Hero", node_names=["hero_mesh"]
+    )
+
+    assert result["success"] is False, result
+    assert result["data"]["applied_count"] == 0
+    assert result["data"]["errors"][0]["node"]["node_name"] == "hero_mesh"
+    # The wrapper and value fallbacks must not rescue a different material.
+    assert node._material is other
+    assert node.material == other
+    assert node.material != material
+
+
+def test_reset_material_succeeds_when_a_cleared_node_reads_back_undefined(monkeypatch):
+    material = _PhysicalMaterial(name="Hero")
+    node = _FreshWrapperNode("hero_mesh", 42, material=material, undefined_readback=True)
+    _install_material_runtime(monkeypatch, _MaterialRuntime(material=material, node=node))
+
+    result = _load_action(MATERIALS_DIR, "action_reset_material.py").main(node_names=["hero_mesh"])
+
+    assert result["success"] is True, result
+    assert result["data"]["count"] == 1
+    assert result["data"]["errors"] == []
+    assert node._material is None
 
 
 # ---------------------------------------------------------------------------

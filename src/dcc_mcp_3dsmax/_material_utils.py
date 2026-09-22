@@ -217,6 +217,54 @@ def set_material_attribute(material: Any, attribute: str, value: Any, *, runtime
     return ["Unsupported material attribute: {}".format(attribute)]
 
 
+def _is_undefined(value: Any) -> bool:
+    """Return True when a host readback is Max's ``undefined`` placeholder.
+
+    pymxs returns ``undefined`` -- not ``None`` -- for a node that carries no
+    material, so clearing an assignment reads back a truthy wrapper.
+    """
+    if value is None:
+        return True
+    if type(value).__name__ == "undefined":
+        return True
+    try:
+        import pymxs
+
+        if getattr(pymxs.runtime, "undefined", None) is value:
+            return True
+    except Exception:  # noqa: BLE001 - offline doubles install no pymxs.
+        pass
+    return str(value) == "undefined"
+
+
+def _same_material(candidate: Any, material: Any) -> bool:
+    """Compare two material wrappers by identity, host equality, or name.
+
+    A material is a host wrapper, not a scalar: pymxs hands back a new
+    equivalent wrapper on every attribute read, so a bare ``is`` check would
+    report a successful assignment as a mismatch.
+    """
+    if candidate is material:
+        return True
+    expected_empty = material is None or _is_undefined(material)
+    if expected_empty:
+        return _is_undefined(candidate)
+    if _is_undefined(candidate):
+        return False
+    try:
+        if bool(candidate == material):
+            return True
+    except Exception:  # noqa: BLE001 - some host wrappers raise on ``==``.
+        pass
+    expected_name = getattr(material, "name", None)
+    actual_name = getattr(candidate, "name", None)
+    if expected_name is None or actual_name is None:
+        return False
+    expected_name = str(expected_name)
+    # An empty name matches every other unnamed material, so it proves nothing.
+    return bool(expected_name) and expected_name == str(actual_name)
+
+
 def assign_material(nodes: Sequence[Any], material: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Assign a material to nodes and verify each assignment.
 
@@ -226,15 +274,16 @@ def assign_material(nodes: Sequence[Any], material: Any) -> Tuple[List[Dict[str,
     """
     rows = []
     errors = []
+    identity = material_identity(material)
     for node in nodes:
-        row = {"node": node_identity(node), "material": material_identity(material)}
+        row = {"node": node_identity(node), "material": identity}
         try:
             node.material = material
         except Exception as exc:  # noqa: BLE001 - readback is the fail-closed boundary.
             row["error"] = "Could not assign the material: {}".format(exc)
             errors.append(row)
             continue
-        if getattr(node, "material", None) is not material:
+        if not _same_material(getattr(node, "material", None), material):
             row["error"] = "Material readback did not match the assignment"
             errors.append(row)
             continue
@@ -262,7 +311,7 @@ def reset_materials(
             row["error"] = "Could not reset the material: {}".format(exc)
             errors.append(row)
             continue
-        if getattr(node, "material", None) is not default_material:
+        if not _same_material(getattr(node, "material", None), default_material):
             row["error"] = "Material readback did not match the reset value"
             errors.append(row)
             continue
