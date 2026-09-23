@@ -36,12 +36,23 @@ MIN_CORE_VERSION = "0.20.24"
 MAX_CORE_VERSION = "1.0.0"
 MIN_SERVER_VERSION = "0.20.22"
 MAX_SERVER_VERSION = "1.0.0"
+# Last-resort value for the report's own ``schema_version`` field, used only
+# when Core's schema document cannot be read at all. See
+# ``report_schema_version()``.
+#
+# This is deliberately NOT Core's ``INSTALL_SOP_SCHEMA_VERSION``. That constant
+# is the revision of the published schema *artifact* (``-vN``); Core documents
+# it as separate from the report field, which stays at 1 because v2 only adds
+# the optional ``catalog`` object. The two values coincided at 1 through Core
+# 0.20.33, which is why copying the constant into the report looked correct
+# right up until 0.20.34 bumped the artifact revision to 2.
+FALLBACK_REPORT_SCHEMA_VERSION = 1
 try:
     from dcc_mcp_core.deployment import INSTALL_EXIT_CODES, INSTALL_SOP_SCHEMA_VERSION
 except ImportError:
     # Import-light fallback lets the CLI return a stable preflight report when
     # an old Core is present; pyproject requires the published implementation.
-    INSTALL_SOP_SCHEMA_VERSION = 1
+    INSTALL_SOP_SCHEMA_VERSION = FALLBACK_REPORT_SCHEMA_VERSION
     INSTALL_EXIT_CODES = {
         "ok": 0,
         "preflight": 10,
@@ -167,6 +178,68 @@ def _published_schema() -> Optional[Dict[str, Any]]:
     return load_install_sop_schema()
 
 
+def _published_schema_or_none() -> Optional[Dict[str, Any]]:
+    """Return Core's schema document, or ``None`` if it cannot be trusted.
+
+    Reading the document touches the disk and is verified by Core with a
+    SHA-256 digest, so a partially installed, tampered, or otherwise unhealthy
+    Core can make the read fail instead of returning a document. Broken
+    installs are exactly the situation this CLI exists to report on, so every
+    reader of the document must use this helper rather than calling
+    ``_published_schema()`` directly -- one unguarded call is enough to stop
+    the CLI from emitting the report it was about to print.
+    """
+    try:
+        return _published_schema()
+    except (RuntimeError, OSError, ValueError):
+        # Core signals schema_unavailable / schema_identity_mismatch /
+        # schema_digest_mismatch with RuntimeError, unreadable files with
+        # OSError, and a corrupt document with ValueError. None of them may
+        # stop this CLI from reporting.
+        return None
+
+
+def _published_schema_version(schema: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Return the ``schema_version`` const a schema document enforces."""
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    declared = properties.get("schema_version")
+    if not isinstance(declared, dict):
+        return None
+    value = declared.get("const")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def report_schema_version() -> int:
+    """Return the ``schema_version`` value every emitted report must carry.
+
+    Core enforces this value as the ``const`` of the ``schema_version``
+    property in the schema document it ships, so that document is the
+    authoritative source -- emitting anything else produces reports Core's own
+    validator rejects.
+
+    Core's exported ``INSTALL_SOP_SCHEMA_VERSION`` is deliberately NOT used.
+    It is the revision of the published schema *artifact* (``-vN``), a separate
+    quantity from the report's own field; the two merely happened to agree
+    while both were 1. Populating the report from that constant is the defect
+    this function exists to avoid.
+
+    If the document cannot be read -- see ``_published_schema_or_none()`` --
+    the value falls back to ``FALLBACK_REPORT_SCHEMA_VERSION`` rather than
+    propagating, because this CLI's job is to keep emitting a preflight report
+    precisely when the installation is broken.
+    """
+    published = _published_schema_version(_published_schema_or_none())
+    if published is not None:
+        return published
+    return FALLBACK_REPORT_SCHEMA_VERSION
+
+
 def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:
     """Return Core's Rust-backed Install SOP v1 validator when available."""
     try:
@@ -185,10 +258,11 @@ def validate_public_report(report: Dict[str, Any]) -> None:
     Core compiles Draft 2020-12 validation into its ``_core`` extension module,
     so the adapter needs no third-party JSON Schema package at runtime. When the
     native validator is missing -- for example on the py37-lite pure-Python Core
-    wheel -- fall back to the structural check this CLI has always used.
+    wheel, or when Core's schema document cannot be read at all -- fall back to
+    the structural check this CLI has always used.
     """
     validator = _native_report_validator()
-    if validator is not None and _published_schema() is not None:
+    if validator is not None and _published_schema_or_none() is not None:
         try:
             validator(report)
         except RuntimeError:
@@ -206,8 +280,16 @@ def validate_public_report(report: Dict[str, Any]) -> None:
         "receipt_path",
         "verify",
     }
-    if not required.issubset(report) or report.get("schema_version") != INSTALL_SOP_SCHEMA_VERSION:
-        raise ValueError("Install SOP v1 report is incomplete")
+    schema_version = report.get("schema_version")
+    if (
+        not required.issubset(report)
+        # ``type(...) is not int`` rather than ``not isinstance(...)``: bool is
+        # an int subclass, so ``isinstance(True, int)`` is true and ``True == 1``
+        # would let a non-integer report through the structural check.
+        or type(schema_version) is not int
+        or schema_version != report_schema_version()
+    ):
+        raise ValueError("Install SOP report is incomplete")
 
 
 def loads_public_report(value: str) -> Dict[str, Any]:
@@ -439,7 +521,7 @@ def _next_command(ctx: InstallContext, verb: str, step_id: str, why: str) -> Dic
 
 def _base_report(ctx: InstallContext, status: str, command: str) -> Dict[str, Any]:
     return {
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": report_schema_version(),
         "status": status,
         "dcc_type": DCC_TYPE,
         "command": command,
@@ -2745,7 +2827,7 @@ def _receipt(
     hook_content, hook_identity = _read_independent_file(staged_hook)
     return {
         "receipt_version": 1,
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": report_schema_version(),
         "dcc_type": DCC_TYPE,
         "adapter_version": ADAPTER_VERSION,
         "core_version": str(target.get("core_version", ctx.core_version)),
