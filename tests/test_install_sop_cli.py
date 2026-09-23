@@ -283,53 +283,68 @@ def _schema_document(const):
     return {"properties": {"schema_version": {"const": const, "type": "integer"}}}
 
 
-def test_report_schema_version_follows_published_document_not_exported_constant(monkeypatch) -> None:
-    """The schema document wins over Core's exported constant.
+def test_report_schema_version_follows_published_document(monkeypatch) -> None:
+    """The report field comes from the ``const`` Core's validator enforces."""
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(7))
 
-    Core 0.20.34 exports ``INSTALL_SOP_SCHEMA_VERSION = 2`` while shipping a
-    document whose const is ``1``. Emission must follow the document, because
-    that is what Core's validator actually enforces -- following the constant
-    makes Core reject every report this CLI emits.
+    assert cli.report_schema_version() == 7
+
+
+def test_report_schema_version_ignores_cores_artifact_revision(monkeypatch) -> None:
+    """Core's exported constant is the artifact revision, not the report field.
+
+    Core 0.20.34 exports ``INSTALL_SOP_SCHEMA_VERSION = 2`` (the ``-v2``
+    artifact revision) while the report field must stay at the document's
+    ``const`` of 1, because v2 only adds an optional ``catalog`` object. These
+    are separate quantities that merely agreed while both were 1, so the
+    constant must never reach the report.
     """
     cli = _install_cli()
     monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
+    monkeypatch.setattr(cli, "INSTALL_SOP_SCHEMA_VERSION", 2)
 
     assert cli.report_schema_version() == 1
 
 
-def test_report_schema_version_falls_back_to_exported_constant_without_document(monkeypatch) -> None:
+def test_report_schema_version_falls_back_when_document_is_unreadable(monkeypatch) -> None:
+    """A Core with no readable schema document still yields a usable report."""
     cli = _install_cli()
     monkeypatch.setattr(cli, "_published_schema", lambda: None)
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 3)
 
-    assert cli.report_schema_version() == 3
+    assert cli.report_schema_version() == cli.FALLBACK_REPORT_SCHEMA_VERSION
 
 
-def test_report_schema_version_uses_local_constant_without_core(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("Install SOP schema integrity error: schema_digest_mismatch"),
+        OSError("schema file unreadable"),
+        ValueError("schema document is not valid JSON"),
+    ],
+)
+def test_report_schema_version_survives_schema_read_failure(monkeypatch, error) -> None:
+    """An unhealthy Core must not stop the CLI from emitting a report.
+
+    Core verifies its schema document with a SHA-256 digest and raises on a
+    missing, tampered, or unparsable document. Broken installs are exactly the
+    situation this CLI exists to report on, so the read failure has to degrade
+    to the fallback value instead of propagating.
+    """
     cli = _install_cli()
-    monkeypatch.setattr(cli, "_published_schema", lambda: None)
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: None)
 
-    assert cli.report_schema_version() == cli.FALLBACK_INSTALL_SOP_SCHEMA_VERSION
+    def _raise():
+        raise error
 
+    monkeypatch.setattr(cli, "_published_schema", _raise)
 
-def test_schema_version_disagreement_reports_mismatch(monkeypatch) -> None:
-    cli = _install_cli()
-    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
-    assert cli.schema_version_disagreement() == (1, 2)
-
-    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(2))
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
-    assert cli.schema_version_disagreement() is None
+    assert cli.report_schema_version() == cli.FALLBACK_REPORT_SCHEMA_VERSION
 
 
 def test_emitted_report_survives_cores_own_validator(tmp_path, capsys, monkeypatch) -> None:
-    """End-to-end: a Core that disagrees with itself still validates our report."""
+    """End-to-end: the emitted report passes Core's own validator."""
     cli = _install_cli()
     monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
-    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
 
     exit_code = cli.main(_args(_layout(tmp_path), "status"))
     report = _report(cli, capsys)
@@ -3651,3 +3666,37 @@ cli._restore_package_state(ctx, prior, owned)
     recovered = cli._acquire_package_mutex(ctx)
     recovered.release()
     assert state_path.read_text(encoding="ascii") == "prior"
+
+
+def _ci_workflow():
+    """Parsed ``.github/workflows/ci.yml`` for the repository under test."""
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    return yaml.safe_load((root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+
+
+def test_ci_matrix_still_uploads_coverage() -> None:
+    """The main test matrix must keep reporting coverage to Codecov.
+
+    A previous revision of this file silently dropped the upload step while
+    adding an unrelated job, turning off repository-wide coverage reporting
+    with no mention in the change description. This guards against repeating
+    that.
+    """
+    steps = _ci_workflow()["jobs"]["test"]["steps"]
+
+    uploads = [step for step in steps if str(step.get("uses", "")).startswith("codecov/codecov-action")]
+    assert uploads, "test job lost its Codecov upload step"
+
+
+def test_ci_core_latest_job_resolves_a_real_core_version() -> None:
+    """The early-warning job must fail loudly rather than test an empty pin."""
+    workflow = _ci_workflow()
+    job = workflow["jobs"]["core-latest"]
+    resolve = [step for step in job["steps"] if step.get("id") == "core"]
+    assert resolve, "core-latest job has no version resolution step"
+
+    script = resolve[0]["run"]
+    assert "exit 1" in script, "empty version resolution must fail the job"
+    assert "::error::" in script

@@ -36,6 +36,12 @@ jobs:
       - name: Install SOP lifecycle smoke
         run: python -m pytest tests/test_install_sop_cli.py
 
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false
+
   core-latest:
     # The pinned upper bound keeps the main matrix reproducible, but it also
     # hides incompatibilities until a bump lands. This job deliberately runs
@@ -59,6 +65,13 @@ jobs:
           python -m pip install --upgrade pip
           version=$(python -m pip index versions dcc-mcp-core \
             | tr ',' '\n' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          # Fail loudly here rather than silently testing an empty pin: this
+          # job exists only to warn about new Core releases, so a run that
+          # resolved nothing would otherwise still report success.
+          if [ -z "${version}" ]; then
+            echo "::error::could not resolve newest dcc-mcp-core version"
+            exit 1
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Resolved dcc-mcp-core ${version}"
 

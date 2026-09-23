@@ -36,18 +36,23 @@ MIN_CORE_VERSION = "0.20.24"
 MAX_CORE_VERSION = "1.0.0"
 MIN_SERVER_VERSION = "0.20.22"
 MAX_SERVER_VERSION = "1.0.0"
-# Last-resort report schema version, used only when no Core is importable at
-# all (for example a bare source checkout). Every report the CLI emits is
-# validated by Core's validator, which enforces the ``schema_version`` const in
-# the schema document Core ships -- so the published document always wins over
-# this constant when Core is present. See ``report_schema_version()``.
-FALLBACK_INSTALL_SOP_SCHEMA_VERSION = 1
+# Last-resort value for the report's own ``schema_version`` field, used only
+# when Core's schema document cannot be read at all. See
+# ``report_schema_version()``.
+#
+# This is deliberately NOT Core's ``INSTALL_SOP_SCHEMA_VERSION``. That constant
+# is the revision of the published schema *artifact* (``-vN``); Core documents
+# it as separate from the report field, which stays at 1 because v2 only adds
+# the optional ``catalog`` object. The two values coincided at 1 through Core
+# 0.20.33, which is why copying the constant into the report looked correct
+# right up until 0.20.34 bumped the artifact revision to 2.
+FALLBACK_REPORT_SCHEMA_VERSION = 1
 try:
     from dcc_mcp_core.deployment import INSTALL_EXIT_CODES, INSTALL_SOP_SCHEMA_VERSION
 except ImportError:
     # Import-light fallback lets the CLI return a stable preflight report when
     # an old Core is present; pyproject requires the published implementation.
-    INSTALL_SOP_SCHEMA_VERSION = FALLBACK_INSTALL_SOP_SCHEMA_VERSION
+    INSTALL_SOP_SCHEMA_VERSION = FALLBACK_REPORT_SCHEMA_VERSION
     INSTALL_EXIT_CODES = {
         "ok": 0,
         "preflight": 10,
@@ -189,55 +194,39 @@ def _published_schema_version(schema: Optional[Dict[str, Any]]) -> Optional[int]
     return value
 
 
-def _core_declared_schema_version() -> Optional[int]:
-    """Return Core's exported ``INSTALL_SOP_SCHEMA_VERSION`` when usable."""
-    try:
-        from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION as declared
-    except ImportError:
-        try:
-            from dcc_mcp_core import INSTALL_SOP_SCHEMA_VERSION as declared
-        except ImportError:
-            return None
-    if isinstance(declared, bool) or not isinstance(declared, int):
-        return None
-    return declared
-
-
 def report_schema_version() -> int:
-    """Return the Install SOP schema version every emitted report must carry.
+    """Return the ``schema_version`` value every emitted report must carry.
 
-    Core is the single source of truth, but it exposes that truth in two places
-    that releases can disagree with each other: the exported
-    ``INSTALL_SOP_SCHEMA_VERSION`` constant and the ``schema_version`` const in
-    the schema document Core validates against. Core 0.20.34, for example,
-    exports ``2`` while shipping a document whose const is ``1``.
+    Core enforces this value as the ``const`` of the ``schema_version``
+    property in the schema document it ships, so that document is the
+    authoritative source -- emitting anything else produces reports Core's own
+    validator rejects.
 
-    The schema document wins, because it is the artifact Core's own validator
-    applies -- emitting anything else produces reports Core rejects. The
-    exported constant is used only when no document is readable, and the local
-    constant only when Core is not importable at all.
+    Core's exported ``INSTALL_SOP_SCHEMA_VERSION`` is deliberately NOT used.
+    It is the revision of the published schema *artifact* (``-vN``), a separate
+    quantity from the report's own field; the two merely happened to agree
+    while both were 1. Populating the report from that constant is the defect
+    this function exists to avoid.
+
+    Reading the document touches the disk and is verified by Core with a
+    SHA-256 digest, so a partially installed, tampered, or otherwise unhealthy
+    Core can make the read fail instead of returning a document. This CLI's job
+    is to keep emitting a preflight report precisely when the installation is
+    broken, so any read failure falls back to
+    ``FALLBACK_REPORT_SCHEMA_VERSION`` rather than propagating.
     """
-    published = _published_schema_version(_published_schema())
+    try:
+        schema = _published_schema()
+    except (RuntimeError, OSError, ValueError):
+        # Core signals schema_unavailable / schema_identity_mismatch /
+        # schema_digest_mismatch with RuntimeError, unreadable files with
+        # OSError, and a corrupt document with ValueError. None of them may
+        # stop this CLI from reporting.
+        schema = None
+    published = _published_schema_version(schema)
     if published is not None:
         return published
-    declared = _core_declared_schema_version()
-    if declared is not None:
-        return declared
-    return FALLBACK_INSTALL_SOP_SCHEMA_VERSION
-
-
-def schema_version_disagreement() -> Optional[Tuple[int, int]]:
-    """Return ``(published, declared)`` when Core's two sources disagree.
-
-    A non-``None`` result means Core is internally inconsistent. Emission keeps
-    working -- it follows the published document -- so callers can surface the
-    mismatch as a diagnostic instead of failing closed on a Core defect.
-    """
-    published = _published_schema_version(_published_schema())
-    declared = _core_declared_schema_version()
-    if published is None or declared is None or published == declared:
-        return None
-    return (published, declared)
+    return FALLBACK_REPORT_SCHEMA_VERSION
 
 
 def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:
