@@ -178,6 +178,27 @@ def _published_schema() -> Optional[Dict[str, Any]]:
     return load_install_sop_schema()
 
 
+def _published_schema_or_none() -> Optional[Dict[str, Any]]:
+    """Return Core's schema document, or ``None`` if it cannot be trusted.
+
+    Reading the document touches the disk and is verified by Core with a
+    SHA-256 digest, so a partially installed, tampered, or otherwise unhealthy
+    Core can make the read fail instead of returning a document. Broken
+    installs are exactly the situation this CLI exists to report on, so every
+    reader of the document must use this helper rather than calling
+    ``_published_schema()`` directly -- one unguarded call is enough to stop
+    the CLI from emitting the report it was about to print.
+    """
+    try:
+        return _published_schema()
+    except (RuntimeError, OSError, ValueError):
+        # Core signals schema_unavailable / schema_identity_mismatch /
+        # schema_digest_mismatch with RuntimeError, unreadable files with
+        # OSError, and a corrupt document with ValueError. None of them may
+        # stop this CLI from reporting.
+        return None
+
+
 def _published_schema_version(schema: Optional[Dict[str, Any]]) -> Optional[int]:
     """Return the ``schema_version`` const a schema document enforces."""
     if not isinstance(schema, dict):
@@ -208,22 +229,12 @@ def report_schema_version() -> int:
     while both were 1. Populating the report from that constant is the defect
     this function exists to avoid.
 
-    Reading the document touches the disk and is verified by Core with a
-    SHA-256 digest, so a partially installed, tampered, or otherwise unhealthy
-    Core can make the read fail instead of returning a document. This CLI's job
-    is to keep emitting a preflight report precisely when the installation is
-    broken, so any read failure falls back to
-    ``FALLBACK_REPORT_SCHEMA_VERSION`` rather than propagating.
+    If the document cannot be read -- see ``_published_schema_or_none()`` --
+    the value falls back to ``FALLBACK_REPORT_SCHEMA_VERSION`` rather than
+    propagating, because this CLI's job is to keep emitting a preflight report
+    precisely when the installation is broken.
     """
-    try:
-        schema = _published_schema()
-    except (RuntimeError, OSError, ValueError):
-        # Core signals schema_unavailable / schema_identity_mismatch /
-        # schema_digest_mismatch with RuntimeError, unreadable files with
-        # OSError, and a corrupt document with ValueError. None of them may
-        # stop this CLI from reporting.
-        schema = None
-    published = _published_schema_version(schema)
+    published = _published_schema_version(_published_schema_or_none())
     if published is not None:
         return published
     return FALLBACK_REPORT_SCHEMA_VERSION
@@ -247,10 +258,11 @@ def validate_public_report(report: Dict[str, Any]) -> None:
     Core compiles Draft 2020-12 validation into its ``_core`` extension module,
     so the adapter needs no third-party JSON Schema package at runtime. When the
     native validator is missing -- for example on the py37-lite pure-Python Core
-    wheel -- fall back to the structural check this CLI has always used.
+    wheel, or when Core's schema document cannot be read at all -- fall back to
+    the structural check this CLI has always used.
     """
     validator = _native_report_validator()
-    if validator is not None and _published_schema() is not None:
+    if validator is not None and _published_schema_or_none() is not None:
         try:
             validator(report)
         except RuntimeError:

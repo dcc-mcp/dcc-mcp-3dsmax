@@ -341,6 +341,53 @@ def test_report_schema_version_survives_schema_read_failure(monkeypatch, error) 
     assert cli.report_schema_version() == cli.FALLBACK_REPORT_SCHEMA_VERSION
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("Install SOP schema integrity error: schema_digest_mismatch"),
+        OSError("schema file unreadable"),
+        ValueError("schema document is not valid JSON"),
+    ],
+)
+def test_validate_public_report_survives_schema_read_failure(monkeypatch, error) -> None:
+    """Validation must degrade, not raise, when the schema document is unreadable.
+
+    ``_emit()`` validates every report on its way out, including the failure
+    report built when an install is already broken. Guarding only the value
+    lookup while leaving the validation-path read unguarded lets the CLI
+    compute a report it then crashes on.
+    """
+    cli = _install_cli()
+
+    def _raise():
+        raise error
+
+    monkeypatch.setattr(cli, "_published_schema", _raise)
+    report = {
+        "schema_version": cli.report_schema_version(),
+        "status": "failed",
+        "dcc_type": "3dsmax",
+        "adapter_version": "0.2.13",
+        "core_version": "0.20.34",
+        "steps": [],
+        "next_steps": [],
+        "receipt_path": None,
+        "verify": {
+            "directly_usable": False,
+            "failure_stage": "preflight",
+            "failure_reason": "not_installed",
+        },
+    }
+
+    cli.validate_public_report(report)  # must not raise
+
+    # Degrading must not mean accepting anything.
+    broken = dict(report)
+    broken["schema_version"] = cli.report_schema_version() + 1
+    with pytest.raises(ValueError):
+        cli.validate_public_report(broken)
+
+
 def test_emitted_report_survives_cores_own_validator(tmp_path, capsys, monkeypatch) -> None:
     """End-to-end: the emitted report passes Core's own validator."""
     cli = _install_cli()
