@@ -36,12 +36,18 @@ MIN_CORE_VERSION = "0.20.24"
 MAX_CORE_VERSION = "1.0.0"
 MIN_SERVER_VERSION = "0.20.22"
 MAX_SERVER_VERSION = "1.0.0"
+# Last-resort report schema version, used only when no Core is importable at
+# all (for example a bare source checkout). Every report the CLI emits is
+# validated by Core's validator, which enforces the ``schema_version`` const in
+# the schema document Core ships -- so the published document always wins over
+# this constant when Core is present. See ``report_schema_version()``.
+FALLBACK_INSTALL_SOP_SCHEMA_VERSION = 1
 try:
     from dcc_mcp_core.deployment import INSTALL_EXIT_CODES, INSTALL_SOP_SCHEMA_VERSION
 except ImportError:
     # Import-light fallback lets the CLI return a stable preflight report when
     # an old Core is present; pyproject requires the published implementation.
-    INSTALL_SOP_SCHEMA_VERSION = 1
+    INSTALL_SOP_SCHEMA_VERSION = FALLBACK_INSTALL_SOP_SCHEMA_VERSION
     INSTALL_EXIT_CODES = {
         "ok": 0,
         "preflight": 10,
@@ -167,6 +173,73 @@ def _published_schema() -> Optional[Dict[str, Any]]:
     return load_install_sop_schema()
 
 
+def _published_schema_version(schema: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Return the ``schema_version`` const a schema document enforces."""
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    declared = properties.get("schema_version")
+    if not isinstance(declared, dict):
+        return None
+    value = declared.get("const")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _core_declared_schema_version() -> Optional[int]:
+    """Return Core's exported ``INSTALL_SOP_SCHEMA_VERSION`` when usable."""
+    try:
+        from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION as declared
+    except ImportError:
+        try:
+            from dcc_mcp_core import INSTALL_SOP_SCHEMA_VERSION as declared
+        except ImportError:
+            return None
+    if isinstance(declared, bool) or not isinstance(declared, int):
+        return None
+    return declared
+
+
+def report_schema_version() -> int:
+    """Return the Install SOP schema version every emitted report must carry.
+
+    Core is the single source of truth, but it exposes that truth in two places
+    that releases can disagree with each other: the exported
+    ``INSTALL_SOP_SCHEMA_VERSION`` constant and the ``schema_version`` const in
+    the schema document Core validates against. Core 0.20.34, for example,
+    exports ``2`` while shipping a document whose const is ``1``.
+
+    The schema document wins, because it is the artifact Core's own validator
+    applies -- emitting anything else produces reports Core rejects. The
+    exported constant is used only when no document is readable, and the local
+    constant only when Core is not importable at all.
+    """
+    published = _published_schema_version(_published_schema())
+    if published is not None:
+        return published
+    declared = _core_declared_schema_version()
+    if declared is not None:
+        return declared
+    return FALLBACK_INSTALL_SOP_SCHEMA_VERSION
+
+
+def schema_version_disagreement() -> Optional[Tuple[int, int]]:
+    """Return ``(published, declared)`` when Core's two sources disagree.
+
+    A non-``None`` result means Core is internally inconsistent. Emission keeps
+    working -- it follows the published document -- so callers can surface the
+    mismatch as a diagnostic instead of failing closed on a Core defect.
+    """
+    published = _published_schema_version(_published_schema())
+    declared = _core_declared_schema_version()
+    if published is None or declared is None or published == declared:
+        return None
+    return (published, declared)
+
+
 def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:
     """Return Core's Rust-backed Install SOP v1 validator when available."""
     try:
@@ -206,8 +279,8 @@ def validate_public_report(report: Dict[str, Any]) -> None:
         "receipt_path",
         "verify",
     }
-    if not required.issubset(report) or report.get("schema_version") != INSTALL_SOP_SCHEMA_VERSION:
-        raise ValueError("Install SOP v1 report is incomplete")
+    if not required.issubset(report) or report.get("schema_version") != report_schema_version():
+        raise ValueError("Install SOP report is incomplete")
 
 
 def loads_public_report(value: str) -> Dict[str, Any]:
@@ -439,7 +512,7 @@ def _next_command(ctx: InstallContext, verb: str, step_id: str, why: str) -> Dic
 
 def _base_report(ctx: InstallContext, status: str, command: str) -> Dict[str, Any]:
     return {
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": report_schema_version(),
         "status": status,
         "dcc_type": DCC_TYPE,
         "command": command,
@@ -2745,7 +2818,7 @@ def _receipt(
     hook_content, hook_identity = _read_independent_file(staged_hook)
     return {
         "receipt_version": 1,
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": report_schema_version(),
         "dcc_type": DCC_TYPE,
         "adapter_version": ADAPTER_VERSION,
         "core_version": str(target.get("core_version", ctx.core_version)),

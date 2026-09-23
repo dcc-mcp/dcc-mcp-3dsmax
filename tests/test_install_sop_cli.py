@@ -264,7 +264,7 @@ def test_json_status_is_one_schema_valid_report(tmp_path, capsys) -> None:
     report = _report(cli, capsys)
 
     assert exit_code == 10
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == cli.report_schema_version()
     assert report["dcc_type"] == "3dsmax"
     assert report["status"] == "failed"
     assert report["verify"] == {
@@ -276,6 +276,66 @@ def test_json_status_is_one_schema_valid_report(tmp_path, capsys) -> None:
     assert report["steps"]
     assert report["next_steps"][0]["command"][1] == "install"
     cli.validate_public_report(report)
+
+
+def _schema_document(const):
+    """A minimal Core schema document enforcing one ``schema_version`` const."""
+    return {"properties": {"schema_version": {"const": const, "type": "integer"}}}
+
+
+def test_report_schema_version_follows_published_document_not_exported_constant(monkeypatch) -> None:
+    """The schema document wins over Core's exported constant.
+
+    Core 0.20.34 exports ``INSTALL_SOP_SCHEMA_VERSION = 2`` while shipping a
+    document whose const is ``1``. Emission must follow the document, because
+    that is what Core's validator actually enforces -- following the constant
+    makes Core reject every report this CLI emits.
+    """
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
+
+    assert cli.report_schema_version() == 1
+
+
+def test_report_schema_version_falls_back_to_exported_constant_without_document(monkeypatch) -> None:
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: None)
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 3)
+
+    assert cli.report_schema_version() == 3
+
+
+def test_report_schema_version_uses_local_constant_without_core(monkeypatch) -> None:
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: None)
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: None)
+
+    assert cli.report_schema_version() == cli.FALLBACK_INSTALL_SOP_SCHEMA_VERSION
+
+
+def test_schema_version_disagreement_reports_mismatch(monkeypatch) -> None:
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
+    assert cli.schema_version_disagreement() == (1, 2)
+
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(2))
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
+    assert cli.schema_version_disagreement() is None
+
+
+def test_emitted_report_survives_cores_own_validator(tmp_path, capsys, monkeypatch) -> None:
+    """End-to-end: a Core that disagrees with itself still validates our report."""
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
+    monkeypatch.setattr(cli, "_core_declared_schema_version", lambda: 2)
+
+    exit_code = cli.main(_args(_layout(tmp_path), "status"))
+    report = _report(cli, capsys)
+
+    assert exit_code == 10
+    assert report["schema_version"] == 1
 
 
 def test_public_report_validation_uses_cores_native_validator(tmp_path, capsys, monkeypatch) -> None:
@@ -304,11 +364,11 @@ def test_public_report_validation_still_rejects_invalid_reports(tmp_path, capsys
     cli.main(_args(layout, "status"))
     report = _report(cli, capsys)
 
-    report["schema_version"] = 2
+    report["schema_version"] = cli.report_schema_version() + 1
     with pytest.raises(ValueError):
         cli.validate_public_report(report)
 
-    report["schema_version"] = 1
+    report["schema_version"] = cli.report_schema_version()
     del report["verify"]
     with pytest.raises(ValueError):
         cli.validate_public_report(report)
