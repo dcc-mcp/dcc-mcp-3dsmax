@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.14](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.13...v0.2.14) (2026-09-23)
+
+
+### Features
+
+* **lighting:** add Arnold, Corona, and photometric light providers with verified writes ([8b912b8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8b912b8bbb90c3ed23b8e913d980a32debe6cdfa))
+* **scene,display:** add selection sets, group lifecycle, and layer properties ([#205](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/205)) ([3c6011b](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/3c6011bd42c208930bad062eaf6ba9393ab83bb5))
+* **scene:** add hierarchy, instance, dependency, and unified scene query tools ([#202](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/202)) ([b0da8f4](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b0da8f4dd2b0a25599955637c3b5e4b16a12d2c0))
+* **viewport,render:** frame buffer capture, agent viewport, render signals, and V-Ray IPR ([#209](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/209)) ([6a7d8f3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/6a7d8f3d582b6263a153d46e783f5cb0598aa094))
+
+
+### Bug Fixes
+
+* **display:** catch TypeError for scalar layer color values ([#207](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/207)) ([6e12e2c](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/6e12e2c2d2d0b8d2f901ec1d82a2bc7eba7987df))
+* **install:** follow Core's published Install SOP schema document ([#210](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/210)) ([0372482](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/03724821a03920358c4868c45a0d85ef937597b5))
+* **materials,render:** verify every write instead of reporting silent success ([39db8d7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/39db8d75e7f32ff8340a69fc5a86259688bd2669))
+
 ## [0.2.13](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.12...v0.2.13) (2026-09-21)
 
 
