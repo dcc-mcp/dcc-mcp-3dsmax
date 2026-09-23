@@ -436,6 +436,35 @@ def test_public_report_validation_still_rejects_invalid_reports(tmp_path, capsys
         cli.validate_public_report(report)
 
 
+def test_structural_fallback_rejects_non_integer_schema_version(tmp_path, capsys, monkeypatch) -> None:
+    """The degraded structural check must not accept ``schema_version: true``.
+
+    ``bool`` is an ``int`` subclass and ``True == 1``, so a plain equality test
+    lets a boolean through whenever the expected value is 1. The degraded path
+    runs whenever Core's native validator or schema document is unavailable,
+    which is exactly when a malformed external document is most likely to be
+    read -- and Core's own schema requires the field to be an integer.
+    """
+    cli = _install_cli()
+    layout = _layout(tmp_path)
+    monkeypatch.setattr(cli, "_native_report_validator", lambda: None)
+
+    cli.main(_args(layout, "status"))
+    report = _report(cli, capsys)
+
+    expected = cli.report_schema_version()
+    for bogus in (True, False, float(expected), str(expected), None):
+        candidate = dict(report)
+        candidate["schema_version"] = bogus
+        with pytest.raises(ValueError):
+            cli.validate_public_report(candidate)
+
+    # A genuine integer of the expected value must still be accepted.
+    candidate = dict(report)
+    candidate["schema_version"] = int(expected)
+    cli.validate_public_report(candidate)
+
+
 def test_runtime_dependencies_exclude_jsonschema() -> None:
     """The adapter must not ship a third-party JSON Schema runtime dependency."""
     try:

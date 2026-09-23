@@ -280,7 +280,15 @@ def validate_public_report(report: Dict[str, Any]) -> None:
         "receipt_path",
         "verify",
     }
-    if not required.issubset(report) or report.get("schema_version") != report_schema_version():
+    schema_version = report.get("schema_version")
+    if (
+        not required.issubset(report)
+        # ``type(...) is not int`` rather than ``not isinstance(...)``: bool is
+        # an int subclass, so ``isinstance(True, int)`` is true and ``True == 1``
+        # would let a non-integer report through the structural check.
+        or type(schema_version) is not int
+        or schema_version != report_schema_version()
+    ):
         raise ValueError("Install SOP report is incomplete")
 
 
