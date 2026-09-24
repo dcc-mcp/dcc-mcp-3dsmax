@@ -117,7 +117,7 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pip install ".[dev]"
+          python -m pip install -e ".[dev]"
           python -m pytest
 
       - name: Build wheel and sdist
