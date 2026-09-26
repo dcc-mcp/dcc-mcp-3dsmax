@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.15](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.14...v0.2.15) (2026-09-26)
+
+
+### Bug Fixes
+
+* **ci:** install package in editable mode before release tests ([85f99e9](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/85f99e95a8a5dd41e480d327fd32727603cf8fa2))
+
 ## [0.2.14](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.13...v0.2.14) (2026-09-23)
 
 
