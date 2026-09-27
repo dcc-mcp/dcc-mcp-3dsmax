@@ -128,7 +128,94 @@ the same tool names in ``skill__tool`` form.
 
 ---
 
-## Key Env Vars
+## Agent Contract Files
+
+`AGENTS.md` is the **only** agent contract file at the repository root. It is the
+native instruction file for Codex, OpenCode, Cursor, GitHub Copilot, Windsurf,
+Cline, Roo Code, Kiro, Trae, and Augment, and Claude Code falls back to it when
+no `CLAUDE.md` exists. Guidance that used to live in `CLAUDE.md` and `GEMINI.md` has been folded
+into [**Client Integration Notes**](#client-integration-notes) below.
+
+**Gemini CLI exception:** Gemini CLI defaults its context file to `GEMINI.md`. To
+make it read `AGENTS.md`, set `context.fileName` once in `~/.gemini/settings.json`:
+
+```json
+{
+  "context": {
+    "fileName": ["AGENTS.md", "GEMINI.md"]
+  }
+}
+```
+
+
+---
+
+## Client Integration Notes
+
+All MCP clients use the same endpoint — `http://127.0.0.1:9765/mcp` (MCP
+Streamable HTTP, spec `2025-03-26`). Gateway / multi-instance mode keeps the same
+endpoint.
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "3dsmax": {
+      "url": "http://127.0.0.1:9765/mcp"
+    }
+  }
+}
+```
+
+File locations:
+
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+Restart Claude Desktop after editing.
+
+**Progressive loading.** By default only `3dsmax-scene` skills are fully loaded;
+**all other skills appear as stubs**. When a tool from an unloaded skill is needed:
+
+1. Call `load_skill("3dsmax-modeling")` to expand the skill.
+2. Then call the typed tool (e.g. `3dsmax_modeling__create_box`).
+
+This keeps the initial `tools/list` small and fast for the model to parse.
+
+**Claude-specific tips.**
+
+- **Viewport feedback:** call `capture_viewport` after geometry changes — the base64 PNG lets the model "see" the current state.
+- **Code execution:** prefer `search_skills` → `load_skill` → typed tools with `inputSchema`. Use `execute_python` only as a last resort; operators can block arbitrary scripts with `DCC_MCP_3DSMAX_DISABLE_ARBITRARY_SCRIPT=1`.
+- **Animation:** use `3dsmax_animation__set_keyframe` for keyframing and `bake_transform_animation` for baking.
+
+**Quick test prompts.**
+
+> “Create a box in 3ds Max with dimensions 50x50x50”
+> “List all cameras in the scene”
+> “Capture the viewport so I can see the current state”
+
+### Gemini
+
+Gemini is strong at generating structured output, so it suits multi-step 3ds Max
+workflow planning.
+
+- **Code-first workflows:** let Gemini plan multi-step 3ds Max workflows.
+- **Viewport capture:** feed `capture_viewport` base64 PNGs back for visual state verification.
+- **Batch operations:** use batch tools such as `bake_transform_animation` for efficient processing.
+- **Validation chains:** Gemini can validate scene readiness by chaining `validate_naming` → `validate_transforms` → `validate_mesh_topology` → `run_asset_readiness_checks`.
+
+**Quick test prompts.**
+
+> “Create a three-point lighting setup in the scene”
+> “List all materials and find ones with missing textures”
+> “Validate the selected objects for asset readiness”
+
+---
+
+## ## Key Env Vars
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
