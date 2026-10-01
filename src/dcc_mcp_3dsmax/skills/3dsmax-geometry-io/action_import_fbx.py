@@ -15,12 +15,13 @@ def main(
     units: Optional[str] = None,
     up_axis: Optional[str] = None,
     include_animation: bool = True,
+    timeline_mode: str = "source",
 ) -> Dict[str, Any]:
     """Import one FBX file and return created node identities."""
     path, error = resolve_import_file(file_path, expected_format="fbx")
     if error is not None:
         return error
-    option_error = fbx_option_error(units=units, up_axis=up_axis, mode=mode)
+    option_error = fbx_option_error(units=units, up_axis=up_axis, mode=mode, timeline_mode=timeline_mode)
     if option_error is not None:
         return option_error
     return import_geometry_file(
@@ -32,5 +33,6 @@ def main(
             "units": units,
             "up_axis": up_axis,
             "include_animation": include_animation,
+            "timeline_mode": timeline_mode,
         },
     )
