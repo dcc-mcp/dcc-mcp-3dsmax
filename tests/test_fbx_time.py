@@ -232,6 +232,71 @@ def test_missing_file_returns_none(tmp_path):
     assert fbx_time.read_fbx_time_settings(tmp_path / "missing.fbx") is None
 
 
+def test_ascii_property_with_a_trailing_comment_is_parsed(tmp_path):
+    """ASCII FBX allows `;` comments after the value on a P: line."""
+    path = tmp_path / "commented.fbx"
+    path.write_text(
+        "; FBX 7.7.0 project file\n"
+        "GlobalSettings:  {\n"
+        "    Version: 1000\n"
+        '    Properties70:  {\n'
+        '        P: "TimeMode", "enum", "", "",11    ; film speed\n'
+        '        P: "TimeSpanStart", "KTime", "Time", "",1924423250    ; start\n'
+        '        P: "TimeSpanStop", "KTime", "Time", "",46186158000    ; stop\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    settings = fbx_time.read_fbx_time_settings(path)
+
+    assert settings["frame_rate"] == 24.0
+    assert (settings["start_frame"], settings["end_frame"]) == (1, 24)
+
+
+def test_missing_span_and_unparsable_span_are_reported_differently(tmp_path):
+    """Two different causes must not collapse into the same `None-None` text."""
+    runtime = _FakeRuntime(frame_rate=30.0, start=0, end=100)
+    # TimeMode present, TimeSpan* absent: the file declares no range at all.
+    writer = _FbxWriter()
+
+    def entries() -> None:
+        _property_entry(writer, "TimeMode", _int_property(11))
+
+    def global_settings() -> None:
+        writer.node("Properties70", b"", count=0, children=entries)
+
+    writer.node("GlobalSettings", b"", count=0, children=global_settings)
+    absent = tmp_path / "absent_span.fbx"
+    absent.write_bytes(writer.bytes(7700))
+
+    missing = fbx_time.apply_source_timeline(runtime, absent, {"timeline_mode": "source"})
+    unparsable = fbx_time.apply_source_timeline(runtime, _unparsable_span_file(tmp_path), {"timeline_mode": "source"})
+
+    assert any("declares no animation range" in w for w in missing["warnings"])
+    assert not any("cannot parse" in w for w in missing["warnings"])
+    assert any("cannot parse" in w for w in unparsable["warnings"])
+    assert not any("None-None" in w for w in missing["warnings"] + unparsable["warnings"])
+
+
+def _unparsable_span_file(tmp_path: Path) -> Path:
+    """Write an FBX whose TimeSpan values are present but not numbers."""
+    writer = _FbxWriter()
+
+    def entries() -> None:
+        _property_entry(writer, "TimeMode", _int_property(11))
+        _property_entry(writer, "TimeSpanStart", _string_property("not-a-number"))
+        _property_entry(writer, "TimeSpanStop", _string_property("not-a-number"))
+
+    def global_settings() -> None:
+        writer.node("Properties70", b"", count=0, children=entries)
+
+    writer.node("GlobalSettings", b"", count=0, children=global_settings)
+    path = tmp_path / "unparsable_span.fbx"
+    path.write_bytes(writer.bytes(7700))
+    return path
+
+
 def test_zero_length_span_reports_no_animation(tmp_path):
     path = _binary_fbx(tmp_path / "static.fbx", time_mode=11, start=0, stop=0)
 
@@ -388,6 +453,75 @@ def test_unsupported_mode_falls_back_to_off(tmp_path):
     assert any("Unsupported timeline_mode" in warning for warning in report["warnings"])
 
 
+# ------------------------------------------------------------ malformed input
+# This parser runs on the 3ds Max main thread before importFile, so a node
+# offset that does not advance must be rejected, never followed. These cases
+# hung before the forward-progress guard existed; the timeout markers keep them
+# from hanging a CI worker instead if the guard ever regresses.
+def _self_referencing_node(path: Path, *, version: int = 7700) -> Path:
+    """Write an FBX whose top-level node end offset points at its own header."""
+    writer = _FbxWriter(wide=version >= 7500)
+
+    def pinned() -> None:
+        # Patch the node's own end offset back to where its header starts.
+        struct.pack_into(writer.fmt, writer.buffer, 27, 27, 0, 0, len("GlobalSettings"))
+
+    writer.node("GlobalSettings", b"", count=0, children=pinned)
+    path.write_bytes(writer.bytes(version))
+    return path
+
+
+def _cyclic_child_node(path: Path, *, version: int = 7700) -> Path:
+    """Write an FBX whose GlobalSettings child points back at Properties70."""
+    writer = _FbxWriter(wide=version >= 7500)
+
+    def entries() -> None:
+        _property_entry(writer, "TimeMode", _int_property(11))
+
+    def cyclic_properties() -> None:
+        start = len(writer.buffer)
+        name = b"Properties70"
+        writer.buffer += struct.pack(writer.fmt, 0, 0, 0, len(name))
+        writer.buffer += name
+        # End the child where it started, so walking it never progresses.
+        struct.pack_into(writer.fmt, writer.buffer, start, start, 0, 0, len(name))
+
+    def global_settings() -> None:
+        writer.node("Properties70", b"", count=0, children=entries)
+        cyclic_properties()
+
+    writer.node("GlobalSettings", b"", count=0, children=global_settings)
+    path.write_bytes(writer.bytes(version))
+    return path
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("version", [7700, 6000])
+def test_node_offset_that_does_not_advance_returns_none(tmp_path, version):
+    path = _self_referencing_node(tmp_path / "pinned.fbx", version=version)
+
+    assert fbx_time.read_fbx_time_settings(path) is None
+
+
+@pytest.mark.timeout(5)
+def test_cyclic_child_offset_returns_none(tmp_path):
+    path = _cyclic_child_node(tmp_path / "cyclic.fbx")
+
+    assert fbx_time.read_fbx_time_settings(path) is None
+
+
+@pytest.mark.timeout(5)
+def test_malformed_offsets_never_reach_the_scene_timeline(tmp_path):
+    """The public entry point must degrade to a warning, not hang or raise."""
+    path = _self_referencing_node(tmp_path / "pinned.fbx")
+    runtime = _FakeRuntime(frame_rate=30.0, start=0, end=100)
+
+    report = fbx_time.apply_source_timeline(runtime, path, {"timeline_mode": "source"})
+
+    assert runtime.frameRate == 30.0
+    assert any("Could not read the FBX source time settings" in w for w in report["warnings"])
+
+
 def test_static_file_leaves_the_scene_and_warns(tmp_path):
     path = _binary_fbx(tmp_path / "static.fbx", time_mode=11, start=0, stop=0)
     runtime = _FakeRuntime(frame_rate=30.0, start=0, end=100)
@@ -431,7 +565,8 @@ def test_verify_keeps_quiet_when_the_importer_left_the_timeline_alone(tmp_path):
     assert verified["scene_after_import"] == verified["scene_after"]
 
 
-def test_verify_leaves_an_unapplied_timeline_untouched(tmp_path):
+def test_verify_reports_the_real_scene_state_for_an_unapplied_timeline(tmp_path):
+    """Off mode must not report a pre-import snapshot as the current state."""
     start, stop = _span(1, 24, 24.0)
     path = _binary_fbx(tmp_path / "clip.fbx", time_mode=11, start=start, stop=stop)
     runtime = _FakeRuntime(frame_rate=30.0, start=0, end=100)
@@ -441,9 +576,27 @@ def test_verify_leaves_an_unapplied_timeline_untouched(tmp_path):
 
     verified = fbx_time.verify_timeline_after_import(runtime, report)
 
-    assert verified["warnings"] == warnings_before
-    assert verified["scene_after_import"] is None
-    assert runtime.frameRate == 30.0
+    assert runtime.frameRate == 30.0  # Nothing was applied.
+    assert verified["scene_after_import"] == {"frame_rate": 30.0, "frame_start": 0, "frame_end": 100}
+    assert verified["scene_after"] == verified["scene_after_import"]
+    assert verified["warnings"] == warnings_before  # Nothing changed, nothing to add.
+
+
+def test_verify_reports_an_importer_change_even_in_off_mode(tmp_path):
+    start, stop = _span(1, 24, 24.0)
+    path = _binary_fbx(tmp_path / "clip.fbx", time_mode=11, start=start, stop=stop)
+    runtime = _FakeRuntime(frame_rate=30.0, start=0, end=100)
+
+    report = fbx_time.apply_source_timeline(runtime, path, {"timeline_mode": "off"})
+    runtime.frameRate = 25.0
+    runtime.animationRange = _FakeInterval(5, 55)
+
+    verified = fbx_time.verify_timeline_after_import(runtime, report)
+
+    assert runtime.frameRate == 25.0  # off mode still leaves the scene alone.
+    assert verified["scene_after"] == {"frame_rate": 25.0, "frame_start": 5, "frame_end": 55}
+    assert verified["scene_after_import"] == verified["scene_after"]
+    assert any("left it there" in warning for warning in verified["warnings"])
 
 
 def test_runtime_failure_is_reported_as_a_warning(tmp_path):

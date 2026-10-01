@@ -70,3 +70,10 @@ settings, `union` widens the animation range instead of shrinking it, and
 skipped when animation is not imported, when the file declares no animation, or
 when the frame rate cannot be read; in each case a warning says the timeline
 was left at its current rate instead of resampling silently.
+
+The header is read with a small standard-library parser rather than the FBX
+SDK, so malformed offsets are rejected instead of followed: this runs on the
+main thread before `importFile`, where a bad offset must not stall the host.
+ASCII FBX is only scanned within the first 256 KB, which covers every
+conventional file because `GlobalSettings` is written near the top; an unusual
+file that places it later reports that the time settings could not be read.

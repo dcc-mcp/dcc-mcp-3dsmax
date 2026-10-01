@@ -179,10 +179,7 @@ def apply_source_timeline(
         )
         return _finish_timeline_report(runtime, report)
     if not source.get("has_animation"):
-        report["warnings"].append(
-            "FBX source declares a zero-length animation range (frames {}-{}); the scene timeline was left "
-            "unchanged".format(source.get("start_frame"), source.get("end_frame"))
-        )
+        report["warnings"].append(_no_animation_warning(source))
         return _finish_timeline_report(runtime, report)
     if mode == "off":
         return _finish_timeline_report(runtime, report)
@@ -217,11 +214,28 @@ def verify_timeline_after_import(runtime: Any, report: Optional[Dict[str, Any]])
     and the report says the timeline had to be restored instead of quietly
     claiming an alignment that no longer holds.
     """
-    if not report or not report.get("applied"):
+    if not report:
         return report
-    requested = report.get("requested") or {}
     after_import = scene_time_settings(runtime)
     report["scene_after_import"] = after_import
+    # Nothing was aligned (timeline_mode=off, animation skipped, or the source
+    # settings were unreadable). The report still has to describe the scene as
+    # it is now, not as it was before the importer ran.
+    if not report.get("applied"):
+        report["scene_after"] = after_import
+        _refresh_alignment(report)
+        if after_import != report.get("scene_before"):
+            report.setdefault("warnings", []).append(
+                "The FBX importer changed the scene timeline to {:g} fps / {}-{} during the import; "
+                "timeline_mode '{}' left it there".format(
+                    after_import["frame_rate"],
+                    after_import["frame_start"],
+                    after_import["frame_end"],
+                    report.get("mode"),
+                )
+            )
+        return report
+    requested = report.get("requested") or {}
     if after_import == report.get("scene_after"):
         return report
 
@@ -298,6 +312,30 @@ def _alignment_warnings(report: Dict[str, Any]) -> List[str]:
     return warnings
 
 
+def _no_animation_warning(source: Dict[str, Any]) -> str:
+    """Explain why no animation range could be adopted.
+
+    A file that never declares a range, a file whose range cannot be parsed, and
+    a file that declares an empty one are different problems with different next
+    steps, so they are not reported with the same sentence.
+    """
+    if not source.get("time_span_present"):
+        return (
+            "FBX GlobalSettings declares no animation range (no TimeSpanStart/TimeSpanStop); the scene timeline "
+            "was left unchanged"
+        )
+    if source.get("start_frame") is None or source.get("end_frame") is None:
+        return (
+            "FBX GlobalSettings stores an animation range this adapter cannot parse (TimeSpanStart/TimeSpanStop); "
+            "the scene timeline was left unchanged, and re-exporting the file is the reliable way to get frame "
+            "alignment"
+        )
+    return (
+        "FBX source declares a zero-length animation range (frames {}-{}); the scene timeline was left "
+        "unchanged".format(source.get("start_frame"), source.get("end_frame"))
+    )
+
+
 def _max_frame_rate(frame_rate: float) -> float:
     """Snap an FBX frame rate to a rate 3ds Max can actually hold."""
     for candidate in _MAX_FRAME_RATES:
@@ -365,6 +403,7 @@ def _time_settings(values: Dict[str, Any], *, encoding: str, fbx_version: Option
     info: Dict[str, Any] = {
         "encoding": encoding,
         "fbx_version": fbx_version,
+        "time_span_present": "TimeSpanStart" in values and "TimeSpanStop" in values,
         "time_mode": time_mode,
         "time_mode_name": TIME_MODE_NAMES.get(time_mode, "unknown"),
         "frame_rate": frame_rate,
@@ -407,14 +446,26 @@ def _scan_binary_global_settings(handle: Any, version: int) -> Dict[str, Any]:
 
 
 def _iter_nodes(handle: Any, wide: bool, end: Optional[int] = None) -> Iterator[Tuple[str, Tuple[int, int]]]:
-    """Yield ``(name, (end_offset, property_count))`` for each node at this level."""
+    """Yield ``(name, (end_offset, property_count))`` for each node at this level.
+
+    A node whose end offset does not move past its own header, or that reaches
+    past its parent, cannot be walked: seeking to it would read the same header
+    again and spin forever. This import runs on the 3ds Max main thread before
+    ``importFile``, where a loop is a frozen host rather than a slow call, so
+    malformed offsets are rejected instead of being followed.
+    """
     while end is None or handle.tell() < end:
+        node_start = handle.tell()
         header = _read_node_header(handle, wide)
         if header is None:
             return
         node_end, num_properties, name = header
         if node_end <= 0:  # Null sentinel closes a node's child list.
             return
+        if node_end <= node_start or (end is not None and node_end > end):
+            raise _FbxReadError(
+                "node end offset {} at {} does not advance within its parent".format(node_end, node_start)
+            )
         yield name, (node_end, num_properties)
         handle.seek(node_end)
 
@@ -461,6 +512,11 @@ def _collect_entry(values: Dict[str, Any], entries: List[Any]) -> None:
     value = _as_number(entries[-1])
     if value is not None:
         values[key] = value
+    elif key not in values:
+        # Recorded as False: the file declares the setting but not with a value
+        # this reader understands, which is a different problem from a file
+        # that never declared it and calls for a different response.
+        values[key] = False
 
 
 def _read_properties(handle: Any, count: int) -> List[Any]:
@@ -527,11 +583,14 @@ def _scan_ascii_global_settings(text: str) -> Dict[str, Any]:
         value = _parse_ascii_number(rest.rsplit(",", 1)[-1])
         if value is not None:
             values[key] = value
+        elif key not in values:
+            values[key] = False
     return values
 
 
 def _parse_ascii_number(raw: str) -> Optional[float]:
-    token = raw.strip().strip('"').strip()
+    # ASCII FBX allows a trailing `;` comment after the value.
+    token = raw.split(";", 1)[0].strip().strip('"').strip()
     try:
         return float(token)
     except ValueError:
