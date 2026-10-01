@@ -53,3 +53,20 @@ On import failure, inspect the returned created nodes and current scene before
 retrying. Native import can also modify existing nodes; the returned list is
 not a rollback log. Export success requires a nonempty output file, but does
 not prove format validity or freshness when overwriting an existing file.
+
+## FBX import timeline
+
+The 3ds Max FBX importer keeps the scene's own time settings instead of taking
+the ones stored in the file, so a 24 fps clip imported into a 30 fps scene is
+resampled and frame N no longer matches frame N in the source. FBX imports
+therefore read the file's `GlobalSettings` first and align the scene frame rate
+and animation range before importing, so frame numbers stay 1:1 with the
+file; the result carries `data.timeline` with the source settings, the scene
+timeline before and after, and whether the two match.
+
+`timeline_mode` controls the alignment: `source` (default) adopts the file's
+settings, `union` widens the animation range instead of shrinking it, and
+`off` leaves the scene alone and only reports the mismatch. Alignment is
+skipped when animation is not imported, when the file declares no animation, or
+when the frame rate cannot be read; in each case a warning says the timeline
+was left at its current rate instead of resampling silently.

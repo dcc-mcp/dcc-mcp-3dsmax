@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from dcc_mcp_3dsmax._fbx_time import apply_source_timeline, verify_timeline_after_import
 from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes, node_identity
 
 SUPPORTED_IMPORT_FORMATS = {
@@ -19,6 +20,10 @@ SUPPORTED_EXPORT_FORMATS = {
 FBX_UNITS = {"mm", "cm", "dm", "m", "km", "in", "ft", "yd"}
 FBX_UP_AXIS = {"Y", "Z"}
 FBX_IMPORT_MODES = {"create", "merge", "exmerge"}
+# How the scene timeline is aligned with the FBX file's own time settings:
+# "source" adopts them, "union" widens the range instead of shrinking it,
+# "off" leaves the scene untouched (and still reports the mismatch).
+FBX_TIMELINE_MODES = {"source", "union", "off"}
 
 _IMPORT_PLUGINS = {
     "fbx": ("FBXIMP", "FbxImporter"),
@@ -104,8 +109,15 @@ def import_geometry_file(
     """Import one geometry file and return created node identities."""
     before = _node_keys(iter_scene_nodes(runtime))
     warnings = []
+    timeline = None
     if format_name == "fbx":
         warnings.extend(apply_fbx_import_options(runtime, fbx_options or {}))
+        # The 3ds Max FBX importer keeps the scene's own time settings, so a
+        # 24 fps clip imported into a 30 fps scene no longer matches its source
+        # frame-for-frame. Align the timeline before importing so frame N here
+        # is frame N there. See _fbx_time for why this must happen first.
+        timeline = apply_source_timeline(runtime, file_path, fbx_options)
+        warnings.extend(timeline.pop("warnings", []))
 
     try:
         plugin = _plugin(runtime, _IMPORT_PLUGINS.get(format_name, ()))
@@ -114,17 +126,27 @@ def import_geometry_file(
         result = runtime.importFile(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001
         created_nodes = [node for node in iter_scene_nodes(runtime) if _node_key(node) not in before]
+        timeline = verify_timeline_after_import(runtime, timeline)
+        if timeline is not None:
+            warnings.extend(timeline.pop("warnings", []))
         return io_error(
             "Geometry import failed",
             file=file_info(file_path),
             format=format_name,
             warnings=warnings,
+            timeline=timeline,
             exception_type=type(exc).__name__,
             error=str(exc),
             created_nodes=[node_identity(node) for node in created_nodes],
             created_count=len(created_nodes),
             recovery="Inspect the scene before retrying; import may have partially modified existing nodes.",
         )
+
+    # The importer can reset the time settings it was handed, so the timeline
+    # is checked again and restored before the result is reported.
+    timeline = verify_timeline_after_import(runtime, timeline)
+    if timeline is not None:
+        warnings.extend(timeline.pop("warnings", []))
 
     after_nodes = iter_scene_nodes(runtime)
     created_nodes = [node for node in after_nodes if _node_key(node) not in before]
@@ -134,6 +156,7 @@ def import_geometry_file(
             file=file_info(file_path),
             format=format_name,
             warnings=warnings,
+            timeline=timeline,
             created_nodes=[node_identity(node) for node in created_nodes],
             created_count=len(created_nodes),
             recovery="Inspect the scene before retrying; import may have partially modified existing nodes.",
@@ -143,6 +166,7 @@ def import_geometry_file(
         file=file_info(file_path),
         format=format_name,
         warnings=warnings,
+        timeline=timeline,
         created_nodes=[node_identity(node) for node in created_nodes],
         created_count=len(created_nodes),
     )
@@ -240,6 +264,7 @@ def fbx_option_error(
     units: Optional[str] = None,
     up_axis: Optional[str] = None,
     mode: Optional[str] = None,
+    timeline_mode: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Return an error for unsupported FBX options."""
     if units is not None and units not in FBX_UNITS:
@@ -248,6 +273,12 @@ def fbx_option_error(
         return io_error("Unsupported FBX up_axis", up_axis=up_axis, supported_up_axis=sorted(FBX_UP_AXIS))
     if mode is not None and mode not in FBX_IMPORT_MODES:
         return io_error("Unsupported FBX import mode", mode=mode, supported_modes=sorted(FBX_IMPORT_MODES))
+    if timeline_mode is not None and timeline_mode not in FBX_TIMELINE_MODES:
+        return io_error(
+            "Unsupported FBX timeline_mode",
+            timeline_mode=timeline_mode,
+            supported_timeline_modes=sorted(FBX_TIMELINE_MODES),
+        )
     return None
 
 

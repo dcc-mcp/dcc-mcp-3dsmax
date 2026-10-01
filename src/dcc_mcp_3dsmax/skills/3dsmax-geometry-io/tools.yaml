@@ -55,7 +55,11 @@ tools:
   - name: import_fbx
     description: >-
       Import an FBX file into the current scene and return created node
-      identifiers plus any recoverable option warnings.
+      identifiers plus any recoverable option warnings. Before importing, the
+      scene timeline is aligned with the frame rate and animation range stored
+      in the FBX file, so frame N in 3ds Max is frame N in the source; when the
+      timeline cannot be aligned the result reports the mismatch instead of
+      resampling silently.
     source_file: action_import_fbx.py
     execution: sync
     affinity: main
@@ -86,6 +90,16 @@ tools:
           type: boolean
           default: true
           description: Whether to import animation from the FBX file.
+        timeline_mode:
+          type: string
+          enum: [source, union, off]
+          default: source
+          description: >-
+            How the scene frame rate and animation range are aligned with the
+            FBX file's own time settings before importing. "source" adopts
+            them, "union" widens the animation range instead of shrinking it,
+            "off" leaves the scene timeline untouched and only reports the
+            mismatch.
     output_schema:
       type: object
       additionalProperties: true
@@ -121,7 +135,9 @@ tools:
   - name: import_geometry
     description: >-
       Import a supported geometry file using the format inferred from the file
-      extension, with FBX options applied for FBX inputs.
+      extension, with FBX options applied for FBX inputs. FBX imports align the
+      scene timeline with the file's own frame rate and animation range first,
+      and report the source and scene timelines in the result.
     source_file: action_import_geometry.py
     execution: sync
     affinity: main
@@ -144,6 +160,14 @@ tools:
           enum: [create, merge, exmerge]
           default: merge
           description: FBX import mode when importing FBX files.
+        timeline_mode:
+          type: string
+          enum: [source, union, off]
+          default: source
+          description: >-
+            How the scene frame rate and animation range are aligned with an
+            FBX file's own time settings before importing. Ignored for non-FBX
+            inputs.
     output_schema:
       type: object
       additionalProperties: true

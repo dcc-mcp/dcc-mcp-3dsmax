@@ -30,6 +30,17 @@ class _FakeNode:
         self.parent = None
 
 
+class _FakeTime:
+    def __init__(self, frame: float) -> None:
+        self.frame = float(frame)
+
+
+class _FakeInterval:
+    def __init__(self, start: float, end: float) -> None:
+        self.start = _FakeTime(start)
+        self.end = _FakeTime(end)
+
+
 class _FakeRuntime:
     def __init__(self) -> None:
         self.hero = _FakeNode("hero_box", 42)
@@ -44,9 +55,16 @@ class _FakeRuntime:
         self.export_params = []
         self.import_calls = []
         self.export_calls = []
+        self.frameRate = 30.0
+        self.animationRange = _FakeInterval(0, 100)
+        self.timeline_calls = []
 
     def Name(self, value):  # noqa: N802 - mirrors pymxs runtime naming.
         return "#{}".format(value)
+
+    def Interval(self, start, end):  # noqa: N802 - mirrors pymxs runtime naming.
+        self.timeline_calls.append((start, end))
+        return _FakeInterval(start, end)
 
     def FbxImporterSetParam(self, key, value):  # noqa: N802 - mirrors pymxs runtime naming.
         self.import_params.append((key, value))
@@ -203,3 +221,150 @@ def test_export_without_output_bytes_is_failure(monkeypatch, tmp_path, empty_fil
     result = _load_action("action_export_obj.py").main(str(output))
     assert result["success"] is False
     assert not result["data"]["file"]["size_bytes"]
+
+
+# --------------------------------------------------------------- FBX timeline
+# The 3ds Max FBX importer keeps the scene's own time settings, so a 24 fps
+# clip imported into a 30 fps scene no longer matches its source frame for
+# frame. Import must align the timeline first, or say so.
+def _clip_fbx(tmp_path, name="clip.fbx", frame_rate=24.0, start_frame=1, end_frame=24):
+    from test_fbx_time import _binary_fbx, _span
+
+    time_mode = {24.0: 11, 30.0: 6, 25.0: 10}.get(frame_rate, 11)
+    start, stop = _span(start_frame, end_frame, frame_rate)
+    return _binary_fbx(tmp_path / name, time_mode=time_mode, start=start, stop=stop)
+
+
+def test_import_fbx_adopts_the_source_timeline(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+
+    result = _load_action("action_import_fbx.py").main(str(path))
+
+    assert result["success"] is True
+    assert result["data"]["warnings"] == []
+    timeline = result["data"]["timeline"]
+    assert timeline["applied"] is True
+    assert timeline["source"]["frame_rate"] == 24.0
+    assert timeline["scene_before"] == {"frame_rate": 30.0, "frame_start": 0, "frame_end": 100}
+    assert timeline["scene_after"] == {"frame_rate": 24.0, "frame_start": 1, "frame_end": 24}
+    assert timeline["frame_rate_matches"] is True
+    assert runtime.frameRate == 24.0
+    assert runtime.timeline_calls == [(1, 24)]
+
+
+def test_import_fbx_reports_the_timeline_for_a_non_fbx_import(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    source = tmp_path / "prop.obj"
+    source.write_text("obj", encoding="utf-8")
+
+    result = _load_action("action_import_geometry.py").main(str(source))
+
+    assert result["success"] is True
+    assert result["data"]["timeline"] is None
+    assert runtime.timeline_calls == []  # Non-FBX imports never touch the timeline.
+
+
+def test_import_fbx_warns_when_the_source_timeline_cannot_be_read(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = tmp_path / "clip.fbx"
+    path.write_text("not really an fbx", encoding="utf-8")
+
+    result = _load_action("action_import_fbx.py").main(str(path))
+
+    assert result["success"] is True
+    assert runtime.frameRate == 30.0
+    assert runtime.timeline_calls == []
+    warnings = result["data"]["warnings"]
+    assert any("Could not read the FBX source time settings" in warning for warning in warnings)
+    assert result["data"]["timeline"]["applied"] is False
+
+
+def test_import_fbx_off_mode_leaves_the_timeline_and_warns(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+
+    result = _load_action("action_import_fbx.py").main(str(path), timeline_mode="off")
+
+    assert result["success"] is True
+    assert runtime.frameRate == 30.0
+    assert runtime.timeline_calls == []
+    warnings = result["data"]["warnings"]
+    assert any("do not correspond 1:1" in warning for warning in warnings)
+    assert result["data"]["timeline"]["frame_rate_matches"] is False
+
+
+def test_import_fbx_union_mode_keeps_the_wider_range(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.animationRange = _FakeInterval(0, 200)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+
+    result = _load_action("action_import_fbx.py").main(str(path), timeline_mode="union")
+
+    assert result["data"]["timeline"]["scene_after"] == {"frame_rate": 24.0, "frame_start": 0, "frame_end": 200}
+    assert result["data"]["timeline"]["range_covers_source"] is True
+
+
+def test_import_fbx_keeps_the_timeline_when_animation_is_skipped(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+
+    result = _load_action("action_import_fbx.py").main(str(path), include_animation=False)
+
+    assert runtime.frameRate == 30.0
+    assert runtime.timeline_calls == []
+    assert result["data"]["warnings"]
+    assert result["data"]["timeline"]["applied"] is False
+
+
+def test_import_fbx_rejects_an_unsupported_timeline_mode(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path)
+
+    result = _load_action("action_import_fbx.py").main(str(path), timeline_mode="sideways")
+
+    assert result["success"] is False
+    assert "Unsupported FBX timeline_mode" in result["message"]
+    assert result["data"]["supported_timeline_modes"] == ["off", "source", "union"]
+
+
+def test_import_geometry_rejects_an_unsupported_timeline_mode(monkeypatch, tmp_path):
+    _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path)
+
+    result = _load_action("action_import_geometry.py").main(str(path), timeline_mode="sideways")
+
+    assert result["success"] is False
+    assert "Unsupported FBX timeline_mode" in result["message"]
+
+
+def test_import_fbx_restores_the_timeline_the_importer_reset(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+
+    def reset_timeline(*args, **kwargs):
+        runtime.frameRate = 30.0
+        runtime.animationRange = _FakeInterval(0, 100)
+        return True
+
+    runtime.importFile = reset_timeline
+
+    result = _load_action("action_import_fbx.py").main(str(path))
+
+    timeline = result["data"]["timeline"]
+    assert runtime.frameRate == 24.0
+    assert runtime.animationRange.end.frame == 24
+    assert timeline["scene_after"] == {"frame_rate": 24.0, "frame_start": 1, "frame_end": 24}
+    assert any("re-applied" in warning for warning in result["data"]["warnings"])
+
+
+def test_import_fbx_reports_the_timeline_on_a_failed_import(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch)
+    path = _clip_fbx(tmp_path, frame_rate=24.0, start_frame=1, end_frame=24)
+    runtime.importFile = lambda *args, **kwargs: False
+
+    result = _load_action("action_import_fbx.py").main(str(path))
+
+    assert result["success"] is False
+    assert result["data"]["timeline"]["applied"] is True
+    assert result["data"]["timeline"]["scene_after"] == {"frame_rate": 24.0, "frame_start": 1, "frame_end": 24}
