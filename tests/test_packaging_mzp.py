@@ -1294,6 +1294,64 @@ def test_release_workflow_binds_manual_tag_checkout_and_payload_version():
     assert "--expected-version $env:MZP_VERSION" in text
 
 
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+RELEASE_MANUAL_CHANNEL = "github.event_name == 'workflow_dispatch' && inputs.tag_name != ''"
+
+
+def _release_workflow_yaml():
+    import yaml
+
+    return yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _release_select_script():
+    steps = _release_workflow_yaml()["jobs"]["resolve-release-ref"]["steps"]
+    return next(step for step in steps if step.get("id") == "select")["run"]
+
+
+def test_release_ref_selection_branches_on_the_tag_input_not_the_event_name():
+    script = _release_select_script()
+
+    assert '[[ -n "$INPUT_TAG" ]]' in script
+    assert "EVENT_NAME" not in script
+    assert "$RELEASE_TAG" in script
+    assert "$RELEASE_VERSION" in script
+
+
+def test_release_ref_selection_annotates_both_guards():
+    script = _release_select_script()
+
+    assert script.count("::error title=release-ref::") == 2
+    assert "resolved release tag must look like vX.Y.Z" in script
+    assert "resolved release version must look like X.Y.Z" in script
+
+
+@pytest.mark.parametrize(
+    "job", ["resolve-release-ref", "build", "publish", "build-mzp", "attach-release-assets"]
+)
+def test_every_artifact_job_accepts_a_tagged_dispatch(job):
+    """An empty-tag dispatch must not be the only path that skips artifacts."""
+
+    assert RELEASE_MANUAL_CHANNEL in _release_workflow_yaml()["jobs"][job]["if"]
+
+
+def test_manual_mzp_attach_cannot_collide_with_the_full_attach_job():
+    """The uploader refuses to overwrite an existing asset name.
+
+    attach-release-assets now also runs for a tagged dispatch and uploads the
+    MZP alongside the wheel and sdist, so the manual job must stay behind it and
+    only upload when the full attach job did not succeed.
+    """
+    jobs = _release_workflow_yaml()["jobs"]
+    manual = jobs["attach-manual-mzp"]
+
+    assert "attach-release-assets" in manual["needs"]
+    assert "!cancelled()" in manual["if"]
+    assert "needs.attach-release-assets.result != 'success'" in manual["if"]
+    assert "needs.build-mzp.result == 'success'" in manual["if"]
+    assert manual["if"].count(RELEASE_MANUAL_CHANNEL) == 1
+
+
 @pytest.mark.parametrize("workflow_name", ["ci.yml", "release.yml"])
 def test_mzp_workflows_install_the_assembler_packaging_dependency_first(workflow_name):
     text = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
