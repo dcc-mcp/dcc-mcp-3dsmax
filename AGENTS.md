@@ -61,7 +61,7 @@ server = dcc_mcp_3dsmax.start_server()
 
 ## Quick facts
 
-- **Current version:** 0.2.14 <!-- x-release-please-version -->
+- **Current version:** 0.2.15 <!-- x-release-please-version -->
 - **Core dependency:** `dcc-mcp-core>=0.20.24,<1.0.0`
 - **Server dependency:** `dcc-mcp-server>=0.20.22,<1.0.0`
 - **Python:** 3.7+ (keep py37 syntax valid; `scripts/check_py37_syntax.py` gates it)
