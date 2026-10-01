@@ -62,20 +62,29 @@ jobs:
         id: select
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag_name }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
           RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+        # Branch on whether a manual tag was supplied, not on the event name: a
+        # workflow_dispatch with an empty tag_name must still resolve to the
+        # release this run just created, otherwise every downstream job is
+        # skipped and the published release ships with no artifacts.
         run: |
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ -n "$INPUT_TAG" ]]; then
             tag="$INPUT_TAG"
             version="${INPUT_TAG#v}"
           else
             tag="$RELEASE_TAG"
             version="$RELEASE_VERSION"
           fi
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=release-ref::resolved release tag must look like vX.Y.Z (got: '$tag')"
+            exit 1
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=release-ref::resolved release version must look like X.Y.Z (got: '$version')"
+            exit 1
+          fi
           test "${tag#v}" = "$version"
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
           echo "release_version=$version" >> "$GITHUB_OUTPUT"
@@ -134,7 +143,7 @@ jobs:
 
   publish:
     needs: [release-please, build]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -204,7 +213,7 @@ jobs:
 
   attach-release-assets:
     needs: [release-please, resolve-release-ref, publish, build-mzp]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag_name != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -239,8 +248,18 @@ jobs:
             --asset-glob 'dist/mzp/*.mzp'
 
   attach-manual-mzp:
-    needs: [release-please, resolve-release-ref, build-mzp]
-    if: github.event_name == 'workflow_dispatch' && inputs.tag_name != ''
+    # Fallback only. attach-release-assets now publishes the full asset set
+    # (wheel, sdist and MZP) for a tagged dispatch too, and the uploader refuses
+    # to overwrite an existing asset name, so running both would fail the run.
+    # This job therefore only attaches the MZP when the full attach job did not
+    # succeed, for example after a failed PyPI publish.
+    needs: [release-please, resolve-release-ref, build-mzp, attach-release-assets]
+    if: >-
+      !cancelled()
+      && github.event_name == 'workflow_dispatch' && inputs.tag_name != ''
+      && needs.resolve-release-ref.result == 'success'
+      && needs.build-mzp.result == 'success'
+      && needs.attach-release-assets.result != 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
