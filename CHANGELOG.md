@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.16](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.15...v0.2.16) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** resolve release refs from the tag input, not the event name ([4ab2998](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4ab2998e4f0241809c5880074134b54f40d2c3d9))
+
+
+### Code Refactoring
+
+* read the report schema version through Core's own API ([#222](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/222)) ([bfbc8ff](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/bfbc8ffc92414f6e1a2ff747b6cbbf0fd443eff1))
+
 ## [0.2.15](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.14...v0.2.15) (2026-10-01)
 
 
