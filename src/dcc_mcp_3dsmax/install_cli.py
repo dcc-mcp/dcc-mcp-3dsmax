@@ -61,6 +61,17 @@ except ImportError:
         "verify": 40,
         "requires_restart": 50,
     }
+# Core 0.20.41 answers "what goes in a report's ``schema_version``?" itself, so the
+# hand-rolled read is only the fallback for cores that predate it. Import guarded at
+# module scope rather than inside the function: the name does not exist at this
+# adapter's declared floor of 0.20.24, so a static import would break every older core
+# at import time, while an in-function import would leave tests no attribute to
+# substitute and branch coverage would ride on whichever core pip happened to resolve.
+try:
+    from dcc_mcp_core.deployment import install_sop_report_schema_version
+except ImportError:  # Core older than 0.20.41
+    install_sop_report_schema_version = None
+
 INSTALL_EXIT_OK = INSTALL_EXIT_CODES["ok"]
 INSTALL_EXIT_PREFLIGHT = INSTALL_EXIT_CODES["preflight"]
 INSTALL_EXIT_ACQUIRE = INSTALL_EXIT_CODES["acquire"]
@@ -259,13 +270,15 @@ def _core_report_schema_version() -> Optional[int]:
     name the function but cannot read its own schema document, so the caller
     falls back to the local read rather than losing the report.
     """
-    try:
-        from dcc_mcp_core.deployment import install_sop_report_schema_version
-    except ImportError:
+    if install_sop_report_schema_version is None:
         return None
     try:
         return int(install_sop_report_schema_version())
-    except (RuntimeError, OSError, ValueError, TypeError):
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError):
+        # ``KeyError`` is how Core's one-liner reports a document that is missing
+        # ``properties``/``schema_version``/``const``. It is unreachable on a core
+        # whose schema is digest-pinned, but this function's contract is to degrade
+        # to the local read on any misshapen document rather than propagate.
         return None
 
 
