@@ -234,10 +234,39 @@ def report_schema_version() -> int:
     propagating, because this CLI's job is to keep emitting a preflight report
     precisely when the installation is broken.
     """
+    # Core 0.20.41 and later expose ``install_sop_report_schema_version()`` as the
+    # single authoritative answer, so prefer it and keep the local read below as the
+    # fallback for older cores in the declared range. The local read stays because the
+    # floor is unchanged: deleting it would break every core below 0.20.41.
+    answer = _core_report_schema_version()
+    if answer is not None:
+        return answer
     published = _published_schema_version(_published_schema_or_none())
     if published is not None:
         return published
     return FALLBACK_REPORT_SCHEMA_VERSION
+
+
+def _core_report_schema_version() -> Optional[int]:
+    """Return Core's own answer to the report's ``schema_version``, if it has one.
+
+    Core 0.20.41 added ``install_sop_report_schema_version()``, which reads the
+    same ``const`` this module walks to by hand. Resolving it here keeps the
+    adapter correct if Core ever publishes a revision that moves the const,
+    instead of duplicating that knowledge in ten adapters.
+
+    Returns ``None`` when the resolved Core predates the API, or when Core can
+    name the function but cannot read its own schema document, so the caller
+    falls back to the local read rather than losing the report.
+    """
+    try:
+        from dcc_mcp_core.deployment import install_sop_report_schema_version
+    except ImportError:
+        return None
+    try:
+        return int(install_sop_report_schema_version())
+    except (RuntimeError, OSError, ValueError, TypeError):
+        return None
 
 
 def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:

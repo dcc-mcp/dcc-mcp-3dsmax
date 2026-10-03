@@ -287,6 +287,16 @@ def test_report_schema_version_follows_published_document(monkeypatch) -> None:
     """The report field comes from the ``const`` Core's validator enforces."""
     cli = _install_cli()
     monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(7))
+    # Core 0.20.41+ answers this itself from the same document, so patch that path
+    # too. Otherwise the local read is bypassed and the assertion tests nothing.
+    if cli._core_report_schema_version() is not None:
+        from dcc_mcp_core.deployment import install_sop
+
+        monkeypatch.setattr(
+            install_sop,
+            "load_install_sop_schema",
+            lambda: _schema_document(7),
+        )
 
     assert cli.report_schema_version() == 7
 
