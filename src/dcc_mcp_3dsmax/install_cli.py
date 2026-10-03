@@ -61,6 +61,17 @@ except ImportError:
         "verify": 40,
         "requires_restart": 50,
     }
+# Core 0.20.41 answers "what goes in a report's ``schema_version``?" itself, so the
+# hand-rolled read is only the fallback for cores that predate it. Import guarded at
+# module scope rather than inside the function: the name does not exist at this
+# adapter's declared floor of 0.20.24, so a static import would break every older core
+# at import time, while an in-function import would leave tests no attribute to
+# substitute and branch coverage would ride on whichever core pip happened to resolve.
+try:
+    from dcc_mcp_core.deployment import install_sop_report_schema_version
+except ImportError:  # Core older than 0.20.41
+    install_sop_report_schema_version = None
+
 INSTALL_EXIT_OK = INSTALL_EXIT_CODES["ok"]
 INSTALL_EXIT_PREFLIGHT = INSTALL_EXIT_CODES["preflight"]
 INSTALL_EXIT_ACQUIRE = INSTALL_EXIT_CODES["acquire"]
@@ -234,10 +245,41 @@ def report_schema_version() -> int:
     propagating, because this CLI's job is to keep emitting a preflight report
     precisely when the installation is broken.
     """
+    # Core 0.20.41 and later expose ``install_sop_report_schema_version()`` as the
+    # single authoritative answer, so prefer it and keep the local read below as the
+    # fallback for older cores in the declared range. The local read stays because the
+    # floor is unchanged: deleting it would break every core below 0.20.41.
+    answer = _core_report_schema_version()
+    if answer is not None:
+        return answer
     published = _published_schema_version(_published_schema_or_none())
     if published is not None:
         return published
     return FALLBACK_REPORT_SCHEMA_VERSION
+
+
+def _core_report_schema_version() -> Optional[int]:
+    """Return Core's own answer to the report's ``schema_version``, if it has one.
+
+    Core 0.20.41 added ``install_sop_report_schema_version()``, which reads the
+    same ``const`` this module walks to by hand. Resolving it here keeps the
+    adapter correct if Core ever publishes a revision that moves the const,
+    instead of duplicating that knowledge in ten adapters.
+
+    Returns ``None`` when the resolved Core predates the API, or when Core can
+    name the function but cannot read its own schema document, so the caller
+    falls back to the local read rather than losing the report.
+    """
+    if install_sop_report_schema_version is None:
+        return None
+    try:
+        return int(install_sop_report_schema_version())
+    except (RuntimeError, OSError, ValueError, TypeError, KeyError):
+        # ``KeyError`` is how Core's one-liner reports a document that is missing
+        # ``properties``/``schema_version``/``const``. It is unreachable on a core
+        # whose schema is digest-pinned, but this function's contract is to degrade
+        # to the local read on any misshapen document rather than propagate.
+        return None
 
 
 def _native_report_validator() -> Optional[Callable[[Dict[str, Any]], None]]:

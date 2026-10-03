@@ -286,9 +286,40 @@ def _schema_document(const):
 def test_report_schema_version_follows_published_document(monkeypatch) -> None:
     """The report field comes from the ``const`` Core's validator enforces."""
     cli = _install_cli()
+    # Force the local branch first: on a core new enough to answer, the local read
+    # is bypassed entirely, so patching only it would assert against a value the
+    # adapter no longer consults.
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
     monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(7))
 
     assert cli.report_schema_version() == 7
+
+
+def test_report_schema_version_prefers_cores_answer(monkeypatch) -> None:
+    """When Core can answer, Core's answer wins over the local read.
+
+    Forced-branch case: it substitutes Core's symbol instead of relying on which
+    core version pip resolved, so this branch is exercised on every CI lane,
+    including the ones that have no core-latest job.
+    """
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", lambda: 7)
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
+
+    assert cli.report_schema_version() == 7
+
+
+def test_report_schema_version_falls_back_when_core_cannot_answer(monkeypatch) -> None:
+    """When Core cannot answer, the local read is the one that decides.
+
+    Forced-branch case: substituting ``None`` reproduces an older core on any
+    resolved core, so the fallback branch is covered everywhere.
+    """
+    cli = _install_cli()
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
+    monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(9))
+
+    assert cli.report_schema_version() == 9
 
 
 def test_report_schema_version_ignores_cores_artifact_revision(monkeypatch) -> None:
@@ -301,6 +332,7 @@ def test_report_schema_version_ignores_cores_artifact_revision(monkeypatch) -> N
     constant must never reach the report.
     """
     cli = _install_cli()
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
     monkeypatch.setattr(cli, "_published_schema", lambda: _schema_document(1))
     monkeypatch.setattr(cli, "INSTALL_SOP_SCHEMA_VERSION", 2)
 
@@ -310,6 +342,7 @@ def test_report_schema_version_ignores_cores_artifact_revision(monkeypatch) -> N
 def test_report_schema_version_falls_back_when_document_is_unreadable(monkeypatch) -> None:
     """A Core with no readable schema document still yields a usable report."""
     cli = _install_cli()
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
     monkeypatch.setattr(cli, "_published_schema", lambda: None)
 
     assert cli.report_schema_version() == cli.FALLBACK_REPORT_SCHEMA_VERSION
@@ -336,6 +369,9 @@ def test_report_schema_version_survives_schema_read_failure(monkeypatch, error) 
     def _raise():
         raise error
 
+    # Force the local branch: on a core new enough to answer, the adapter-side
+    # loader patched below is never consulted, so this would pass vacuously.
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
     monkeypatch.setattr(cli, "_published_schema", _raise)
 
     assert cli.report_schema_version() == cli.FALLBACK_REPORT_SCHEMA_VERSION
@@ -362,6 +398,7 @@ def test_validate_public_report_survives_schema_read_failure(monkeypatch, error)
     def _raise():
         raise error
 
+    monkeypatch.setattr(cli, "install_sop_report_schema_version", None)
     monkeypatch.setattr(cli, "_published_schema", _raise)
     report = {
         "schema_version": cli.report_schema_version(),
