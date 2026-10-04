@@ -40,19 +40,18 @@ MAX_SERVER_VERSION = "1.0.0"
 # when Core's schema document cannot be read at all. See
 # ``report_schema_version()``.
 #
-# This is deliberately NOT Core's ``INSTALL_SOP_SCHEMA_VERSION``. That constant
-# is the revision of the published schema *artifact* (``-vN``); Core documents
-# it as separate from the report field, which stays at 1 because v2 only adds
-# the optional ``catalog`` object. The two values coincided at 1 through Core
-# 0.20.33, which is why copying the constant into the report looked correct
-# right up until 0.20.34 bumped the artifact revision to 2.
+# This is deliberately NOT the revision of Core's published schema *artifact* (the
+# ``-vN`` suffix, named ``INSTALL_SOP_SCHEMA_REVISION`` from Core 0.20.40). Core
+# documents that counter as separate from the report field, which stays at 1
+# because v2 only adds the optional ``catalog`` object. The two values coincided
+# at 1 through Core 0.20.33, which is why copying the artifact revision into the
+# report looked correct right up until 0.20.34 bumped it to 2.
 FALLBACK_REPORT_SCHEMA_VERSION = 1
 try:
-    from dcc_mcp_core.deployment import INSTALL_EXIT_CODES, INSTALL_SOP_SCHEMA_VERSION
+    from dcc_mcp_core.deployment import INSTALL_EXIT_CODES
 except ImportError:
     # Import-light fallback lets the CLI return a stable preflight report when
     # an old Core is present; pyproject requires the published implementation.
-    INSTALL_SOP_SCHEMA_VERSION = FALLBACK_REPORT_SCHEMA_VERSION
     INSTALL_EXIT_CODES = {
         "ok": 0,
         "preflight": 10,
@@ -234,11 +233,11 @@ def report_schema_version() -> int:
     authoritative source -- emitting anything else produces reports Core's own
     validator rejects.
 
-    Core's exported ``INSTALL_SOP_SCHEMA_VERSION`` is deliberately NOT used.
-    It is the revision of the published schema *artifact* (``-vN``), a separate
-    quantity from the report's own field; the two merely happened to agree
-    while both were 1. Populating the report from that constant is the defect
-    this function exists to avoid.
+    The revision of the published schema *artifact* (``-vN``) is deliberately NOT
+    used. It is a separate quantity from the report's own field; the two merely
+    happened to agree while both were 1. Populating the report from that counter
+    is the defect this function exists to avoid, so this module does not import
+    it at all.
 
     If the document cannot be read -- see ``_published_schema_or_none()`` --
     the value falls back to ``FALLBACK_REPORT_SCHEMA_VERSION`` rather than
