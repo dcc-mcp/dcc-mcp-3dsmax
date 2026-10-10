@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.16](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.15...v0.2.16) (2026-10-10)
+
+
+### Bug Fixes
+
+* **ci:** resolve release refs from the tag input, not the event name ([4ab2998](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4ab2998e4f0241809c5880074134b54f40d2c3d9))
+* drop Core's deprecated Install SOP alias from the install CLI ([#223](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/223)) ([d62d27b](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d62d27bffd719af53d30fa9f9533e29baad73c8a))
+
+
+### Code Refactoring
+
+* read the report schema version through Core's own API ([#222](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/222)) ([bfbc8ff](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/bfbc8ffc92414f6e1a2ff747b6cbbf0fd443eff1))
+
+
+### Documentation
+
+* add the generated DCC-MCP host matrix pointer ([#224](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/224)) ([d4117fd](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d4117fd7285c3ca4bb5ccdbb3e6d7954a84d2af9))
+
 ## [0.2.15](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.14...v0.2.15) (2026-10-01)
 
 
