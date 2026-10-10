@@ -13,7 +13,7 @@
 **dcc-mcp-3dsmax** — Core 3ds Max adapter for DCC-MCP — 3ds Max plugin with host-side
 bridge and sidecar support.
 
-It is one of **38 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
+It is one of **47 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
 MCP protocol and builds on the same core runtime contract; each one exposes the tools
 its own host needs on top of that.
 
