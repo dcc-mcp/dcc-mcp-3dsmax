@@ -225,6 +225,14 @@ empty `nodes`, and a baseline that still resolves to nothing is named in
 name otherwise, which is what makes a rename visible instead of looking like a
 removal plus an addition.
 
+A snapshot records the filters it was taken under, so a `delta` can tell a
+whole-scene baseline from one a `name_filter` narrowed to a handful of nodes. Both
+report the nodes outside them as `added`, and a baseline captured under a narrower
+scope than the comparison is named in `warnings`: those entries are additions
+relative to the baseline, not necessarily new to the scene. The `added` list itself
+is never filtered - the warning explains it rather than changing what it means.
+A hand-written list of names records no scope and is treated as whole-scene.
+
 Pass `property_name` to compare one property as well. The `snapshot` returned by
 `include_snapshot` carries no property values, so comparing a property needs a
 baseline taken from `property` mode, whose nodes carry a `value`. A baseline that

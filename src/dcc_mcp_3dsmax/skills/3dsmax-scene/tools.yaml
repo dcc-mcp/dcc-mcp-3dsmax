@@ -2856,7 +2856,10 @@ tools:
       host could not answer. Delta compares the whole scene: name_filter and
       include_hidden do not narrow it, because a baseline captured without a
       filter is a statement about the whole scene and narrowing only the current
-      side would report filtered-out nodes as removed.
+      side would report filtered-out nodes as removed. A snapshot records the
+      filters it was taken under, so a baseline captured under a narrower scope
+      than the comparison is named in warnings: its added entries are additions
+      relative to the baseline, not necessarily new to the scene.
     source_file: action_query_scene.py
     execution: sync
     affinity: main
@@ -2913,7 +2916,9 @@ tools:
           default: false
           description: >-
             Return a snapshot of the matched nodes so it can be passed back as
-            the baseline of a later delta query.
+            the baseline of a later delta query. The snapshot records the filters
+            it was taken under, and delta warns when that scope is narrower than
+            its own.
         limit:
           type: integer
           minimum: 1

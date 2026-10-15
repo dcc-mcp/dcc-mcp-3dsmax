@@ -939,6 +939,44 @@ def test_delta_warns_when_the_baseline_resolves_to_nothing(monkeypatch):
     assert any("resolved to 0 entries" in item for item in result["data"]["warnings"])
 
 
+def test_delta_warns_when_a_narrow_scope_snapshot_feeds_a_wide_delta(monkeypatch):
+    """A name-filtered baseline never covered the rest of the scene, so added is ambiguous."""
+    _install_runtime(monkeypatch)
+
+    narrow = _query(mode="overview", name_filter="hero", include_snapshot=True)["data"]
+    assert narrow["snapshot_count"] == 4
+
+    result = _query(mode="delta", baseline=narrow["snapshot"])
+
+    assert result["data"]["baseline_count"] == 4
+    # The warning explains added; it must not change what added means.
+    assert result["data"]["added_count"] == 2
+    assert [entry["node_name"] for entry in result["data"]["added"]] == ["hidden_leaf", "lone_mesh"]
+    assert any("narrower scope" in item for item in result["data"]["warnings"])
+
+
+def test_delta_does_not_warn_when_the_baseline_scope_matches_the_comparison(monkeypatch):
+    """A whole-scene snapshot is a whole-scene statement: no scope warning on the round trip."""
+    _install_runtime(monkeypatch)
+
+    snapshot = _query(mode="filter", include_snapshot=True)["data"]["snapshot"]
+
+    result = _query(mode="delta", baseline=snapshot)
+
+    assert result["data"]["added_count"] == 0
+    assert not any("narrower scope" in item for item in result["data"]["warnings"])
+
+
+def test_delta_does_not_warn_about_a_hand_written_baseline(monkeypatch):
+    """A list baseline carries no scope, and is treated as whole-scene rather than narrow."""
+    _install_runtime(monkeypatch)
+
+    result = _query(mode="delta", baseline=["hero_mesh"])
+
+    assert result["data"]["baseline_count"] == 1
+    assert not any("narrower scope" in item for item in result["data"]["warnings"])
+
+
 def test_hierarchy_a_different_wrapper_for_the_same_handle_still_finds_the_subtree(monkeypatch):
     """pymxs may hand back another wrapper for a node that is in the scene."""
     ghost = _Node("hero_mesh", 1, base=_BaseObject(900))
