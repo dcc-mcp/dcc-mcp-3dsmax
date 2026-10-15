@@ -233,6 +233,14 @@ relative to the baseline, not necessarily new to the scene. The `added` list its
 is never filtered - the warning explains it rather than changing what it means.
 A hand-written list of names records no scope and is treated as whole-scene.
 
+`snapshot` is a plain array and cannot carry that scope across a serialization
+boundary, so pass it back either as `baseline_scope` alongside the array, or by
+handing the whole result object back as `baseline`. Delta always compares the whole
+scene, so the scope check compares the baseline against the whole scene rather
+than against the filters on the current call - reusing the same `name_filter` does
+not silence it. A snapshot taken in `delta` mode records a whole-scene scope,
+because delta ignores those filters when it captures one.
+
 Pass `property_name` to compare one property as well. The `snapshot` returned by
 `include_snapshot` carries no property values, so comparing a property needs a
 baseline taken from `property` mode, whose nodes carry a `value`. A baseline that

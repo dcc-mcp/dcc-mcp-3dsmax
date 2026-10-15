@@ -13,6 +13,7 @@ them very differently.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -939,6 +940,11 @@ def test_delta_warns_when_the_baseline_resolves_to_nothing(monkeypatch):
     assert any("resolved to 0 entries" in item for item in result["data"]["warnings"])
 
 
+def _round_trip(value):
+    """Send a value through JSON, the way every tool result reaches an agent."""
+    return json.loads(json.dumps(value))
+
+
 def test_delta_warns_when_a_narrow_scope_snapshot_feeds_a_wide_delta(monkeypatch):
     """A name-filtered baseline never covered the rest of the scene, so added is ambiguous."""
     _install_runtime(monkeypatch)
@@ -946,7 +952,13 @@ def test_delta_warns_when_a_narrow_scope_snapshot_feeds_a_wide_delta(monkeypatch
     narrow = _query(mode="overview", name_filter="hero", include_snapshot=True)["data"]
     assert narrow["snapshot_count"] == 4
 
-    result = _query(mode="delta", baseline=narrow["snapshot"])
+    # Over the wire the snapshot is a bare array, so the scope travels as its
+    # own argument - this is the path an agent actually uses.
+    result = _query(
+        mode="delta",
+        baseline=_round_trip(narrow["snapshot"]),
+        baseline_scope=_round_trip(narrow["snapshot_scope"]),
+    )
 
     assert result["data"]["baseline_count"] == 4
     # The warning explains added; it must not change what added means.
@@ -955,16 +967,89 @@ def test_delta_warns_when_a_narrow_scope_snapshot_feeds_a_wide_delta(monkeypatch
     assert any("narrower scope" in item for item in result["data"]["warnings"])
 
 
+def test_delta_scope_warning_survives_a_json_round_trip(monkeypatch):
+    """The regression: a scope carried as a Python attribute is lost on the wire.
+
+    The first cut put the scope on a list subclass, which serialized to a plain
+    array and warned only inside one process - exactly the case in the report.
+    """
+    _install_runtime(monkeypatch)
+
+    narrow = _query(mode="overview", name_filter="hero", include_snapshot=True)["data"]
+    snapshot = _round_trip(narrow["snapshot"])
+    assert type(snapshot) is list
+
+    result = _query(mode="delta", baseline=snapshot, baseline_scope=_round_trip(narrow["snapshot_scope"]))
+
+    assert any("narrower scope" in item for item in result["data"]["warnings"])
+    assert result["data"]["added_count"] == 2
+
+
+def test_delta_reads_the_scope_from_a_result_object_passed_whole(monkeypatch):
+    """Handing back the capturing result object carries the scope without a second argument."""
+    _install_runtime(monkeypatch)
+
+    narrow = _query(mode="overview", name_filter="hero", include_snapshot=True)
+
+    result = _query(mode="delta", baseline=_round_trip(narrow["data"]))
+
+    assert any("narrower scope" in item for item in result["data"]["warnings"])
+    assert result["data"]["added_count"] == 2
+
+
+def test_delta_warns_even_when_the_comparison_reuses_the_same_filter(monkeypatch):
+    """Delta compares the whole scene, so a matching name_filter must not silence the warning."""
+    _install_runtime(monkeypatch)
+
+    narrow = _query(mode="overview", name_filter="hero", include_snapshot=True)["data"]
+
+    result = _query(
+        mode="delta",
+        baseline=_round_trip(narrow["snapshot"]),
+        baseline_scope=_round_trip(narrow["snapshot_scope"]),
+        name_filter="hero",
+    )
+
+    assert any("narrower scope" in item for item in result["data"]["warnings"])
+    assert result["data"]["added_count"] == 2
+
+
 def test_delta_does_not_warn_when_the_baseline_scope_matches_the_comparison(monkeypatch):
     """A whole-scene snapshot is a whole-scene statement: no scope warning on the round trip."""
     _install_runtime(monkeypatch)
 
-    snapshot = _query(mode="filter", include_snapshot=True)["data"]["snapshot"]
+    wide = _query(mode="filter", include_snapshot=True)["data"]
 
-    result = _query(mode="delta", baseline=snapshot)
+    result = _query(
+        mode="delta",
+        baseline=_round_trip(wide["snapshot"]),
+        baseline_scope=_round_trip(wide["snapshot_scope"]),
+    )
 
     assert result["data"]["added_count"] == 0
     assert not any("narrower scope" in item for item in result["data"]["warnings"])
+
+
+def test_delta_a_snapshot_from_delta_mode_records_no_filters_it_ignored(monkeypatch):
+    """Delta snapshots the whole scene it compared, so its scope must say whole-scene.
+
+    Recording the name_filter it ignored made the snapshot look narrower than it
+    was and produced a warning about an empty added list.
+    """
+    _install_runtime(monkeypatch)
+
+    first = _query(mode="delta", baseline=[], name_filter="hero", include_snapshot=True)["data"]
+    assert first["snapshot_count"] == 6
+    assert first["snapshot_scope"]["name_filter"] is None
+
+    second = _query(
+        mode="delta",
+        baseline=_round_trip(first["snapshot"]),
+        baseline_scope=_round_trip(first["snapshot_scope"]),
+    )
+
+    assert second["data"]["added_count"] == 0
+    assert second["data"]["warnings"] == []
 
 
 def test_delta_does_not_warn_about_a_hand_written_baseline(monkeypatch):

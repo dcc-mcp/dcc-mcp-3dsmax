@@ -42,6 +42,7 @@ def main(
     property_value: Any = None,
     include_hidden: bool = True,
     baseline: Any = None,
+    baseline_scope: Any = None,
     include_snapshot: bool = False,
     limit: int = 200,
 ) -> Dict[str, Any]:
@@ -58,6 +59,7 @@ def main(
             property_value=property_value,
             include_hidden=include_hidden,
             baseline=baseline,
+            baseline_scope=baseline_scope,
             include_snapshot=include_snapshot,
             limit=limit,
         )
