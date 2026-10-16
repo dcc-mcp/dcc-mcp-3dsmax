@@ -2904,7 +2904,7 @@ tools:
             Required in mode delta. A node snapshot to compare against: an array
             of node names, or an array of objects carrying node_name, object_id,
             and optionally value or values. Pass the snapshot field returned when
-            include_snapshot is true rather than the whole result object -
+            include_snapshot is true, or pass the whole result object -
             overview and delta return an empty nodes list, which is not a
             baseline. Property comparison needs a baseline from property mode,
             whose nodes carry a value.
