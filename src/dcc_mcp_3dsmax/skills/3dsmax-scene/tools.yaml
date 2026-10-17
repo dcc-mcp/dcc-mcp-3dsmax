@@ -2903,11 +2903,12 @@ tools:
           description: >-
             Required in mode delta. A node snapshot to compare against: an array
             of node names, or an array of objects carrying node_name, object_id,
-            and optionally value or values. Pass the snapshot field returned when
-            include_snapshot is true rather than the whole result object -
-            overview and delta return an empty nodes list, which is not a
-            baseline. Property comparison needs a baseline from property mode,
-            whose nodes carry a value.
+            and optionally value or values. Pass result.data.snapshot returned
+            when include_snapshot is true, or the inner result.data object with
+            a nodes or snapshot list. The outer success/message/data result
+            object is not accepted. In overview and delta, nodes is empty; a
+            non-empty snapshot is used when present. Property comparison needs
+            a baseline from property mode, whose nodes carry a value.
         include_snapshot:
           type: boolean
           default: false
