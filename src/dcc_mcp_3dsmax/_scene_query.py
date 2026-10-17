@@ -906,6 +906,9 @@ def _narrower_scope(baseline: Dict[str, Any], current: Dict[str, Any]) -> List[s
         narrower.append("class_name={}".format(baseline["class_name"]))
     if baseline.get("include_hidden") is False and current.get("include_hidden") is not False:
         narrower.append("include_hidden=false")
+    for marker in ("selection_only", "property_filtered"):
+        if baseline.get(marker) is True and current.get(marker) is not True:
+            narrower.append("{}=true".format(marker))
     return narrower
 
 
@@ -927,24 +930,23 @@ def _baseline_scope(baseline: Any) -> Optional[Dict[str, Any]]:
         return None
     scope = baseline.get("snapshot_scope")
     if not isinstance(scope, dict):
-        return None
+        scope = None
     # A whole-scene snapshot is marked explicitly; an unmarked dict is one the
     # caller typed by hand, and its filters are taken at face value.
-    if scope.get(WHOLE_SCENE):
+    if scope is not None and scope.get(WHOLE_SCENE):
         return _scope_signature(None, True, None)
     nodes = baseline.get("nodes")
     class_name = baseline.get("class_name")
-    if (
-        baseline.get("mode") == "class"
-        and isinstance(class_name, str)
-        and class_name.strip()
-        and isinstance(nodes, list)
-        and nodes
-        and _unwrap_baseline_list(baseline) is nodes
-    ):
-        # A class result's nonempty nodes list takes precedence over snapshot.
-        # Its class filter does not apply to the separate snapshot source.
-        scope = dict(scope, class_name=class_name.strip(), class_match=baseline.get("class_match"))
+    if isinstance(nodes, list) and nodes and _unwrap_baseline_list(baseline) is nodes:
+        # Nonempty nodes take precedence over snapshot. Record only the known
+        # restrictions of that list; absent snapshot metadata cannot tell us
+        # which shared name/visibility filters were applied.
+        if baseline.get("mode") == "class" and isinstance(class_name, str) and class_name.strip():
+            scope = dict(scope or {}, class_name=class_name.strip(), class_match=baseline.get("class_match"))
+        elif baseline.get("mode") == "property" and baseline.get("expected_value") is not None:
+            scope = dict(scope or {}, property_filtered=True)
+        elif baseline.get("mode") == "selection":
+            scope = dict(scope or {}, selection_only=True)
     return scope
 
 
@@ -1323,6 +1325,7 @@ def run_scene_query(
         snapshot_scope = _scope_signature(name_filter, include_hidden)
         if mode == "selection":
             snapshot_source = _scope_nodes(scene_selection(runtime)[0], name_filter, include_hidden)
+            snapshot_scope["selection_only"] = True
         elif mode == "delta":
             # Snapshot what was actually compared, so the result round-trips.
             snapshot_source = compared_nodes

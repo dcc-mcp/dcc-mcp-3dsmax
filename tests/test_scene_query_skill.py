@@ -1097,6 +1097,89 @@ def test_class_json_baseline_scope_follows_the_selected_list(monkeypatch, class_
         assert any("class_name=CallerClass" in item for item in explicit["warnings"])
         assert not any("class_name=HeroType" in item for item in explicit["warnings"])
 
+    without_snapshot = _query(mode="class", class_name=class_name)["data"]
+    from_nodes = _query(mode="delta", baseline=_round_trip(without_snapshot))["data"]
+    assert from_nodes["baseline_count"] == matched_count
+    assert from_nodes["added_count"] == (2 if matched_count else 6)
+    assert any("class_name=HeroType" in item for item in from_nodes["warnings"]) is bool(matched_count)
+
+
+def test_selection_json_baseline_records_its_source_without_changing_added(monkeypatch):
+    _install_runtime(monkeypatch)
+    captured = _query(mode="selection", include_snapshot=True)["data"]
+    assert [entry["node_name"] for entry in captured["snapshot"]] == ["hero_mesh"]
+    assert captured["snapshot_scope"]["selection_only"] is True
+
+    without_snapshot = _query(mode="selection")["data"]
+    baselines = [
+        {"baseline": _round_trip(captured["snapshot"]), "baseline_scope": _round_trip(captured["snapshot_scope"])},
+        {"baseline": _round_trip(captured)},
+        {"baseline": _round_trip(without_snapshot)},
+    ]
+    for kwargs in baselines:
+        result = _query(mode="delta", **kwargs)["data"]
+        assert result["baseline_count"] == 1
+        assert result["added_count"] == 5
+        assert {entry["node_name"] for entry in result["added"]} == {
+            "hero_mesh_inst",
+            "hero_child",
+            "hero_grandchild",
+            "lone_mesh",
+            "hidden_leaf",
+        }
+        assert any("selection_only=true" in item for item in result["warnings"])
+
+
+@pytest.mark.parametrize("include_snapshot", [False, True])
+@pytest.mark.parametrize("expected", [0, False])
+def test_property_filtered_json_nodes_keep_scope_and_values(monkeypatch, expected, include_snapshot):
+    runtime = _install_runtime(monkeypatch)
+    runtime.hero.radius = expected
+    captured = _query(
+        mode="property", property_name="radius", property_value=expected, include_snapshot=include_snapshot
+    )["data"]
+    assert [entry["node_name"] for entry in captured["nodes"]] == ["hero_mesh"]
+    assert type(captured["expected_value"]) is type(expected)
+    assert captured.get("snapshot_scope", {}).get("property_filtered") is not True
+    runtime.hero.radius = 99.0
+
+    baseline = _round_trip(captured)
+    result = _query(mode="delta", baseline=baseline, property_name="radius")["data"]
+    assert result["baseline_count"] == 1
+    assert result["added_count"] == 5
+    assert result["comparable_count"] == 1
+    assert result["changed"] == [{"node_name": "hero_mesh", "object_id": 1, "before": expected, "after": 99.0}]
+    assert type(result["changed"][0]["before"]) is type(expected)
+    assert any("property_filtered=true" in item for item in result["warnings"])
+    assert baseline == captured
+
+    explicit = _query(mode="delta", baseline=baseline, baseline_scope={"property_filtered": False})["data"]
+    assert explicit["added"] == result["added"]
+    assert not any("narrower scope" in item for item in explicit["warnings"])
+    if include_snapshot:
+        from_snapshot = _query(
+            mode="delta",
+            baseline=_round_trip(captured["snapshot"]),
+            baseline_scope=_round_trip(captured["snapshot_scope"]),
+        )["data"]
+        assert from_snapshot["baseline_count"] == 6
+        assert from_snapshot["added_count"] == 0
+        assert not any("narrower scope" in item for item in from_snapshot["warnings"])
+
+
+@pytest.mark.parametrize("include_snapshot", [False, True])
+def test_empty_property_json_nodes_do_not_narrow_a_snapshot_fallback(monkeypatch, include_snapshot):
+    _install_runtime(monkeypatch)
+    captured = _query(mode="property", property_name="radius", property_value=0, include_snapshot=include_snapshot)[
+        "data"
+    ]
+    assert captured["nodes"] == []
+    result = _query(mode="delta", baseline=_round_trip(captured), property_name="radius")["data"]
+    assert result["baseline_count"] == (6 if include_snapshot else 0)
+    assert result["added_count"] == (0 if include_snapshot else 6)
+    assert result["comparable_count"] == 0
+    assert not any("narrower scope" in item for item in result["warnings"])
+
 
 def test_delta_a_snapshot_from_delta_mode_records_no_filters_it_ignored(monkeypatch):
     """Delta snapshots the whole scene it compared, so its scope must say whole-scene.
