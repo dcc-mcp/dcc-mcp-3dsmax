@@ -2856,7 +2856,12 @@ tools:
       host could not answer. Delta compares the whole scene: name_filter and
       include_hidden do not narrow it, because a baseline captured without a
       filter is a statement about the whole scene and narrowing only the current
-      side would report filtered-out nodes as removed.
+      side would report filtered-out nodes as removed. A snapshot records the
+      filters it was taken under, and since a snapshot is a plain array that
+      scope travels either as baseline_scope or on the inner result.data object
+      passed back as baseline; a baseline captured under a narrower scope than the whole-scene
+      comparison is named in warnings, meaning its added entries are additions
+      relative to the baseline, not necessarily new to the scene.
     source_file: action_query_scene.py
     execution: sync
     affinity: main
@@ -2908,13 +2913,30 @@ tools:
             a nodes or snapshot list. The outer success/message/data result
             object is not accepted. In overview and delta, nodes is empty; a
             non-empty snapshot is used when present. Property comparison needs
-            a baseline from property mode, whose nodes carry a value.
+            an inner property-mode result, whose nodes carry a value and whose
+            expected_value retains property-value filtering, including zero or
+            false. Only a selected non-empty nodes list carries that filter;
+            an empty nodes list falls back to the snapshot's scope.
+        baseline_scope:
+          description: >-
+            In mode delta, the scope the baseline snapshot was captured under:
+            the snapshot_scope object from the call that produced the baseline.
+            A snapshot is a plain array and cannot carry its own scope across a
+            serialization boundary, so pass it here alongside result.data.snapshot,
+            or pass the inner result.data object as baseline, to have a
+            narrower-than-comparison baseline named in warnings. Selection snapshots
+            record selection_only; property_filtered is inferred for a filtered
+            inner property's selected non-empty nodes. These boolean markers do
+            not change added entries. Ignored outside mode delta.
         include_snapshot:
           type: boolean
           default: false
           description: >-
-            Return a snapshot of the matched nodes so it can be passed back as
-            the baseline of a later delta query.
+            Return an identity-only snapshot and snapshot_scope for a later delta.
+            Shared name/visibility filters apply; selection mode also records
+            selection_only true. Class and property-value filters do not narrow
+            this separate snapshot array. Pass the inner property result as
+            baseline to preserve values and property_filtered scope instead.
         limit:
           type: integer
           minimum: 1

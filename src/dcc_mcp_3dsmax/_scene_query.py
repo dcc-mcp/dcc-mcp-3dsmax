@@ -871,6 +871,85 @@ def _scope_nodes(nodes: Sequence[Any], name_filter: Any, include_hidden: bool) -
     return scoped
 
 
+WHOLE_SCENE = "whole_scene"
+
+
+def _scope_signature(
+    name_filter: Any,
+    include_hidden: bool,
+    class_name: Any = None,
+    class_match: Any = None,
+) -> Dict[str, Any]:
+    """Describe the filters a snapshot is taken under."""
+    wanted_class = class_name.strip() if isinstance(class_name, str) else None
+    needle = name_filter.strip() if isinstance(name_filter, str) else None
+    return {
+        "name_filter": needle or None,
+        "include_hidden": bool(include_hidden),
+        "class_name": wanted_class or None,
+        "class_match": class_match if wanted_class else None,
+    }
+
+
+def _narrower_scope(baseline: Dict[str, Any], current: Dict[str, Any]) -> List[str]:
+    """The filters that made the baseline cover less than the current comparison.
+
+    Empty when the baseline is at least as wide as the current scope, which is
+    also the answer for a hand-written baseline carrying no scope at all: a
+    baseline with no recorded filters is treated as whole-scene, and warning
+    about it would fire on every list the caller passes in.
+    """
+    narrower: List[str] = []
+    if baseline.get("name_filter") and not current.get("name_filter"):
+        narrower.append("name_filter={}".format(baseline["name_filter"]))
+    if baseline.get("class_name") and not current.get("class_name"):
+        narrower.append("class_name={}".format(baseline["class_name"]))
+    if baseline.get("include_hidden") is False and current.get("include_hidden") is not False:
+        narrower.append("include_hidden=false")
+    for marker in ("selection_only", "property_filtered"):
+        if baseline.get(marker) is True and current.get(marker) is not True:
+            narrower.append("{}=true".format(marker))
+    return narrower
+
+
+def _baseline_scope(baseline: Any) -> Optional[Dict[str, Any]]:
+    """The scope a baseline was captured under, when it recorded one.
+
+    Only JSON-visible data counts. A tool result crosses an MCP serialization
+    boundary before the agent sees it, so anything carried as a Python
+    attribute - a subclass field on the returned list, say - is gone by the time
+    the same value comes back as ``baseline``. The scope has to travel as plain
+    data: either this tool's own result object (``snapshot_scope``), or the
+    ``{"snapshot": [...], "snapshot_scope": {...}}`` envelope an agent can
+    rebuild by hand after that round trip.
+
+    A bare list of names or node entries records no scope, so it is treated as
+    whole-scene rather than warned about on every call.
+    """
+    if not isinstance(baseline, dict):
+        return None
+    scope = baseline.get("snapshot_scope")
+    if not isinstance(scope, dict):
+        scope = None
+    # A whole-scene snapshot is marked explicitly; an unmarked dict is one the
+    # caller typed by hand, and its filters are taken at face value.
+    if scope is not None and scope.get(WHOLE_SCENE):
+        return _scope_signature(None, True, None)
+    nodes = baseline.get("nodes")
+    class_name = baseline.get("class_name")
+    if isinstance(nodes, list) and nodes and _unwrap_baseline_list(baseline) is nodes:
+        # Nonempty nodes take precedence over snapshot. Record only the known
+        # restrictions of that list; absent snapshot metadata cannot tell us
+        # which shared name/visibility filters were applied.
+        if baseline.get("mode") == "class" and isinstance(class_name, str) and class_name.strip():
+            scope = dict(scope or {}, class_name=class_name.strip(), class_match=baseline.get("class_match"))
+        elif baseline.get("mode") == "property" and baseline.get("expected_value") is not None:
+            scope = dict(scope or {}, property_filtered=True)
+        elif baseline.get("mode") == "selection":
+            scope = dict(scope or {}, selection_only=True)
+    return scope
+
+
 def _overview(nodes: Sequence[Any], runtime: Any, selection: Sequence[Any]) -> Dict[str, Any]:
     counts: Dict[str, int] = {}
     visible_count = 0
@@ -1081,6 +1160,7 @@ def run_scene_query(
     include_hidden: bool = True,
     limit: Any = None,
     baseline: Any = None,
+    baseline_scope: Any = None,
     include_snapshot: bool = False,
 ) -> Dict[str, Any]:
     """Answer one of the six scene queries against the live scene.
@@ -1088,6 +1168,11 @@ def run_scene_query(
     The mode decides what is returned, but every mode shares the filters, the
     node limit, and the rule that a question the host cannot answer shows up in
     ``warnings`` instead of disappearing from the result.
+
+    ``baseline_scope`` is the channel a snapshot's scope takes back across an MCP
+    round trip. The snapshot itself is a plain JSON array and cannot carry it, so
+    an agent that kept the ``snapshot_scope`` from the capturing call passes it
+    here; passing the whole result object as ``baseline`` does the same thing.
     """
     if mode not in QUERY_MODES:
         raise SceneQueryError("mode must be one of {}".format(", ".join(QUERY_MODES)))
@@ -1179,6 +1264,30 @@ def run_scene_query(
                 "delta compares the whole scene, so name_filter and include_hidden were not applied to the "
                 "comparison; they only narrow the snapshot returned with include_snapshot"
             )
+        # The mirror of the warning above: there the filters are on this call and
+        # cannot narrow it, here they are on the baseline and already did. A
+        # snapshot taken with name_filter covers only the matched nodes, so every
+        # node outside it is reported as added whether or not it is new - the
+        # honest result, but one no caller can tell apart from a real addition.
+        #
+        # The comparison side is the whole scene whatever the caller passed:
+        # delta ignores these filters, so comparing against them would silence
+        # this warning on the most natural call of all - reusing the same filter
+        # the snapshot was captured with.
+        # The explicit argument wins over a scope riding on the baseline: the
+        # caller that split a snapshot and its scope apart over the wire is the
+        # one that knows which scope belongs to which list.
+        recorded_scope = _baseline_scope({"snapshot_scope": baseline_scope})
+        if recorded_scope is None:
+            recorded_scope = _baseline_scope(baseline)
+        if recorded_scope is not None:
+            narrower = _narrower_scope(recorded_scope, _scope_signature(None, True, None))
+            if narrower:
+                warnings.append(
+                    "the baseline was captured under a narrower scope ({}) than this comparison, so added may "
+                    "list nodes the baseline never covered; they are additions relative to the baseline, not "
+                    "necessarily new to the scene".format(", ".join(narrower))
+                )
         if result["baseline_count"] == 0 and result["current_count"]:
             warnings.append(
                 "the baseline resolved to 0 entries, so every one of the {} node(s) in the scene is reported "
@@ -1208,11 +1317,20 @@ def run_scene_query(
 
     if include_snapshot:
         snapshot_source = scoped
+        # The scope describes the source the snapshot was built from, not the
+        # arguments this call received: delta snapshots the whole scene it
+        # compared while ignoring the shared filters, and recording those filters
+        # would make the snapshot claim to be narrower than it is - which comes
+        # back as a false warning the next time it is used as a baseline.
+        snapshot_scope = _scope_signature(name_filter, include_hidden)
         if mode == "selection":
             snapshot_source = _scope_nodes(scene_selection(runtime)[0], name_filter, include_hidden)
+            snapshot_scope["selection_only"] = True
         elif mode == "delta":
             # Snapshot what was actually compared, so the result round-trips.
             snapshot_source = compared_nodes
+            snapshot_scope = _scope_signature(None, True, None)
+            snapshot_scope[WHOLE_SCENE] = True
         snapshot = []
         for node in snapshot_source[:safe_limit]:
             identity = node_identity(node)
@@ -1225,6 +1343,7 @@ def run_scene_query(
                 }
             )
         result["snapshot"] = snapshot
+        result["snapshot_scope"] = snapshot_scope
         result["snapshot_count"] = len(snapshot)
         result["snapshot_truncated"] = len(snapshot_source) > safe_limit
         if result["snapshot_truncated"]:

@@ -225,10 +225,37 @@ Nodes are matched by `object_id` when the baseline carries one and by
 name otherwise, which is what makes a rename visible instead of looking like a
 removal plus an addition.
 
+A snapshot records the filters it was taken under, so a `delta` can tell a
+whole-scene baseline from one a `name_filter` narrowed to a handful of nodes. Both
+report the nodes outside them as `added`, and a baseline captured under a narrower
+scope than the comparison is named in `warnings`: those entries are additions
+relative to the baseline, not necessarily new to the scene. The `added` list itself
+is never filtered - the warning explains it rather than changing what it means.
+A hand-written list of names records no scope and is treated as whole-scene.
+
+`snapshot` is a plain array and cannot carry that scope across a serialization
+boundary, so pass `result["data"]["snapshot_scope"]` back as `baseline_scope`
+alongside `result["data"]["snapshot"]`, or pass the inner `result["data"]` object
+as `baseline`. Delta always compares the whole scene, so the scope check compares
+the baseline against the whole scene rather
+than against the filters on the current call - reusing the same `name_filter` does
+not silence it. A snapshot taken in `delta` mode records a whole-scene scope,
+because delta ignores those filters when it captures one.
+
+Selection snapshots record `selection_only: true`. When an inner result's
+non-empty `nodes` list is used, its class filter or `property_filtered: true`
+(inferred from `expected_value`, including `0` or `false`) is also recognized;
+selection results retain their selection scope even without a snapshot.
+Without snapshot metadata, only these known restrictions are inferred, not
+shared name or visibility filters. An empty `nodes` list that falls back to
+`snapshot` keeps the snapshot's scope. Property-value and class filters do not
+narrow that separate snapshot array.
+
 Pass `property_name` to compare one property as well. The `snapshot` returned by
 `include_snapshot` carries no property values, so comparing a property needs a
-baseline taken from `property` mode, whose nodes carry a `value`. A baseline that
-carries no value for the property is reported in `warnings` instead of being read
+baseline taken from the inner `property` mode result, whose nodes carry a
+`value`; retaining that object also preserves its property-filter scope. A
+baseline that carries no value for the property is reported in `warnings` instead of being read
 as "nothing changed", and a node that could not be read goes to `unreadable`
 rather than being counted as changed.
 
