@@ -932,6 +932,19 @@ def _baseline_scope(baseline: Any) -> Optional[Dict[str, Any]]:
     # caller typed by hand, and its filters are taken at face value.
     if scope.get(WHOLE_SCENE):
         return _scope_signature(None, True, None)
+    nodes = baseline.get("nodes")
+    class_name = baseline.get("class_name")
+    if (
+        baseline.get("mode") == "class"
+        and isinstance(class_name, str)
+        and class_name.strip()
+        and isinstance(nodes, list)
+        and nodes
+        and _unwrap_baseline_list(baseline) is nodes
+    ):
+        # A class result's nonempty nodes list takes precedence over snapshot.
+        # Its class filter does not apply to the separate snapshot source.
+        scope = dict(scope, class_name=class_name.strip(), class_match=baseline.get("class_match"))
     return scope
 
 
@@ -1307,7 +1320,7 @@ def run_scene_query(
         # compared while ignoring the shared filters, and recording those filters
         # would make the snapshot claim to be narrower than it is - which comes
         # back as a false warning the next time it is used as a baseline.
-        snapshot_scope = _scope_signature(name_filter, include_hidden, class_name, class_match)
+        snapshot_scope = _scope_signature(name_filter, include_hidden)
         if mode == "selection":
             snapshot_source = _scope_nodes(scene_selection(runtime)[0], name_filter, include_hidden)
         elif mode == "delta":

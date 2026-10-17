@@ -18,6 +18,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -742,11 +743,14 @@ def test_delta_reports_added_nodes(monkeypatch):
 def test_delta_compares_a_property_when_the_baseline_carries_values(monkeypatch):
     runtime = _install_runtime(monkeypatch)
 
-    before = _query(mode="property", property_name="radius")
+    before = _query(mode="property", property_name="radius", include_snapshot=True)
     runtime.hero.radius = 99.0
 
-    result = _query(mode="delta", baseline=before["data"]["nodes"], property_name="radius")
+    # The inner result contains both lists. Keep preferring the nodes carrying
+    # property values over the identity-only snapshot after a JSON round trip.
+    result = _query(mode="delta", baseline=_round_trip(before["data"]), property_name="radius")
 
+    assert result["data"]["added_count"] == 0
     assert result["data"]["changed_count"] == 1
     assert result["data"]["changed"][0]["node_name"] == "hero_mesh"
     assert result["data"]["changed"][0]["before"] == 5.0
@@ -1028,6 +1032,70 @@ def test_delta_does_not_warn_when_the_baseline_scope_matches_the_comparison(monk
 
     assert result["data"]["added_count"] == 0
     assert not any("narrower scope" in item for item in result["data"]["warnings"])
+
+
+@pytest.mark.parametrize(
+    "mode,kwargs",
+    [("overview", {}), ("filter", {}), ("property", {"property_name": "radius"}), ("selection", {})],
+)
+def test_snapshot_scope_omits_class_ignored_by_its_source(monkeypatch, mode, kwargs):
+    """Class metadata must not claim filters the snapshot source never used."""
+    _install_runtime(monkeypatch)
+
+    captured = _query(
+        mode=mode,
+        class_name="ignored",
+        class_match="contains",
+        include_snapshot=True,
+        **kwargs,
+    )["data"]
+    reference = _query(mode=mode, include_snapshot=True, **kwargs)["data"]
+
+    assert captured["nodes"] == reference["nodes"]
+    assert captured["snapshot"] == reference["snapshot"]
+    scope = _round_trip(captured["snapshot_scope"])
+    assert scope["class_name"] is None
+    assert scope["class_match"] is None
+
+
+@pytest.mark.parametrize("class_name,matched_count", [("HeroType", 4), ("MissingType", 0)])
+def test_class_json_baseline_scope_follows_the_selected_list(monkeypatch, class_name, matched_count):
+    """Only a nonempty class nodes list is narrower than the shared snapshot."""
+    runtime = _install_runtime(monkeypatch)
+    runtime.classOf = lambda node: "HeroType" if node.name.startswith("hero") else "OtherType"
+    captured = _query(mode="class", class_name=class_name, include_snapshot=True)["data"]
+    assert len(captured["nodes"]) == matched_count
+    assert captured["snapshot_count"] == 6
+
+    from_snapshot = _query(
+        mode="delta",
+        baseline=_round_trip(captured["snapshot"]),
+        baseline_scope=_round_trip(captured["snapshot_scope"]),
+    )["data"]
+    assert from_snapshot["baseline_count"] == 6
+    assert from_snapshot["added_count"] == 0
+    assert not any("narrower scope" in item for item in from_snapshot["warnings"])
+    assert captured["snapshot_scope"]["class_name"] is None
+    assert captured["snapshot_scope"]["class_match"] is None
+
+    baseline = _round_trip(captured)
+    from_result = _query(mode="delta", baseline=baseline)["data"]
+    assert from_result["baseline_count"] == (matched_count or 6)
+    assert from_result["added_count"] == (2 if matched_count else 0)
+    assert [entry["node_name"] for entry in from_result["added"]] == (
+        ["hidden_leaf", "lone_mesh"] if matched_count else []
+    )
+    assert any("class_name=HeroType" in item for item in from_result["warnings"]) is bool(matched_count)
+    # Inferred nodes metadata must not rewrite the snapshot's separate scope.
+    assert baseline == captured
+
+    if matched_count:
+        explicit_scope = _round_trip(captured["snapshot_scope"])
+        explicit_scope.update({"class_name": "CallerClass", "class_match": "exact"})
+        explicit = _query(mode="delta", baseline=baseline, baseline_scope=explicit_scope)["data"]
+        assert explicit["added"] == from_result["added"]
+        assert any("class_name=CallerClass" in item for item in explicit["warnings"])
+        assert not any("class_name=HeroType" in item for item in explicit["warnings"])
 
 
 def test_delta_a_snapshot_from_delta_mode_records_no_filters_it_ignored(monkeypatch):
