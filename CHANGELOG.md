@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.17](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.16...v0.2.17) (2026-10-17)
+
+
+### Features
+
+* **scene-query:** warn when a narrow-scope snapshot feeds a wide delta ([#228](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/228)) ([512c8e7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/512c8e707ebd9d52c5fb2f69c1a139ee0b4dce28))
+
+
+### Documentation
+
+* refresh the generated DCC-MCP host matrix pointer ([ceefb8f](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ceefb8f5e93915bd4048b15f7f115a10fd0dd5c6))
+* **scene-query:** clarify delta baseline payload ([#229](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/229)) ([b45b16d](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/b45b16d8035291ba8b1cd89656f6571d91b7557a))
+
 ## [0.2.16](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.15...v0.2.16) (2026-10-10)
 
 
