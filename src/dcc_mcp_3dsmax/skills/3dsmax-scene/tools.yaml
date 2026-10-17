@@ -2858,8 +2858,8 @@ tools:
       filter is a statement about the whole scene and narrowing only the current
       side would report filtered-out nodes as removed. A snapshot records the
       filters it was taken under, and since a snapshot is a plain array that
-      scope travels either as baseline_scope or on a result object passed back
-      whole; a baseline captured under a narrower scope than the whole-scene
+      scope travels either as baseline_scope or on the inner result.data object
+      passed back as baseline; a baseline captured under a narrower scope than the whole-scene
       comparison is named in warnings, meaning its added entries are additions
       relative to the baseline, not necessarily new to the scene.
     source_file: action_query_scene.py
@@ -2908,19 +2908,21 @@ tools:
           description: >-
             Required in mode delta. A node snapshot to compare against: an array
             of node names, or an array of objects carrying node_name, object_id,
-            and optionally value or values. Pass the snapshot field returned when
-            include_snapshot is true rather than the whole result object -
-            overview and delta return an empty nodes list, which is not a
-            baseline. Property comparison needs a baseline from property mode,
-            whose nodes carry a value.
+            and optionally value or values. Pass result.data.snapshot returned
+            when include_snapshot is true, or the inner result.data object with
+            a nodes or snapshot list. The outer success/message/data result
+            object is not accepted. In overview and delta, nodes is empty; a
+            non-empty snapshot is used when present. Property comparison needs
+            a baseline from property mode, whose nodes carry a value.
         baseline_scope:
           description: >-
             In mode delta, the scope the baseline snapshot was captured under:
             the snapshot_scope object from the call that produced the baseline.
             A snapshot is a plain array and cannot carry its own scope across a
-            serialization boundary, so pass it here - or pass the whole result
-            object as baseline - to have a narrower-than-comparison baseline
-            named in warnings. Ignored outside mode delta.
+            serialization boundary, so pass it here alongside result.data.snapshot,
+            or pass the inner result.data object as baseline, to have a
+            narrower-than-comparison baseline named in warnings. Ignored outside
+            mode delta.
         include_snapshot:
           type: boolean
           default: false

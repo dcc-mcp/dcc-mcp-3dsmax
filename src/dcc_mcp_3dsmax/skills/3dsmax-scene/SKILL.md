@@ -215,13 +215,13 @@ every filtered-out node as removed while it is still there. When either is set,
 scene.
 
 `delta` is stateless: it requires a `baseline` snapshot and refuses to guess
-one. Run `query_scene` with `include_snapshot` true and pass the returned
-`snapshot` back as `baseline`. Pass `snapshot` itself rather than the whole
-result object: `overview` and `delta` return an empty `nodes` list, and handing
-their result back would read as an empty baseline and report the whole scene as
-added. When a result object is passed anyway, a non-empty `snapshot` wins over an
-empty `nodes`, and a baseline that still resolves to nothing is named in
-`warnings`. Nodes are matched by `object_id` when the baseline carries one and by
+one. Run `query_scene` with `include_snapshot` true and pass
+`result["data"]["snapshot"]` back as `baseline`. The inner `result["data"]`
+object is also accepted when it contains a `nodes` or `snapshot` list; the outer
+result object with `success`, `message`, and `data` is not unwrapped. In
+`overview` and `delta`, `nodes` is empty, so a non-empty `snapshot` is used when
+present. A baseline that still resolves to nothing is named in `warnings`.
+Nodes are matched by `object_id` when the baseline carries one and by
 name otherwise, which is what makes a rename visible instead of looking like a
 removal plus an addition.
 
@@ -234,9 +234,10 @@ is never filtered - the warning explains it rather than changing what it means.
 A hand-written list of names records no scope and is treated as whole-scene.
 
 `snapshot` is a plain array and cannot carry that scope across a serialization
-boundary, so pass it back either as `baseline_scope` alongside the array, or by
-handing the whole result object back as `baseline`. Delta always compares the whole
-scene, so the scope check compares the baseline against the whole scene rather
+boundary, so pass `result["data"]["snapshot_scope"]` back as `baseline_scope`
+alongside `result["data"]["snapshot"]`, or pass the inner `result["data"]` object
+as `baseline`. Delta always compares the whole scene, so the scope check compares
+the baseline against the whole scene rather
 than against the filters on the current call - reusing the same `name_filter` does
 not silence it. A snapshot taken in `delta` mode records a whole-scene scope,
 because delta ignores those filters when it captures one.
