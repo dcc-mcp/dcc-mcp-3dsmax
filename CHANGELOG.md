@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.17...v0.2.18) (2026-10-24)
+
+
+### Bug Fixes
+
+* restore mesh registration, box dimensions, and viewport capture ([#233](https://github.com/dcc-mcp/dcc-mcp-3dsmax/issues/233)) ([5bf4bf8](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5bf4bf80863f8d77cc5ef1fa5d8b8760068701f9))
+
 ## [0.2.17](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.16...v0.2.17) (2026-10-17)
 
 
