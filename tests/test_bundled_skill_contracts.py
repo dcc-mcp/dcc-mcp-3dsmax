@@ -8,6 +8,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,8 +131,9 @@ def test_every_bundled_tool_declares_produces():
             assert isinstance(produces, list) and produces, exported
 
 
-def test_asset_source_loads_one_registered_handler_through_the_real_core_loader():
-    """The minimum supported Core must accept the shipped asset-source manifest."""
+@pytest.mark.parametrize("skill_dir", _skill_dirs(), ids=lambda path: path.name)
+def test_bundled_skill_registers_every_handler_through_the_real_core_loader(skill_dir):
+    """Reject manifests that Core silently loads with missing tools or handlers."""
     from dcc_mcp_3dsmax.server import MaxMcpServer, MaxServerOptions
 
     server = MaxMcpServer(
@@ -144,13 +146,14 @@ def test_asset_source_loads_one_registered_handler_through_the_real_core_loader(
     try:
         server.register_builtin_actions(include_bundled=False)
         before = server._server.registry.count_actions()
-        loaded = server._server.load_skill("3dsmax-asset-source")
-        action_name = "3dsmax_asset_source__search_assets"
+        loaded = server._server.load_skill(skill_dir.name)
+        expected = {"{}__{}".format(skill_dir.name.replace("-", "_"), tool["name"]) for tool in _tools(skill_dir)}
 
-        assert loaded == [action_name]
-        assert server._server.registry.count_actions() == before + 1
-        assert server._server.registry.get_action(action_name) is not None
-        assert server._server.has_handler(action_name) is True
+        assert set(loaded) == expected
+        assert server._server.registry.count_actions() == before + len(expected)
+        for action_name in expected:
+            assert server._server.registry.get_action(action_name) is not None
+            assert server._server.has_handler(action_name) is True
     finally:
         server.stop()
 
