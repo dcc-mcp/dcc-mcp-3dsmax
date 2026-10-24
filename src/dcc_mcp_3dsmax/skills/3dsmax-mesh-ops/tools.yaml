@@ -1199,7 +1199,7 @@ tools:
       idempotent_hint: true
       open_world_hint: false
     intent: "List Editable Poly vertices, edges, and faces with actionable component indices."
-    tool_role: inspection
+    tool_role: read_only
     risk: low
     search_aliases: ["inspect_mesh", "inspect mesh", "list vertices", "list faces", "mesh components"]
     side_effects:
@@ -1588,7 +1588,7 @@ tools:
       idempotent_hint: true
       open_world_hint: false
     intent: "Map an image position or a world ray onto an editable component."
-    tool_role: inspection
+    tool_role: read_only
     risk: low
     search_aliases:
       ["pick_component", "pick component", "viewport pick", "ray pick", "hit test face"]

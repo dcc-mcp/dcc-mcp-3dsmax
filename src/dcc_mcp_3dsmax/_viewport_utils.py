@@ -369,9 +369,7 @@ def _open_frame_buffer(runtime: Any, provider_key: Optional[str]) -> List[str]:
         except Exception as exc:  # noqa: BLE001 - reported, never silently skipped.
             warnings.append("Could not open the frame buffer with {}: {}".format(attribute, exc))
         return warnings
-    warnings.append(
-        "The host exposes no {} open contract; capturing the window where it is".format(provider["label"])
-    )
+    warnings.append("The host exposes no {} open contract; capturing the window where it is".format(provider["label"]))
     return warnings
 
 
@@ -411,6 +409,7 @@ def rects_match(requested: Mapping[str, int], actual: Mapping[str, int], toleran
 # ---------------------------------------------------------------------------
 
 MULTI_VIEWS = ("front", "back", "left", "right", "top", "bottom", "perspective", "orthographic", "iso", "user")
+VIEW_ALIASES = {"perspective": "persp_user", "orthographic": "iso_user", "iso": "iso_user", "user": "iso_user"}
 VIEW_SETTERS = ("setView", "setType", "setViewType", "setViewportType")
 VIEW_GETTERS = ("getView", "getType", "getViewType", "getViewportType")
 TM_GETTERS = ("getTM", "getViewTM", "getViewTransform", "GetTM")
@@ -429,6 +428,14 @@ def active_viewport(runtime: Any) -> Any:
 def viewport_state(runtime: Any, viewport: Any) -> Dict[str, Any]:
     """Snapshot the current view so it can be restored and verified."""
     state: Dict[str, Any] = {"view": None, "view_contract": None, "tm": None, "tm_contract": None, "readable": False}
+    # Max updates camera TM/FOV lazily; settle the view before reading either snapshot.
+    redraw = _safe_getattr(runtime, "completeRedraw")
+    if callable(redraw):
+        try:
+            redraw()
+        except Exception:  # noqa: BLE001 - an unsettled view is not a usable snapshot.
+            state["snapshot_error"] = "Viewport redraw failed"
+            return state
     for name in VIEW_GETTERS:
         func = _safe_getattr(viewport, name)
         if not callable(func):
@@ -453,6 +460,15 @@ def viewport_state(runtime: Any, viewport: Any) -> Dict[str, Any]:
         state["tm_contract"] = name
         state["readable"] = True
         break
+    state["active_index"] = _safe_getattr(viewport, "activeViewport")
+    state["camera"] = _read_viewport_camera(viewport) if _view_token(state["view"]) == "camera" else None
+    for key, getter in (("fov", "getFOV"), ("focal_distance", "getFocalDistance")):
+        func = _safe_getattr(viewport, getter)
+        if callable(func):
+            try:
+                state[key] = _as_number(func())
+            except Exception:  # noqa: BLE001 - optional host state.
+                pass
     return state
 
 
@@ -490,32 +506,64 @@ def capture_multi_view(
         return render_error("No viewport capture operation is available", probed=list(VIEWPORT_CAPTURE_CALLABLES))
 
     original = viewport_state(runtime, viewport)
-    if not original["readable"]:
+    if not original["readable"] or original["view"] is None:
         return render_error(
             "The current view cannot be read back, so it cannot be restored; refusing to switch views",
             probed={"getters": list(VIEW_GETTERS), "transforms": list(TM_GETTERS)},
         )
+    if _view_token(original["view"]) == "camera" and original["camera"] is None:
+        return render_error("The current viewport camera cannot be read back; refusing to switch views")
+    if _view_token(original["view"]) not in {_view_token(view) for view in MULTI_VIEWS} | {"camera"}:
+        return render_error("The current viewport type cannot be restored; refusing to switch views")
+    if _tm_values(original["tm"]) is None:
+        return render_error("The current view transform cannot be read back; refusing to switch views")
+    for key, getter in (("fov", "getFOV"), ("focal_distance", "getFocalDistance")):
+        if key == "focal_distance" and _view_token(original["view"]) != "persp_user":
+            continue
+        if callable(_safe_getattr(viewport, getter)) and original.get(key) is None:
+            return render_error("The current {} cannot be read back; refusing to switch views".format(key))
 
     captures: List[Dict[str, Any]] = []
     warnings: List[str] = []
     errors: List[Dict[str, Any]] = []
-    for view in views:
-        name = view.lower()
-        switched, switch_error = set_viewport_view(viewport, name)
-        if switch_error is not None:
-            errors.append({"view": name, "error": switch_error})
-            break
-        if not switched:
-            errors.append({"view": name, "error": "Could not verify the view switch to {}".format(name)})
-            break
-        tile_path = output_dir / "{}_{}{}".format(stem, name, extension)
-        result, capture_error = _capture_tile(shooter, tile_path)
-        if capture_error is not None:
-            errors.append({"view": name, "error": capture_error})
-            break
-        captures.append({"view": name, **result})
-
-    restored, restore_warnings, restore_error = restore_viewport_view(runtime, viewport, original)
+    name = "<capture>"
+    try:
+        for view in views:
+            name = view.lower()
+            if (
+                original["active_index"] is not None
+                and _safe_getattr(viewport, "activeViewport") != original["active_index"]
+            ):
+                raise RuntimeError("The active viewport changed during multi-view capture")
+            switched, switch_error = set_viewport_view(runtime, viewport, name)
+            if switch_error is not None:
+                errors.append({"view": name, "error": switch_error})
+                break
+            if not switched:
+                errors.append({"view": name, "error": "Could not verify the view switch to {}".format(name)})
+                break
+            if (
+                original["active_index"] is not None
+                and _safe_getattr(viewport, "activeViewport") != original["active_index"]
+            ):
+                raise RuntimeError("The active viewport changed during the view switch")
+            tile_path = output_dir / "{}_{}{}".format(stem, name, extension)
+            result, capture_error = _capture_tile(shooter, tile_path)
+            if capture_error is not None:
+                errors.append({"view": name, "error": capture_error})
+                break
+            if (
+                original["active_index"] is not None
+                and _safe_getattr(viewport, "activeViewport") != original["active_index"]
+            ):
+                raise RuntimeError("The active viewport changed during capture")
+            if not _view_matches(_read_view(viewport), name):
+                raise RuntimeError("The view changed during capture")
+            captures.append({"view": name, "viewport_index": original["active_index"], **result})
+    except Exception as exc:  # noqa: BLE001 - filesystem failures must also restore the view.
+        errors.append({"view": name, "error": "Viewport capture failed: {}".format(exc)})
+    finally:
+        restored, restore_warnings, restore_error = restore_viewport_view(runtime, viewport, original)
     warnings.extend(restore_warnings)
     if restore_error is not None:
         errors.append({"view": "<restore>", "error": restore_error})
@@ -549,9 +597,7 @@ def capture_multi_view(
     if composite_failed:
         # The tiles are on disk, so this is not a failure, but the caller asked
         # for a contact sheet: the message has to say it was not composed.
-        return render_success(
-            "Captured {} view(s); the contact sheet was not composed".format(len(captures)), **data
-        )
+        return render_success("Captured {} view(s); the contact sheet was not composed".format(len(captures)), **data)
     return render_success("Captured {} view(s)".format(len(captures)), **data)
 
 
@@ -559,13 +605,28 @@ VIEWPORT_CAPTURE_CALLABLES = ("captureViewport", "capture_viewport", "captureScr
 
 
 def _viewport_capture(runtime: Any) -> Any:
+    viewport = active_viewport(runtime)
+    for owner in (viewport, _safe_getattr(runtime, "gw")):
+        getter = _safe_getattr(owner, "getViewportDib")
+        if not callable(getter):
+            continue
+
+        def capture_bitmap(path, get_bitmap=getter):
+            runtime.completeRedraw()
+            bitmap = get_bitmap()
+            try:
+                bitmap.filename = path
+                runtime.save(bitmap)
+            finally:
+                runtime.close(bitmap)
+
+        return capture_bitmap
     for attribute in VIEWPORT_CAPTURE_CALLABLES:
         func = _safe_getattr(runtime, attribute)
         if callable(func):
             return func
-    viewport = active_viewport(runtime)
     if viewport is not None:
-        for attribute in ("captureBitmap", "capture", "getViewportDib"):
+        for attribute in ("captureBitmap", "capture"):
             func = _safe_getattr(viewport, attribute)
             if callable(func):
                 return func
@@ -593,7 +654,7 @@ def _capture_tile(shooter: Callable[..., Any], tile_path: Path) -> Tuple[Optiona
     return {"path": str(tile_path), "artifact": artifact_info(tile_path)}, None
 
 
-def set_viewport_view(viewport: Any, view: str) -> Tuple[bool, Optional[str]]:
+def set_viewport_view(runtime: Any, viewport: Any, view: str) -> Tuple[bool, Optional[str]]:
     """Switch the viewport to a standard view and verify the switch."""
     warnings: List[str] = []
     for name in VIEW_SETTERS:
@@ -601,7 +662,8 @@ def set_viewport_view(viewport: Any, view: str) -> Tuple[bool, Optional[str]]:
         if not callable(func):
             continue
         try:
-            func(view)
+            value = runtime.Name("view_" + _view_token(view)) if name == "setType" else view
+            func(value)
         except Exception as exc:  # noqa: BLE001 - try the next contract.
             warnings.append("{} failed: {}".format(name, exc))
             continue
@@ -628,7 +690,23 @@ def restore_viewport_view(
     the other would otherwise leave the user looking through a changed view.
     """
     warnings: List[str] = []
-    if state.get("tm") is not None:
+    if state.get("active_index") is not None:
+        try:
+            viewport.activeViewport = state["active_index"]
+        except Exception as exc:  # noqa: BLE001 - do not restore into a different viewport.
+            return False, warnings, "Could not restore the active viewport: {}".format(exc)
+        if _safe_getattr(viewport, "activeViewport") != state["active_index"]:
+            return False, warnings, "The original viewport could not be activated for restoration"
+    if state.get("camera") is not None:
+        result = _apply_viewport_camera(runtime, viewport, state["camera"])
+        if result["status"] != SETTING_APPLIED:
+            warnings.append("Could not restore the original viewport camera")
+    elif state.get("view") is not None:
+        _switched, error = set_viewport_view(runtime, viewport, _view_token(state["view"]))
+        if error is not None:
+            warnings.append(error)
+    # Switching view type resets the transform; restore it afterwards, never on a scene camera.
+    if state.get("camera") is None and state.get("tm") is not None and not _tm_matches(_read_tm(viewport), state["tm"]):
         for name in TM_SETTERS:
             func = _safe_getattr(viewport, name)
             if not callable(func):
@@ -641,18 +719,26 @@ def restore_viewport_view(
                 continue
         else:
             warnings.append("No transform restore contract (probed: {})".format(", ".join(TM_SETTERS)))
-    if state.get("view") is not None:
-        _switched, error = set_viewport_view(viewport, _view_token(state["view"]))
-        if error is not None:
-            warnings.append(error)
+    current = viewport_state(runtime, viewport)
+    for key, setter in (("focal_distance", "setFocalDistance"), ("fov", "setFOV")):
+        if state.get(key) is None or current.get(key) == state[key] or state.get("camera") is not None:
+            continue
+        try:
+            getattr(viewport, setter)(state[key])
+        except Exception as exc:  # noqa: BLE001 - final readback decides restoration.
+            warnings.append("{} failed: {}".format(setter, exc))
     after = viewport_state(runtime, viewport)
     if not after.get("readable"):
         return False, warnings, "The active view could not be read back to verify the restore"
     if _state_matches(state, after):
         return True, warnings, None
-    return False, warnings, "The active view still reads {!r} after restoring {!r}".format(
-        after.get("view") if after.get("view") is not None else after.get("tm"),
-        state.get("view") if state.get("view") is not None else state.get("tm"),
+    return (
+        False,
+        warnings,
+        "The active view still reads {!r} after restoring {!r}".format(
+            after.get("view") if after.get("view") is not None else after.get("tm"),
+            state.get("view") if state.get("view") is not None else state.get("tm"),
+        ),
     )
 
 
@@ -686,7 +772,7 @@ def _view_token(value: Any) -> str:
     for prefix in ("view_", "viewport_", "type_"):
         if text.startswith(prefix):
             text = text[len(prefix) :]
-    return text
+    return VIEW_ALIASES.get(text, text)
 
 
 def _view_matches(readback: Any, view: str) -> bool:
@@ -879,6 +965,8 @@ def ensure_agent_viewport(
     """
     active = active_viewport(runtime)
     before = viewport_state(runtime, active) if active is not None else None
+    if before is not None and before.get("snapshot_error"):
+        return render_error(before["snapshot_error"], name=name)
     existing = find_agent_viewport(runtime, name)
     created = False
     warnings: List[str] = []
@@ -1000,9 +1088,7 @@ def close_agent_viewport(runtime: Any, name: str = "dcc_mcp_agent_viewport") -> 
             warnings=warnings,
         )
     forget_agent_viewport(runtime, name)
-    return render_success(
-        "Closed the agent viewport", name=name, closed=True, verified=True, warnings=warnings
-    )
+    return render_success("Closed the agent viewport", name=name, closed=True, verified=True, warnings=warnings)
 
 
 def _create_agent_viewport(runtime: Any, name: str) -> Tuple[Any, Optional[str], Optional[str]]:
@@ -1023,9 +1109,13 @@ def _create_agent_viewport(runtime: Any, name: str) -> Tuple[Any, Optional[str],
             if viewport is not None:
                 return viewport, factory_name, None
     if not probed:
-        return None, None, (
-            "The host exposes no extended/floating viewport factory, so no dedicated agent "
-            "viewport can be created (probed: {})".format(", ".join(AGENT_VIEWPORT_FACTORIES))
+        return (
+            None,
+            None,
+            (
+                "The host exposes no extended/floating viewport factory, so no dedicated agent "
+                "viewport can be created (probed: {})".format(", ".join(AGENT_VIEWPORT_FACTORIES))
+            ),
         )
     return None, None, "Every agent viewport factory returned nothing (probed: {})".format(", ".join(probed))
 
@@ -1062,14 +1152,22 @@ def _state_matches(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
     that is looking somewhere else. Nothing comparable means not restored.
     """
     compared = False
-    if before.get("view") is not None and after.get("view") is not None:
-        if not _view_matches(after["view"], _view_token(before["view"])):
+    if before.get("view") is not None:
+        if not _view_matches(after.get("view"), _view_token(before["view"])):
             return False
         compared = True
-    if before.get("tm") is not None and after.get("tm") is not None:
-        if not _tm_matches(after["tm"], before["tm"]):
+    if before.get("tm") is not None:
+        if not _tm_matches(after.get("tm"), before["tm"]):
             return False
         compared = True
+    if before.get("camera") is not None and not _same_camera(after.get("camera"), before["camera"]):
+        return False
+    if before.get("active_index") is not None and after.get("active_index") != before["active_index"]:
+        return False
+    for key in ("fov", "focal_distance"):
+        if before.get(key) is not None:
+            if after.get(key) is None or not math.isclose(after[key], before[key], rel_tol=1e-6, abs_tol=1e-6):
+                return False
     return compared
 
 
@@ -1132,9 +1230,7 @@ VIEWPORT_OPTIONS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def apply_viewport_options(
-    runtime: Any, viewport: Any, options: Mapping[str, Any]
-) -> List[Dict[str, Any]]:
+def apply_viewport_options(runtime: Any, viewport: Any, options: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """Apply viewport options, verifying every single one by readback."""
     rows: List[Dict[str, Any]] = []
     for option, value in options.items():
@@ -1224,7 +1320,9 @@ def _apply_viewport_camera(runtime: Any, viewport: Any, node: Any) -> Dict[str, 
             continue
         readback = _read_viewport_camera(viewport)
         if readback is not None and _same_camera(readback, node):
-            return _option_row("camera", SETTING_APPLIED, _camera_label(node), _camera_label(readback), None, probed, warnings)
+            return _option_row(
+                "camera", SETTING_APPLIED, _camera_label(node), _camera_label(readback), None, probed, warnings
+            )
         warnings.append("viewport camera read back {!r} after assigning {!r}".format(readback, node))
     for attribute in ("camera", "activeCamera"):
         if not attr_present(runtime, viewport, attribute):
@@ -1389,9 +1487,7 @@ def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
     data["state_contract"] = after_contract
     data["contract"] = owner
     if after is None:
-        data["warnings"].append(
-            "{}; the {} result is unverified".format(_ipr_unknown_reason(after_contract), action)
-        )
+        data["warnings"].append("{}; the {} result is unverified".format(_ipr_unknown_reason(after_contract), action))
         return render_success("V-Ray IPR {} was requested but not verified".format(action), **data)
     expected = action in ("start", "refresh")
     if bool(after) is not expected:
@@ -1411,9 +1507,9 @@ def vray_ipr(runtime: Any, action: str = "status") -> Dict[str, Any]:
 def _ipr_unknown_reason(contract: Optional[str]) -> str:
     """Explain why the IPR preview state could not be established."""
     if contract is None:
-        return (
-            "The host exposes no V-Ray IPR state contract, so the preview state is unknown (probed: {})"
-        ).format(", ".join(list(IPR_STATE_CALLABLES) + list(IPR_STATE_ATTRS)))
+        return ("The host exposes no V-Ray IPR state contract, so the preview state is unknown (probed: {})").format(
+            ", ".join(list(IPR_STATE_CALLABLES) + list(IPR_STATE_ATTRS))
+        )
     return (
         "The host IPR state contract {} reported a value this adapter cannot interpret, "
         "so the preview state is unknown instead of guessed"

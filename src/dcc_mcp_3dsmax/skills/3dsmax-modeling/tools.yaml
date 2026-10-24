@@ -3,7 +3,8 @@ tools:
     description: >-
       Create a box primitive in the current 3ds Max scene. Use when the user
       asks to add a cube or rectangular box. Returns the created node name,
-      object handle, and dimensions.
+      object handle, and verified native dimensions. A failed readback leaves
+      the created node in the scene and returns its identity.
     source_file: action_create_box.py
     execution: sync
     affinity: main
@@ -15,17 +16,17 @@ tools:
           type: number
           exclusiveMinimum: 0
           default: 100.0
-          description: Box width in current scene units.
+          description: Box width in scene system units.
         height:
           type: number
           exclusiveMinimum: 0
           default: 100.0
-          description: Box height in current scene units.
+          description: Box height in scene system units.
         depth:
           type: number
           exclusiveMinimum: 0
           default: 100.0
-          description: Box depth in current scene units.
+          description: Box depth in scene system units, mapped to the native Box length parameter.
         name:
           type: string
           minLength: 1

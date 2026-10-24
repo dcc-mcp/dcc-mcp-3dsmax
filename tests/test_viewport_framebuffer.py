@@ -8,9 +8,11 @@ that a host which cannot report state is reported as unverified.
 from __future__ import annotations
 
 import importlib.util
+import struct
 import sys
 import tempfile
 import types
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +62,14 @@ class _Camera:
         self.handle = handle
 
 
+class _MaxName:
+    def __init__(self, value):
+        self.value = value
+
+    def __str__(self):
+        return "#" + self.value
+
+
 class _Viewport:
     """Active viewport double: a readable view plus verified option writes."""
 
@@ -79,6 +89,10 @@ class _Viewport:
         return self.view
 
     def setType(self, view):  # noqa: N802 - mirrors pymxs naming.
+        assert isinstance(view, _MaxName)
+        assert view.value.startswith("view_")
+        view = view.value[5:]
+        view = {"persp_user": "perspective", "iso_user": "iso"}.get(view, view)
         self.switches.append(view)
         if view == "iso":
             # Host accepted the call but did not move: must be reported.
@@ -124,6 +138,8 @@ def _renderer(rect: Any = None, *, name: str = "VRayRenderer", ipr_running: Any 
 
 
 class _Runtime:
+    Name = _MaxName
+
     def __init__(self, *, renderer: Any = None, rect: Any = None) -> None:
         self.renderer = renderer if renderer is not None else _renderer(rect)
         self.renderers = types.SimpleNamespace(current=self.renderer)
@@ -180,6 +196,8 @@ class _Runtime:
         return None
 
     def isProperty(self, node, attribute):  # noqa: N802 - mirrors pymxs naming.
+        if isinstance(attribute, _MaxName):
+            attribute = attribute.value
         return hasattr(node, attribute)
 
 
@@ -313,9 +331,7 @@ def test_capture_multi_view_captures_each_view_and_restores_the_user_view(monkey
     runtime = _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
     runtime.viewport.view = "perspective"
 
-    result = _load_action("action_capture_multi_view.py").main(
-        str(tmp_path), views=["front", "top"], composite=False
-    )
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["front", "top"], composite=False)
 
     assert result["success"] is True
     assert result["data"]["capture_count"] == 2
@@ -330,9 +346,7 @@ def test_capture_multi_view_reports_an_unverified_view_switch_as_failure(monkeyp
     """A switch the host ignored would capture the wrong angle: it must fail."""
     _install_fake_pymxs(monkeypatch, _Runtime(rect=(0, 0, 640, 480)))
 
-    result = _load_action("action_capture_multi_view.py").main(
-        str(tmp_path), views=["iso", "top"], composite=False
-    )
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["iso", "top"], composite=False)
 
     assert result["success"] is False
     assert result["data"]["errors"]
@@ -646,9 +660,7 @@ def test_set_viewport_applies_options_and_reports_the_readback(monkeypatch):
     runtime.createExtendedViewport = lambda name=None: agent
     runtime.getExtendedViewport = lambda name: agent
 
-    result = _load_action("action_set_viewport.py").main(
-        target="agent", shading="shaded", grid=False, edged_faces=True
-    )
+    result = _load_action("action_set_viewport.py").main(target="agent", shading="shaded", grid=False, edged_faces=True)
 
     assert result["success"] is True
     assert sorted(result["data"]["applied"]) == ["edged_faces", "grid", "shading"]
@@ -1063,14 +1075,272 @@ def test_capture_multi_view_restores_both_the_view_and_the_transform(monkeypatch
     runtime.viewport.view = "perspective"
     original_tm = runtime.viewport.tm
 
-    result = _load_action("action_capture_multi_view.py").main(
-        str(tmp_path), views=["top", "front"], composite=False
-    )
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top", "front"], composite=False)
 
     assert result["success"] is True
     assert result["data"]["view_restored"] is True
     assert runtime.viewport.view == "perspective"
     assert runtime.viewport.tm is original_tm
+
+
+class _NativeViewport(_Viewport):
+    def __init__(self, original="persp_user"):
+        super().__init__(_MaxName("view_" + original))
+        self.activeViewport = 2
+        self.original_tm = self.tm
+        self.camera = _Camera("Original", 123) if original == "camera" else None
+        self.fov = 47.0
+        self.focal_distance = 200.0
+
+    def setType(self, view):
+        assert isinstance(view, _MaxName)
+        assert view.value in {
+            "view_front",
+            "view_back",
+            "view_left",
+            "view_right",
+            "view_top",
+            "view_bottom",
+            "view_persp_user",
+            "view_iso_user",
+        }
+        self.switches.append(view.value)
+        self.view = view
+        self.camera = None
+        self.tm = _Matrix([(1, 0, 0), (0, 1, 0), (0, 0, 1), (10, 20, 30)])
+        self.fov = 60.0
+        self.focal_distance = 100.0
+
+    def setCamera(self, camera):
+        self.camera = camera
+        self.view = _MaxName("view_camera")
+        self.tm = self.original_tm
+        self.fov = 47.0
+        self.focal_distance = 200.0
+
+    def getFOV(self):
+        return self.fov
+
+    def setFOV(self, value):
+        self.fov = value
+
+    def getFocalDistance(self):
+        return self.focal_distance if str(self.view) == "#view_persp_user" else None
+
+    def setFocalDistance(self, value):
+        self.focal_distance = value
+
+
+@pytest.mark.parametrize("original", ["persp_user", "iso_user", "camera"])
+@pytest.mark.parametrize(
+    "requested,native",
+    [
+        ("front", "front"),
+        ("back", "back"),
+        ("left", "left"),
+        ("right", "right"),
+        ("top", "top"),
+        ("bottom", "bottom"),
+        ("perspective", "persp_user"),
+        ("orthographic", "iso_user"),
+        ("iso", "iso_user"),
+        ("user", "iso_user"),
+    ],
+)
+def test_multi_view_uses_native_names_and_restores_state(monkeypatch, tmp_path, original, requested, native):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport(original)
+    camera = viewport.camera
+
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=[requested], composite=False)
+
+    assert result["success"] is True
+    assert result["data"]["capture_count"] == 1
+    assert result["data"]["captures"][0]["view"] == requested
+    assert viewport.switches[0] == "view_" + native
+    assert result["data"]["view_restored"] is True
+    assert str(viewport.view) == "#view_" + original
+    assert viewport.tm is viewport.original_tm
+    assert viewport.camera is camera
+    assert viewport.activeViewport == 2
+    assert viewport.fov == 47.0
+    if original == "persp_user":
+        assert viewport.focal_distance == 200.0
+
+
+@pytest.mark.parametrize("failure", ["capture", "replace"])
+def test_multi_view_restores_after_capture_or_file_failure(monkeypatch, tmp_path, failure):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport()
+
+    def capture(path):
+        viewport.activeViewport = 3
+        if failure == "capture":
+            raise RuntimeError("capture failed")
+        Path(path).write_text("tile", encoding="utf-8")
+
+    runtime.captureViewport = capture
+    if failure == "replace":
+        monkeypatch.setattr(viewport_utils.os, "replace", _raise_busy)
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is False
+    assert result["data"]["capture_count"] == 0
+    assert result["data"]["errors"][0]["view"] == "top"
+    assert result["data"]["view_restored"] is True
+    assert str(viewport.view) == "#view_persp_user"
+    assert viewport.tm is viewport.original_tm
+    assert viewport.activeViewport == 2
+
+
+def test_multi_view_refuses_an_unreadable_camera(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = _NativeViewport("camera")
+    runtime.viewport.camera = None
+
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is False
+    assert runtime.viewport.switches == []
+
+
+def test_multi_view_settles_lazy_camera_state_before_snapshot_and_restore(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport("camera")
+    camera = viewport.camera
+
+    def set_camera(node):
+        viewport.camera = node
+        viewport.view = _MaxName("view_camera")
+        viewport.fov = 57.2958
+
+    def redraw():
+        if viewport.camera is not None:
+            viewport.tm = viewport.original_tm
+            viewport.fov = 47.0
+
+    viewport.setCamera = set_camera
+    runtime.completeRedraw = redraw
+    viewport.fov = 57.2958
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is True
+    assert result["data"]["view_restored"] is True
+    assert viewport.camera is camera
+    assert viewport.fov == 47.0
+
+
+def test_agent_viewport_refuses_a_failed_redraw_before_creating(monkeypatch):
+    runtime = _Runtime()
+    runtime.enable_agent_viewport_factory(move_user_view=True)
+    runtime.completeRedraw = _raise_busy
+
+    result = viewport_utils.ensure_agent_viewport(runtime)
+
+    assert result["success"] is False
+    assert runtime.agent_viewports == {}
+    assert runtime.viewport.view == "perspective"
+
+
+def test_view_restore_does_not_accept_missing_transform_readback():
+    before = {"view": "perspective", "tm": _Matrix([(1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, 0)])}
+    assert viewport_utils._state_matches(before, {"view": "perspective", "tm": None}) is False
+
+
+@pytest.mark.parametrize("missing", ["getTM", "getFOV", "getFocalDistance"])
+def test_multi_view_refuses_incomplete_original_state(monkeypatch, tmp_path, missing):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = _NativeViewport()
+    setattr(runtime.viewport, missing, lambda: None)
+
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is False
+    assert runtime.viewport.switches == []
+
+
+@pytest.mark.parametrize("original", ["spot", "shape", "grid", "none"])
+def test_multi_view_refuses_original_views_without_a_restore_contract(monkeypatch, tmp_path, original):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = _NativeViewport(original)
+
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is False
+    assert runtime.viewport.switches == []
+
+
+def test_multi_view_stops_when_a_successful_capture_changes_focus(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport()
+
+    def capture(path):
+        Path(path).write_text("tile", encoding="utf-8")
+        viewport.activeViewport = 3
+
+    runtime.captureViewport = capture
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top", "front"], composite=False)
+
+    assert result["success"] is False
+    assert result["data"]["view_restored"] is True
+    assert result["data"]["capture_count"] == 0
+    assert viewport.switches == ["view_top", "view_persp_user"]
+    assert viewport.activeViewport == 2
+    assert viewport.tm is viewport.original_tm
+
+
+def test_multi_view_restores_before_propagating_cancellation(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport()
+
+    def cancel(path):
+        raise KeyboardInterrupt()
+
+    runtime.captureViewport = cancel
+    with pytest.raises(KeyboardInterrupt):
+        _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+    assert viewport.activeViewport == 2
+    assert str(viewport.view) == "#view_persp_user"
+    assert viewport.tm is viewport.original_tm
+
+
+@pytest.mark.parametrize("fail_save", [False, True])
+def test_multi_view_captures_and_closes_native_bitmap(monkeypatch, tmp_path, fail_save):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport()
+    bitmap = types.SimpleNamespace(filename=None)
+    viewport.getViewportDib = lambda: bitmap
+    closed = []
+    runtime.close = closed.append
+    runtime.completeRedraw = lambda: None
+    pixels = b"\x00\xff\x00\x00\x00\xff\x00"  # Filter byte, then red and green RGB pixels.
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+
+    def save(value):
+        assert value is bitmap
+        if fail_save:
+            raise RuntimeError("bitmap save failed")
+        Path(value.filename).write_bytes(png)
+
+    runtime.save = save
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert closed == [bitmap]
+    assert result["data"]["view_restored"] is True
+    assert result["success"] is (not fail_save)
+    if not fail_save:
+        capture = result["data"]["captures"][0]
+        encoded = Path(capture["path"]).read_bytes()
+        assert encoded == png
+        assert struct.unpack(">II", encoded[16:24]) == (2, 1)
+        compressed_size = struct.unpack(">I", encoded[33:37])[0]
+        assert zlib.decompress(encoded[41 : 41 + compressed_size]) == pixels
+        assert capture["viewport_index"] == 2
 
 
 def test_vray_ipr_maps_host_state_tokens(monkeypatch):

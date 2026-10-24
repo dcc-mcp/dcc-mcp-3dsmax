@@ -64,11 +64,11 @@ class FakeRuntime:
         self.nodes[n.name] = n
         return n
 
-    def Box(self, width=100.0, height=100.0, depth=100.0, **kw):
+    def Box(self, width=100.0, height=100.0, length=100.0):
         n = FakeNode(f"Box{len(self.created) + 1:03d}", 3000 + len(self.created))
         n.width = width
         n.height = height
-        n.depth = depth
+        n.length = length
         self.created.append(n)
         self.nodes[n.name] = n
         return n
@@ -322,6 +322,20 @@ class TestExecutor:
                 r = run_skill_script(str(sf), {})
                 assert isinstance(r, dict), f"{d.name}/{sf.name}: not dict"
                 assert "status" in r or "success" in r, f"{d.name}/{sf.name}: missing status/success: {r}"
+
+    def test_create_box_native_dimensions(self, monkeypatch):
+        from dcc_mcp_3dsmax._executor import run_skill_script
+
+        rt = _install_fake_pymxs(monkeypatch)
+        result = run_skill_script(
+            str(SKILLS_DIR / "3dsmax-modeling" / "action_create_box.py"),
+            {"width": 12.5, "height": 31, "depth": 7},
+        )
+
+        assert result["success"] is True
+        box = rt.created[0]
+        assert (box.width, box.height, box.length) == (12.5, 31, 7)
+        assert (result["data"]["width"], result["data"]["height"], result["data"]["depth"]) == (12.5, 31, 7)
 
     def test_thread_safety(self, tmp_path):
         from dcc_mcp_3dsmax._executor import run_skill_script
