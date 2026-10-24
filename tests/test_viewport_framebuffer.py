@@ -1204,6 +1204,32 @@ def test_multi_view_refuses_an_unreadable_camera(monkeypatch, tmp_path):
     assert runtime.viewport.switches == []
 
 
+def test_multi_view_settles_lazy_camera_state_before_snapshot_and_restore(monkeypatch, tmp_path):
+    runtime = _install_fake_pymxs(monkeypatch, _Runtime())
+    runtime.viewport = viewport = _NativeViewport("camera")
+    camera = viewport.camera
+
+    def set_camera(node):
+        viewport.camera = node
+        viewport.view = _MaxName("view_camera")
+        viewport.fov = 57.2958
+
+    def redraw():
+        if viewport.camera is not None:
+            viewport.tm = viewport.original_tm
+            viewport.fov = 47.0
+
+    viewport.setCamera = set_camera
+    runtime.completeRedraw = redraw
+    viewport.fov = 57.2958
+    result = _load_action("action_capture_multi_view.py").main(str(tmp_path), views=["top"], composite=False)
+
+    assert result["success"] is True
+    assert result["data"]["view_restored"] is True
+    assert viewport.camera is camera
+    assert viewport.fov == 47.0
+
+
 def test_view_restore_does_not_accept_missing_transform_readback():
     before = {"view": "perspective", "tm": _Matrix([(1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, 0)])}
     assert viewport_utils._state_matches(before, {"view": "perspective", "tm": None}) is False

@@ -428,6 +428,13 @@ def active_viewport(runtime: Any) -> Any:
 def viewport_state(runtime: Any, viewport: Any) -> Dict[str, Any]:
     """Snapshot the current view so it can be restored and verified."""
     state: Dict[str, Any] = {"view": None, "view_contract": None, "tm": None, "tm_contract": None, "readable": False}
+    # Max updates camera TM/FOV lazily; settle the view before reading either snapshot.
+    redraw = _safe_getattr(runtime, "completeRedraw")
+    if callable(redraw):
+        try:
+            redraw()
+        except Exception:  # noqa: BLE001 - an unsettled view is not a usable snapshot.
+            return state
     for name in VIEW_GETTERS:
         func = _safe_getattr(viewport, name)
         if not callable(func):
