@@ -47,6 +47,11 @@ Create primitive, Lathe, spline, curve-model, and loft geometry in the current
 3ds Max scene. All tools touch the live scene through `pymxs`, so they declare
 `affinity: main`.
 
+`create_box` retains `depth` as its public parameter and maps it to native Box
+`length`. Dimensions must be positive finite numbers in scene system units;
+the response reads them back from the node. A mismatch or unreadable dimension
+fails with the created node identity; the node remains available for inspection.
+
 `lathe_profile` accepts two to 256 `[radius, height]` pairs. Radius must be
 non-negative; both values must be finite. It creates an XZ-plane spline and
 uses the native Lathe axis. The action reads back the spline knot count and
