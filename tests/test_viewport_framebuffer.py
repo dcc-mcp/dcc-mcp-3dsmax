@@ -1230,6 +1230,18 @@ def test_multi_view_settles_lazy_camera_state_before_snapshot_and_restore(monkey
     assert viewport.fov == 47.0
 
 
+def test_agent_viewport_refuses_a_failed_redraw_before_creating(monkeypatch):
+    runtime = _Runtime()
+    runtime.enable_agent_viewport_factory(move_user_view=True)
+    runtime.completeRedraw = _raise_busy
+
+    result = viewport_utils.ensure_agent_viewport(runtime)
+
+    assert result["success"] is False
+    assert runtime.agent_viewports == {}
+    assert runtime.viewport.view == "perspective"
+
+
 def test_view_restore_does_not_accept_missing_transform_readback():
     before = {"view": "perspective", "tm": _Matrix([(1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, 0)])}
     assert viewport_utils._state_matches(before, {"view": "perspective", "tm": None}) is False

@@ -434,6 +434,7 @@ def viewport_state(runtime: Any, viewport: Any) -> Dict[str, Any]:
         try:
             redraw()
         except Exception:  # noqa: BLE001 - an unsettled view is not a usable snapshot.
+            state["snapshot_error"] = "Viewport redraw failed"
             return state
     for name in VIEW_GETTERS:
         func = _safe_getattr(viewport, name)
@@ -964,6 +965,8 @@ def ensure_agent_viewport(
     """
     active = active_viewport(runtime)
     before = viewport_state(runtime, active) if active is not None else None
+    if before is not None and before.get("snapshot_error"):
+        return render_error(before["snapshot_error"], name=name)
     existing = find_agent_viewport(runtime, name)
     created = False
     warnings: List[str] = []
