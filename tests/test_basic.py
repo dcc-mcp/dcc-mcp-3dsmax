@@ -1152,6 +1152,14 @@ class TestMenuIntegration:
         assert "deleteFile" in script
         assert "callbacks.removeScripts" in script
 
+    def test_legacy_menu_is_detached_and_unregistered_before_reinstall(self):
+        from dcc_mcp_3dsmax.menu import _remove_menu_script_legacy
+
+        script = _remove_menu_script_legacy()
+        assert "item.getSubMenu() == dccMenu" in script
+        assert script.index("mainMenuBar.removeItemByPosition i") < script.index("menuMan.unRegisterMenu dccMenu")
+        assert "mainMenuBar.removeItem i" not in script
+
 
 class TestSkillMetadata:
     """Test bundled skills follow the dcc-mcp-core 0.17 authoring contract."""

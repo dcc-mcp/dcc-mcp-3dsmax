@@ -348,17 +348,19 @@ local userMacrosDir = getDir #userMacros
 
 -- Idempotent: silently skip when menu / macros / context are already absent.
 try (
-    if menuMan.findMenu "DCC MCP" != undefined do
+    local dccMenu = menuMan.findMenu "DCC MCP"
+    if dccMenu != undefined do
     (
         local mainMenuBar = menuMan.getMainMenuBar()
         for i = mainMenuBar.numItems() to 1 by -1 do
         (
             local item = mainMenuBar.getItem i
-            if (classOf item) == SubMenuItem and (item.getTitle()) == "DCC MCP" do
+            if item.getSubMenu() == dccMenu do
             (
-                mainMenuBar.removeItem i
+                mainMenuBar.removeItemByPosition i
             )
         )
+        menuMan.unRegisterMenu dccMenu
     )
 ) catch()
 
