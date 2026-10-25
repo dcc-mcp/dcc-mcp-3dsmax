@@ -1108,6 +1108,26 @@ class TestMenuIntegration:
         assert "stop_sidecar_bridge" in script
         assert "persistent:false" in script
 
+    @pytest.mark.parametrize("new_menu", [False, True])
+    @pytest.mark.parametrize("failure_step", [0, 1])
+    def test_failed_menu_rebuild_restores_shutdown_cleanup(self, monkeypatch, new_menu, failure_step):
+        from dcc_mcp_3dsmax import menu
+
+        scripts = []
+
+        def execute(script):
+            scripts.append(script)
+            if len(scripts) == failure_step + 1:
+                raise RuntimeError("menu rebuild failed")
+
+        runtime = type("Runtime", (), {"execute": staticmethod(execute)})()
+        monkeypatch.setattr(menu, "_runtime", lambda: runtime)
+        monkeypatch.setattr(menu, "_uses_new_menu_system", lambda: new_menu)
+        with pytest.raises(RuntimeError, match="menu rebuild failed"):
+            menu.install_menu()
+        assert "#preSystemShutdown" in scripts[-1]
+        assert "stop_sidecar_bridge" in scripts[-1]
+
     def test_remove_menu_script_cleans_mcr_files(self):
         """remove_menu deletes persisted .mcr files from #userMacros."""
         from dcc_mcp_3dsmax.menu import _remove_menu_script_legacy

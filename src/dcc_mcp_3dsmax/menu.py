@@ -161,12 +161,14 @@ def install_menu() -> bool:
         return False
 
     # Rebuild saved menus so upgrades also lose the retired lifecycle actions.
-    remove_menu()
-    if _uses_new_menu_system():
-        rt.execute(_menu_script_2025())
-    else:
-        rt.execute(_menu_script_legacy())
-    install_shutdown_callback()
+    try:
+        remove_menu()
+        if _uses_new_menu_system():
+            rt.execute(_menu_script_2025())
+        else:
+            rt.execute(_menu_script_legacy())
+    finally:
+        install_shutdown_callback()
     return True
 
 
