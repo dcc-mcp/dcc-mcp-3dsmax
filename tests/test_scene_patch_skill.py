@@ -431,3 +431,17 @@ def test_scene_patch_edit_ceiling_matches_the_module_constant():
     tool = next(item for item in tools if item["name"] == "scene_patch")
 
     assert tool["input_schema"]["properties"]["edits"]["maxItems"] == _load_action("action_scene_patch.py").MAX_EDITS
+
+
+def test_patch_accepts_callable_native_point(monkeypatch):
+    class NativePoint(_Point3):
+        def __call__(self):
+            raise AssertionError("native values must never be invoked")
+
+    runtime = _install_runtime(monkeypatch)
+    runtime.hero.pivot = NativePoint(0, 0, 0)
+    result = _patch(edits=[{
+        "op": "set_property", "node_name": "hero_mesh", "property": "pivot", "value": [100, 80, 10]
+    }])
+    assert result["success"] is True, result
+    assert [runtime.hero.pivot.x, runtime.hero.pivot.y, runtime.hero.pivot.z] == [100, 80, 10]
