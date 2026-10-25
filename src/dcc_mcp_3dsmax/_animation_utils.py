@@ -162,10 +162,10 @@ def _key_with_pymxs_animation(
         return False
 
     converted: Any = list(value)
-    constructor_name = "EulerAngles" if property_name == "rotation" else "Point3"
+    constructor_name = ("Quat" if len(value) == 4 else "EulerAngles") if property_name == "rotation" else "Point3"
     constructor = getattr(runtime, constructor_name, None)
     if callable(constructor):
-        converted = constructor(*value[:3])
+        converted = constructor(*value)
     with contextlib.ExitStack() as stack:
         stack.enter_context(animate(True))
         stack.enter_context(attime(frame))
@@ -368,7 +368,7 @@ def bake_transform_animation(
             elif hasattr(runtime, "currentTime"):
                 runtime.currentTime = frame
             for prop in ("position", "rotation", "scale"):
-                value = _transform_vector(node, prop)
+                value = _transform_vector(node, prop, runtime)
                 set_transform_key(runtime, node, frame=frame, property_name=prop, value=value)
                 changed += 1
     finally:
@@ -420,8 +420,10 @@ def _keys(node: Any) -> List[Dict[str, Any]]:
     return keys
 
 
-def _transform_vector(node: Any, property_name: str) -> List[float]:
+def _transform_vector(node: Any, property_name: str, runtime: Any) -> List[float]:
     value = getattr(node, property_name, None)
+    if property_name == "rotation" and hasattr(value, "w"):
+        value = runtime.quatToEuler(value)
     vector = point3_to_list(value)
     if vector is None:
         vector = point3_to_list(getattr(value, "value", None))
