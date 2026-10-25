@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from dcc_mcp_3dsmax._scene_lifecycle import _string_value
 from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes
 from dcc_mcp_3dsmax._version_probe import get_3dsmax_version_string
 from dcc_mcp_3dsmax.api import get_runtime, with_max
@@ -11,14 +12,10 @@ from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 def _normalize_unit(value: Any) -> str:
     """Normalize a unit value from MAXScript to a clean lowercase string."""
-    if callable(value):
-        try:
-            raw = str(value())
-        except Exception:  # noqa: BLE001
-            return "unknown"
-    else:
-        raw = str(value)
-    return raw.lstrip("#").strip().lower() or "unknown"
+    try:
+        return _string_value(value).lower()
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 @with_max

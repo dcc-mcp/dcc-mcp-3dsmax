@@ -49,7 +49,8 @@ tools:
     produces: [scene_units]
     undo:
       supported: false
-      reason: "System-unit globals are not node undo operations; failed writes attempt verified restoration."
+      granularity: none
+      notes: "System-unit globals are not node undo operations; failed writes attempt verified restoration."
   - name: get_scene_info
     description: >-
       Get basic information about the current 3ds Max scene. Use when the user
