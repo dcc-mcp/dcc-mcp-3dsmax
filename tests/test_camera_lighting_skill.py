@@ -186,6 +186,15 @@ def test_physical_camera_verified_native_focal_length(monkeypatch):
     assert next(c for c in listed["data"]["cameras"] if c["node"]["node_name"] == "verified_lens")["focal_length"] == 65
 
 
+def test_physical_camera_uses_native_physical_constructor(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.Physical = lambda: runtime._make_node("camera", "Physical")
+    runtime.PhysicalCamera = None
+    result = _load_action("action_create_camera.py").main(name="native_physical", camera_type="physical")
+    assert result["success"] is True
+    assert runtime.getNodeByName("native_physical").className == "Physical"
+
+
 def test_failed_requested_lens_rolls_back_only_owned_camera_and_target(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
     deleted = []
