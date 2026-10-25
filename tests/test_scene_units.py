@@ -16,6 +16,9 @@ class NativeName:
     def __str__(self):
         return "#" + self.value
 
+    def __call__(self):
+        raise RuntimeError("Call needs function or class, got: " + str(self))
+
 
 class Units:
     def __init__(self, mode="normal"):
@@ -111,3 +114,25 @@ def test_native_float32_scale_readback_is_accepted(action):
     main, runtime = action
     runtime.units = Units("float32")
     assert main("millimeters", 0.1)["success"]
+
+
+def test_scene_status_strings_do_not_invoke_callable_native_names():
+    from dcc_mcp_3dsmax._scene_lifecycle import _string_value
+
+    assert _string_value(NativeName("inches")) == "inches"
+    assert _string_value(lambda: NativeName("centimeters")) == "centimeters"
+
+
+@pytest.mark.parametrize("filename", ["action_get_scene_info.py", "action_get_scene_metadata.py"])
+def test_scene_readers_normalize_callable_native_names(filename):
+    path = Path(__file__).resolve().parents[1] / "src/dcc_mcp_3dsmax/skills/3dsmax-scene" / filename
+    spec = importlib.util.spec_from_file_location("units_reader_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module._normalize_unit(NativeName("inches")) == "inches"
+
+
+def test_context_snapshot_handles_callable_native_names(action):
+    from dcc_mcp_3dsmax.context_snapshot import _safe_units
+
+    assert _safe_units(action[1]) == "inches"

@@ -122,6 +122,7 @@ they are declared `batch_call`. They are not listed below because all four are
 | Tool | Reversible | Granularity | Notes |
 | --- | --- | --- | --- |
 | `3dsmax-scene__set_object_property` | yes | `single_call` | One property write on one node. |
+| `3dsmax-scene__set_scene_units` | no | `none` | Empty-scene system globals; failed writes attempt verified restoration. |
 | `3dsmax-scene__create_object` | yes | `single_call` | Creates one node. |
 | `3dsmax-scene__set_selection` | no | `none` | Selection is editor state. Re-select explicitly. |
 | `3dsmax-scene__merge_file` | yes | `batch_call` | One call merges N nodes from a file. |

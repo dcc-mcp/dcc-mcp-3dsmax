@@ -7,25 +7,20 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 # Import local modules
+from dcc_mcp_3dsmax._scene_lifecycle import _string_value
 from dcc_mcp_3dsmax.api import max_success, with_max
 
 
 def _normalize_unit(value: Any) -> str:
     """Normalize a unit value from MAXScript to a clean lowercase string.
 
-    MAXScript ``units.SystemType`` / ``units.DisplayType`` may return a
-    callable or a plain name literal (e.g. ``#inches``).  In either case we
-    want a stable, JSON-safe string without the ``#`` prefix.
+    Native Name values must be serialized even when their wrappers advertise
+    callability. Python readers remain supported by the shared normalizer.
     """
-    if callable(value):
-        try:
-            raw = str(value())
-        except Exception:  # noqa: BLE001
-            return "unknown"
-    else:
-        raw = str(value)
-    # Strip leading '#' (MAXScript name literal prefix) and lowercase
-    return raw.lstrip("#").strip().lower() or "unknown"
+    try:
+        return _string_value(value).lower()
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 @with_max
