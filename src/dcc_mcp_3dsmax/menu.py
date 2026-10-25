@@ -314,8 +314,15 @@ callbacks.addScript #cuiRegisterMenus dccMcp3dsmaxRegisterMenus id:#dcc_mcp_3dsm
 
 -- Force a menu rebuild so the callback fires immediately when this script is
 -- installed at runtime; at startup the notification is emitted automatically.
--- local cuiMenuMgr = maxops.GetICuiMenuMgr()
--- cuiMenuMgr.LoadConfiguration (cuiMenuMgr.GetCurrentConfiguration())
+(
+    local cuiMenuMgr = maxops.GetICuiMenuMgr()
+    if cuiMenuMgr != undefined do
+    (
+        local currentConfig = cuiMenuMgr.GetCurrentConfiguration()
+        if currentConfig != undefined and currentConfig != "" do
+            cuiMenuMgr.LoadConfiguration currentConfig
+    )
+)
 print "dcc-mcp-3dsmax menu installed"
 """
 
