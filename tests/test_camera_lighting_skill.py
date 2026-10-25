@@ -155,6 +155,53 @@ def test_target_camera_creates_and_connects_native_target(monkeypatch):
     assert camera.target.position == [0.0, 0.0, 1.0]
 
 
+def test_requested_lens_rejects_cached_unsupported_aliases(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.isProperty = lambda node, name: False
+    result = _load_action("action_create_camera.py").main(name="unsupported_lens", focal_length=65)
+    assert result["success"] is False
+    assert result["data"]["field"] == "focal_length"
+    assert result["data"]["actual"] is None
+    assert result["data"]["supported"] is False
+
+
+def test_requested_lens_uses_native_getter_not_cached_alias(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.isProperty = lambda node, name: name == "focal_length_mm"
+    runtime.getProperty = lambda node, name: 40.0
+    result = _load_action("action_create_camera.py").main(name="ignored_lens", camera_type="physical", focal_length=65)
+    assert result["success"] is False
+    assert result["data"]["actual"] == 40
+    assert result["data"]["requested"] == 65
+
+
+def test_physical_camera_verified_native_focal_length(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.isProperty = lambda node, name: name == "focal_length_mm"
+    runtime.getProperty = lambda node, name: getattr(node, name)
+    result = _load_action("action_create_camera.py").main(name="verified_lens", camera_type="physical", focal_length=65)
+    assert result["success"] is True
+    assert result["data"]["camera"]["focal_length"] == 65
+    listed = _load_action("action_list_cameras.py").main()
+    assert next(c for c in listed["data"]["cameras"] if c["node"]["node_name"] == "verified_lens")["focal_length"] == 65
+
+
+def test_failed_requested_lens_rolls_back_only_owned_camera_and_target(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    deleted = []
+    runtime.isProperty = lambda node, name: False
+    runtime.delete = deleted.append
+    runtime.maxOps = types.SimpleNamespace(getNodeByHandle=lambda handle: None)
+    result = _load_action("action_create_camera.py").main(
+        name="unsupported_lens", focal_length=65, target_position=[0, 0, 0]
+    )
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    assert result["data"]["changed_node_count"] == 0
+    assert {node.name for node in deleted} == {"unsupported_lens", "unsupported_lens.Target"}
+    assert all(node in runtime.objects for node in (runtime.camera, runtime.light, runtime.mesh))
+
+
 def test_active_camera_uses_runtime_class_for_pymxs_wrapper(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
     runtime.camera.className = "MXSWrapperBase"
