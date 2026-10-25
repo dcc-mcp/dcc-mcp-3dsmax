@@ -125,10 +125,8 @@ def main(
         modifier.weldCore = bool(weld_core)
         modifier.flipNormals = bool(flip_normals)
         rt.addModifier(shape, modifier)
-        # Nested wrapper assignment changes copies, not the native controller.
-        rt.setProperty(modifier, "axis.position", rt.Point3(0.0, 0.0, 0.0))
-        rt.setProperty(modifier, "axis.rotation", rt.Quat(0.0, 0.0, 0.0, 1.0))
-        rt.setProperty(modifier, "axis.scale", rt.Point3(1.0, 1.0, 1.0))
+        # Commit the whole matrix; nested axis wrappers are detached copies.
+        rt.setProperty(modifier, "axis", rt.Matrix3(1))
 
         if name is not None:
             shape.name = name
@@ -143,9 +141,10 @@ def main(
         geometry_matches = False
         bounds = None
         if readback_modifier is not None:
-            axis_position = rt.getProperty(readback_modifier, "axis.position")
-            axis_scale = rt.getProperty(readback_modifier, "axis.scale")
-            rotation = rt.getProperty(readback_modifier, "axis.rotation")
+            axis = rt.getProperty(readback_modifier, "axis")
+            axis_position = axis.position
+            axis_scale = axis.scale
+            rotation = axis.rotation
             axis_matches = (
                 all(math.isclose(float(getattr(axis_position, key)), 0.0, abs_tol=1e-6) for key in ("x", "y", "z"))
                 and all(math.isclose(float(getattr(axis_scale, key)), 1.0, abs_tol=1e-6) for key in ("x", "y", "z"))

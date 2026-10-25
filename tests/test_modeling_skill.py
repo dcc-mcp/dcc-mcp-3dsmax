@@ -38,7 +38,7 @@ class _Axis:
     def __init__(self, ignore_rotation=False):
         self.position = _Point3(0, 0, 0)
         self.scale = _Point3(1, 1, 1)
-        self._rotation = _Quat(-math.sqrt(0.5), 0, 0, math.sqrt(0.5))
+        self._rotation = _Quat(math.sqrt(0.5), 0, 0, math.sqrt(0.5))
         self.ignore_rotation = ignore_rotation
 
     @property
@@ -140,19 +140,23 @@ class _FakeRuntime:
         return _Lathe(self.tamper_axis)
 
     Quat = staticmethod(_Quat)
-    Matrix3 = staticmethod(lambda value: value)
+
+    @staticmethod
+    def Matrix3(value):  # noqa: N802 - native identity matrix.
+        assert value == 1
+        return types.SimpleNamespace(position=_Point3(0, 0, 0), rotation=_Quat(0, 0, 0, 1), scale=_Point3(1, 1, 1))
 
     @staticmethod
     def setProperty(modifier, path, value):  # noqa: N802 - native nested setter.
-        owner, field = path.split(".")
-        assert owner == "axis"
-        setattr(modifier._axis, field, value)
+        if path != "axis":
+            raise RuntimeError("Unknown property: " + path)
+        for field in ("position", "rotation", "scale"):
+            setattr(modifier._axis, field, getattr(value, field))
 
     @staticmethod
     def getProperty(modifier, path):  # noqa: N802 - native nested getter.
-        owner, field = path.split(".")
-        assert owner == "axis"
-        return getattr(modifier._axis, field)
+        assert path == "axis"
+        return copy.copy(modifier._axis)
 
     @staticmethod
     def nodeGetBoundingBox(shape, matrix):  # noqa: N802 - native geometry surface.
