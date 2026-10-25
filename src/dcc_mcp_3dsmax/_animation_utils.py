@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import math
 from typing import Any, Dict, List, Optional, Sequence
 
+from dcc_mcp_3dsmax._fbx_time import _frame_value, _set_scene_timeline, scene_time_settings
 from dcc_mcp_3dsmax._scene_utils import node_identity, point3_to_list, resolve_node_objects
 
 
@@ -43,22 +45,9 @@ def resolve_anim_targets(
 
 def time_settings(runtime: Any) -> Dict[str, Any]:
     """Return common timeline settings."""
-    interval = getattr(runtime, "animationRange", None)
-    interval_start = getattr(interval, "start", None)
-    interval_end = getattr(interval, "end", None)
     return {
-        "current_time": float(getattr(runtime, "currentTime", getattr(runtime, "sliderTime", 0)) or 0),
-        "frame_start": int(
-            interval_start
-            if interval_start is not None
-            else getattr(runtime, "animationRangeStart", getattr(runtime, "frameStart", 0)) or 0
-        ),
-        "frame_end": int(
-            interval_end
-            if interval_end is not None
-            else getattr(runtime, "animationRangeEnd", getattr(runtime, "frameEnd", 0)) or 0
-        ),
-        "frame_rate": float(getattr(runtime, "frameRate", 30.0) or 30.0),
+        "current_time": _frame_value(getattr(runtime, "currentTime", getattr(runtime, "sliderTime", 0)), 0),
+        **scene_time_settings(runtime),
     }
 
 
@@ -82,17 +71,15 @@ def set_timeline(
     end = current["frame_end"] if end_frame is None else int(end_frame)
     if end < start:
         return anim_error("end_frame must be greater than or equal to start_frame", start_frame=start, end_frame=end)
-    interval = getattr(runtime, "Interval", None)
-    if callable(interval):
-        runtime.animationRange = interval(start, end)
-    else:
-        runtime.animationRangeStart = start
-        runtime.animationRangeEnd = end
-        runtime.frameStart = start
-        runtime.frameEnd = end
-    if frame_rate is not None:
-        runtime.frameRate = float(frame_rate)
-    return anim_success("Updated timeline settings", settings=time_settings(runtime))
+    rate = current["frame_rate"] if frame_rate is None else float(frame_rate)
+    if not math.isfinite(rate) or rate <= 0:
+        return anim_error("frame_rate must be finite and positive")
+    errors = _set_scene_timeline(runtime, rate, start, end)
+    actual = time_settings(runtime)
+    expected = {"frame_start": start, "frame_end": end, "frame_rate": rate}
+    if errors or any(actual[key] != value for key, value in expected.items()):
+        return anim_error("Timeline settings did not verify", requested=expected, settings=actual, errors=errors)
+    return anim_success("Updated timeline settings", settings=actual)
 
 
 def controller_summary(node: Any) -> Dict[str, Any]:
