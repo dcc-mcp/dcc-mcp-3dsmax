@@ -488,6 +488,8 @@ class TestSidecarBridge:
             assert first.socket.fileno() == -1
             # The OS may legally reuse an ephemeral port after shutdown.
             second = bridge_module.start_bridge(port=port if reuse_port else 0)
+            if reuse_port:
+                assert second.server_address[1] == port
             assert second is not first
             health = self._http_get(f"http://127.0.0.1:{second.server_address[1]}/health")
             assert health["status"] == "ok"
