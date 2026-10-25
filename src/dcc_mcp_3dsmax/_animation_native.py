@@ -34,23 +34,23 @@ def native_curve(
         top_count = int(get_count(top) or 0)
     except Exception:  # noqa: BLE001
         top_count = 0
-    if top_count > 0:
-        controllers.append((None, top))
-    else:
-        get_names = getattr(runtime, "getPropNames", None)
-        if callable(get_names):
+    # Compound controllers report a key count but only their component keys are readable.
+    get_names = getattr(runtime, "getPropNames", None)
+    if callable(get_names):
+        try:
+            sub_names = list(get_names(top))
+        except Exception:  # noqa: BLE001
+            sub_names = []
+        for index, sub_name in enumerate(sub_names):
             try:
-                sub_names = list(get_names(top))
+                controller = get_controller(top, sub_name)
+                count = int(get_count(controller) or 0) if controller is not None else 0
             except Exception:  # noqa: BLE001
-                sub_names = []
-            for index, sub_name in enumerate(sub_names):
-                try:
-                    controller = get_controller(top, sub_name)
-                    count = int(get_count(controller) or 0) if controller is not None else 0
-                except Exception:  # noqa: BLE001
-                    continue
-                if count > 0:
-                    controllers.append((_axis_index(sub_name, fallback=index), controller))
+                continue
+            if count > 0:
+                controllers.append((_axis_index(sub_name, fallback=index), controller))
+    if not controllers and top_count > 0:
+        controllers.append((None, top))
     if not controllers:
         return None
 

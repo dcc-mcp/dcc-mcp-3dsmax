@@ -888,12 +888,14 @@ def test_vray_provider_delegates_and_rejects_generic_only_fields(monkeypatch, tm
 
 def test_native_arnold_light_uses_shape_type_and_quad_dimensions(monkeypatch):
     runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
+
     def native_light():
         light = runtime._make(_ArnoldAreaLight)
         light.on = True
         light.enabled = False
         light.type = 0  # Generic light type must not shadow Arnold's shapeType.
         return light
+
     runtime.Arnold_Light = native_light
     result = _load_action("action_create_renderer_light.py").main(
         provider="arnold", name="NativeQuad", shape="quad", size_u=420, size_v=120

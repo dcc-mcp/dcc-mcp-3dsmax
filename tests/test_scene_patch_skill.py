@@ -156,9 +156,7 @@ def test_empty_edits_are_rejected(monkeypatch):
 def test_more_than_the_edit_ceiling_is_rejected(monkeypatch):
     runtime = _install_runtime(monkeypatch)
 
-    result = _patch(
-        edits=[{"op": "rename", "node_name": "hero_mesh", "name": "n{}".format(i)} for i in range(257)]
-    )
+    result = _patch(edits=[{"op": "rename", "node_name": "hero_mesh", "name": "n{}".format(i)} for i in range(257)])
 
     assert result["success"] is False
     assert "at most 256" in result["message"]
@@ -216,9 +214,7 @@ def test_a_missing_node_fails_preflight_and_writes_nothing(monkeypatch):
 def test_a_missing_property_fails_preflight(monkeypatch):
     runtime = _install_runtime(monkeypatch)
 
-    result = _patch(
-        edits=[{"op": "set_property", "node_name": "hero_mesh", "property": "no_such_prop", "value": 1}]
-    )
+    result = _patch(edits=[{"op": "set_property", "node_name": "hero_mesh", "property": "no_such_prop", "value": 1}])
 
     assert result["success"] is False
     assert "does not exist" in result["data"]["errors"][0]["message"]
@@ -440,8 +436,8 @@ def test_patch_accepts_callable_native_point(monkeypatch):
 
     runtime = _install_runtime(monkeypatch)
     runtime.hero.pivot = NativePoint(0, 0, 0)
-    result = _patch(edits=[{
-        "op": "set_property", "node_name": "hero_mesh", "property": "pivot", "value": [100, 80, 10]
-    }])
+    result = _patch(
+        edits=[{"op": "set_property", "node_name": "hero_mesh", "property": "pivot", "value": [100, 80, 10]}]
+    )
     assert result["success"] is True, result
     assert [runtime.hero.pivot.x, runtime.hero.pivot.y, runtime.hero.pivot.z] == [100, 80, 10]
