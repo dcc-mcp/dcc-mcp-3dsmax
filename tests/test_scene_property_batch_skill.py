@@ -1126,3 +1126,36 @@ def test_set_visibility_fails_when_freeze_is_ignored(monkeypatch):
 
     assert result["success"] is False
     assert "did not take effect" in result["message"]
+
+
+def test_create_object_applies_position_after_world_rotation(monkeypatch):
+    _install_fake_pymxs(monkeypatch)
+    original = _FakeNode.rotation
+
+    def orbit(node, value):
+        original.fset(node, value)
+        node.pos = _Point3(198, 0, 34)
+
+    monkeypatch.setattr(_FakeNode, "rotation", property(original.fget, orbit))
+    result = _load_action("action_create_object.py").main(
+        object_type="Teapot", position=[140, 140, 34], rotation=[0, 0, 45]
+    )
+    assert result["success"] is True, result
+    assert result["data"]["placement"]["position"] == [140, 140, 34]
+    assert result["data"]["placement"]["rotation"] == [0, 0, 45]
+
+
+def test_create_object_rejects_silently_ignored_final_position(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    original = runtime._create
+
+    def create(class_name, **kwargs):
+        node = original(class_name, **kwargs)
+        node.swallowed_properties.add("pos")
+        return node
+
+    monkeypatch.setattr(runtime, "_create", create)
+    result = _load_action("action_create_object.py").main(object_type="Teapot", position=[140, 140, 34])
+    assert result["success"] is False
+    assert result["message"] == "Object placement did not verify"
+    assert result["data"]["readback"] == [0, 0, 0]

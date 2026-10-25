@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from dcc_mcp_3dsmax._env import ENV_DISABLE_ARBITRARY_SCRIPT, resolve_arbitrary_script_disabled
-from dcc_mcp_3dsmax._scene_utils import node_bounding_box, point3_to_list, serialize_property_value
+from dcc_mcp_3dsmax._scene_utils import node_bounding_box, point3_to_list, serialize_property_value, vector_equal
 from dcc_mcp_3dsmax.api import get_runtime, with_max
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -161,9 +161,7 @@ def main(
                 "Runtime symbol is not a creatable 3ds Max class: this runtime exposes "
                 "no creatable-class predicate, so no symbol can be proven"
             )
-        message = "{} ({} neither tightens nor loosens this check)".format(
-            message, ENV_DISABLE_ARBITRARY_SCRIPT
-        )
+        message = "{} ({} neither tightens nor loosens this check)".format(message, ENV_DISABLE_ARBITRARY_SCRIPT)
         return {
             "success": False,
             "message": message,
@@ -229,21 +227,9 @@ def main(
                 },
             }
 
-    placement: Dict[str, Any] = {}
-    if position is not None:
-        try:
-            node.pos = rt.Point3(*[float(item) for item in position])
-            placement["position"] = point3_to_list(node.pos)
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "success": False,
-                "message": "Object was created but position was rejected",
-                "data": {"object_type": class_name, "error": str(exc), "requested": position},
-            }
     if rotation is not None:
         try:
             node.rotation = rt.EulerAngles(*[float(item) for item in rotation])
-            placement["rotation"] = point3_to_list(node.rotation)
         except Exception as exc:  # noqa: BLE001
             return {
                 "success": False,
@@ -253,13 +239,32 @@ def main(
     if scale is not None:
         try:
             node.scale = rt.Point3(*[float(item) for item in scale])
-            placement["scale"] = point3_to_list(node.scale)
         except Exception as exc:  # noqa: BLE001
             return {
                 "success": False,
                 "message": "Object was created but scale was rejected",
                 "data": {"object_type": class_name, "error": str(exc), "requested": scale},
             }
+
+    # World rotation/scale can orbit a node, so apply its requested position last.
+    if position is not None:
+        try:
+            node.pos = rt.Point3(*[float(item) for item in position])
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "success": False,
+                "message": "Object was created but position was rejected",
+                "data": {"object_type": class_name, "error": str(exc), "requested": position},
+            }
+    if position is not None and not vector_equal(getattr(node, "pos", None), position):
+        return {
+            "success": False,
+            "message": "Object placement did not verify",
+            "data": {"requested": position, "readback": point3_to_list(getattr(node, "pos", None))},
+        }
+    rotation_value = getattr(node, "rotation", None)
+    if hasattr(rotation_value, "w"):
+        rotation_value = rt.quatToEuler(rotation_value)
 
     identity: Dict[str, Any] = {
         "node_name": str(getattr(node, "name", "")),
@@ -273,13 +278,12 @@ def main(
         "params": {key: serialize_property_value(item) for key, item in kwargs.items()},
         "placement": {
             "position": point3_to_list(getattr(node, "pos", None)),
-            "rotation": point3_to_list(getattr(node, "rotation", None)),
+            "rotation": point3_to_list(rotation_value),
             "scale": point3_to_list(getattr(node, "scale", None)),
         },
         "bounding_box": node_bounding_box(node),
         "creatable_class_evidence": evidence,
     }
-    data["placement"].update(placement)
 
     return {
         "success": True,
