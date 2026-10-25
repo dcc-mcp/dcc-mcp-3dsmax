@@ -86,10 +86,12 @@ the user's scripts directory.
 
 Startup installs a `DCC MCP` menu in the main menu bar with:
 
-- `Start Server`
-- `Stop Server`
+- `Copy Instance ID`
 - `Open Gateway Admin`
-- `Print Status`
+- `Server Info`
+- `About DCC MCP`
+
+Runtime startup is automatic; the menu contains no manual start or stop commands.
 
 To install only the menu without starting the runtime:
 
