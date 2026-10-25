@@ -1064,6 +1064,14 @@ class TestMenuIntegration:
         assert "DccMcp3dsmax_AboutDccMcp" in script
         assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
 
+    def test_new_menu_rebuild_follows_callback_registration(self):
+        from dcc_mcp_3dsmax.menu import _menu_script_2025
+
+        script = "\n".join(line for line in _menu_script_2025().splitlines() if not line.strip().startswith("--"))
+        assert script.index("callbacks.addScript #cuiRegisterMenus") < script.index("cuiMenuMgr.LoadConfiguration")
+        assert "if cuiMenuMgr != undefined" in script
+        assert 'currentConfig != ""' in script
+
     def test_new_menu_keeps_diagnostics_without_manual_lifecycle(self):
         from dcc_mcp_3dsmax.menu import _menu_script_2025
 
