@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import sys
 import types
@@ -56,7 +57,11 @@ class _Lathe:
         self.segs = 16
         self.weldCore = True
         self.flipNormals = False
-        self.axis = _Axis(ignore_rotation)
+        self._axis = _Axis(ignore_rotation)
+
+    @property
+    def axis(self):
+        return copy.copy(self._axis)
 
 
 class _FakeMaxOps:
@@ -136,6 +141,18 @@ class _FakeRuntime:
 
     Quat = staticmethod(_Quat)
     Matrix3 = staticmethod(lambda value: value)
+
+    @staticmethod
+    def setProperty(modifier, path, value):  # noqa: N802 - native nested setter.
+        owner, field = path.split(".")
+        assert owner == "axis"
+        setattr(modifier._axis, field, value)
+
+    @staticmethod
+    def getProperty(modifier, path):  # noqa: N802 - native nested getter.
+        owner, field = path.split(".")
+        assert owner == "axis"
+        return getattr(modifier._axis, field)
 
     @staticmethod
     def nodeGetBoundingBox(shape, matrix):  # noqa: N802 - native geometry surface.
