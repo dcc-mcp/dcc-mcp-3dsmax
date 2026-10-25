@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import sys
 import types
 from pathlib import Path
@@ -446,7 +445,7 @@ def test_get_anim_curves_reads_native_component_values_and_tangents(monkeypatch)
 
     components = {
         "x": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, 0.0, "linear", "step")]),
-        "y": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, math.tau, "linear", "step")]),
+        "y": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, -360.0, "linear", "step")]),
         "z": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, 0.0, "linear", "step")]),
     }
     node.controller = types.SimpleNamespace(properties={"rotation": types.SimpleNamespace(properties=components)})
