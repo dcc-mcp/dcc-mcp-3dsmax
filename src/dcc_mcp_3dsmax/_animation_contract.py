@@ -79,7 +79,7 @@ def set_keyframes(
                     interpolation=key["in_tangent"],
                     frames=[key["frame"]],
                 )
-            actual = _read_transform_at(runtime, node, key["frame"], key["property"])
+            actual = _read_transform_at(runtime, node, key["frame"], key["property"], quaternion=len(key["value"]) == 4)
             if not _vectors_match(actual, key["value"]):
                 return anim_error(
                     "Keyframe host readback did not match the requested value",
@@ -322,17 +322,25 @@ def _record_tangents(node: Any, key: Dict[str, Any]) -> None:
             return
 
 
-def _read_transform_at(runtime: Any, node: Any, frame: float, property_name: str) -> List[float]:
+def _read_transform_at(
+    runtime: Any, node: Any, frame: float, property_name: str, *, quaternion: bool = False
+) -> List[float]:
+    def read():
+        if quaternion:
+            value = getattr(node, property_name)
+            return [float(getattr(value, axis)) for axis in ("x", "y", "z", "w")]
+        return _transform_vector(node, property_name, runtime)
+
     try:
         import pymxs  # noqa: PLC0415
 
         attime = getattr(pymxs, "attime", None)
         if callable(attime):
             with attime(frame):
-                return _transform_vector(node, property_name)
+                return read()
     except (ImportError, RuntimeError, TypeError, ValueError):
         pass
-    return _transform_vector(node, property_name)
+    return read()
 
 
 def _vectors_match(actual: Sequence[float], expected: Sequence[float]) -> bool:

@@ -78,12 +78,12 @@ def native_curve(
             )
             value = getattr(key, "value", None)
             vector = _vector_value(value)
-            if axis is None and vector is not None:
+            if axis is None and vector is not None and property_name != "rotation":
                 row["v"] = vector
             elif axis is not None and _finite_number(value):
                 while len(row["v"]) < 3:
                     row["v"].append(0.0)
-                row["v"][axis] = float(value)
+                row["v"][axis] = math.degrees(float(value)) if property_name == "rotation" else float(value)
             row["in"] = tangent_name(getattr(key, "inTangentType", getattr(key, "in_tangent", "auto")))
             row["out"] = tangent_name(getattr(key, "outTangentType", getattr(key, "out_tangent", "auto")))
     if not rows:
