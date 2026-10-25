@@ -23,6 +23,7 @@ then the result says so.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, List, Optional, Tuple
 
 from dcc_mcp_3dsmax import _undo_utils
@@ -159,7 +160,7 @@ def _prepare_set_property(runtime: Any, node: Any, edit: Dict[str, Any]) -> Dict
         raise _PatchRequestError(
             "edit {}: property {} could not be read before writing ({})".format(edit["index"], name, exc)
         ) from exc
-    if callable(current_value):
+    if inspect.isroutine(current_value):
         raise _PatchRequestError("edit {}: refusing to overwrite method {}".format(edit["index"], name))
 
     before = read_property(node, name)

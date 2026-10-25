@@ -674,7 +674,7 @@ def read_property(node: Any, name: str) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"name": name, "available": False, "error": "{}: {}".format(type(exc).__name__, exc)}
 
-    if callable(value):
+    if inspect.isroutine(value):
         return {
             "name": name,
             "available": False,

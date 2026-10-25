@@ -480,6 +480,21 @@ def test_set_object_property_writes_point3_from_mapping(monkeypatch):
     assert runtime.hero.pos == _Point3(5.0, 6.0, 7.0)
 
 
+def test_set_object_property_accepts_callable_native_point(monkeypatch):
+    class NativePoint(_Point3):
+        def __call__(self):
+            raise AssertionError("native values must never be invoked")
+
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.hero.pivot = NativePoint(0, 0, 0)
+    result = _load_action("action_set_object_property.py").main(
+        node_name="hero_box", property="pivot", value=[100, 80, 10]
+    )
+    assert result["success"] is True, result
+    assert result["data"]["previous"] == [0, 0, 0]
+    assert result["data"]["value"] == [100, 80, 10]
+
+
 def test_set_object_property_writes_color(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
 
