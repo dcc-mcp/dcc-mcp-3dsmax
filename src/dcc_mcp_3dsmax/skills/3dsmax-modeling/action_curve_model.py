@@ -318,9 +318,9 @@ def main(
                 if knot_error:
                     return _abort_replacement(knot_error)
             if closed_flag:
-                closer = getattr(rt, "closeSpline", None)
+                closer = getattr(rt, "close", None)
                 if not callable(closer):
-                    return _abort_replacement("3ds Max does not expose closeSpline")
+                    return _abort_replacement("3ds Max does not expose close")
                 closer(node, target_spline)
             update_error = update_shape(rt, node)
             if update_error:

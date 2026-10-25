@@ -185,14 +185,14 @@ def main(
 
         if normalized_closed is not None:
             if normalized_closed:
-                closer = getattr(rt, "closeSpline", None)
+                closer = getattr(rt, "close", None)
                 if not callable(closer):
-                    raise RuntimeError("3ds Max does not expose closeSpline")
+                    raise RuntimeError("3ds Max does not expose close")
                 closer(node, normalized_index)
             else:
-                opener = getattr(rt, "openSpline", None)
+                opener = getattr(rt, "open", None)
                 if not callable(opener):
-                    raise RuntimeError("3ds Max does not expose openSpline")
+                    raise RuntimeError("3ds Max does not expose open")
                 opener(node, normalized_index)
 
         error = update_shape(rt, node)
