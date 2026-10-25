@@ -476,15 +476,26 @@ class TestSidecarBridge:
         finally:
             bridge_module.stop_bridge()
 
-    def test_stop_restart(self):
+    @pytest.mark.parametrize("reuse_port", [False, True])
+    def test_stop_restart(self, reuse_port):
         import dcc_mcp_3dsmax.sidecar.bridge as bridge_module
 
         bridge_module.stop_bridge()
-        p1 = bridge_module.start_bridge(port=0).server_address[1]
-        bridge_module.stop_bridge()
-        p2 = bridge_module.start_bridge(port=0).server_address[1]
-        bridge_module.stop_bridge()
-        assert p1 != p2
+        first = bridge_module.start_bridge(port=0)
+        try:
+            port = first.server_address[1]
+            bridge_module.stop_bridge()
+            assert first.socket.fileno() == -1
+            # The OS may legally reuse an ephemeral port after shutdown.
+            second = bridge_module.start_bridge(port=port if reuse_port else 0)
+            if reuse_port:
+                assert second.server_address[1] == port
+            assert second is not first
+            health = self._http_get(f"http://127.0.0.1:{second.server_address[1]}/health")
+            assert health["status"] == "ok"
+            assert health["port"] == second.server_address[1]
+        finally:
+            bridge_module.stop_bridge()
 
     def test_sidecar_resolve_bundled_action(self, monkeypatch):
         _install_fake_pymxs(monkeypatch)
