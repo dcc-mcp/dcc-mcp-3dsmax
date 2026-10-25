@@ -10,7 +10,7 @@ from dcc_mcp_3dsmax._scene_utils import iter_scene_nodes, node_identity, point3_
 CAMERA_FACTORIES: Dict[str, Tuple[str, ...]] = {
     "target": ("Targetcamera", "TargetCamera"),
     "free": ("FreeCamera", "Freecamera"),
-    "physical": ("PhysicalCamera",),
+    "physical": ("Physical", "PhysicalCamera"),
 }
 
 LIGHT_FACTORIES: Dict[str, Tuple[str, ...]] = {
