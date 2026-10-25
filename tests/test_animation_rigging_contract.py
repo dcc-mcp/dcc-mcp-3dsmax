@@ -445,7 +445,7 @@ def test_get_anim_curves_reads_native_component_values_and_tangents(monkeypatch)
 
     components = {
         "x": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, 0.0, "linear", "step")]),
-        "y": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, 360.0, "linear", "step")]),
+        "y": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, -360.0, "linear", "step")]),
         "z": types.SimpleNamespace(keys=[_key(1, 0.0, "linear", "linear"), _key(24, 0.0, "linear", "step")]),
     }
     node.controller = types.SimpleNamespace(properties={"rotation": types.SimpleNamespace(properties=components)})
@@ -453,7 +453,9 @@ def test_get_anim_curves_reads_native_component_values_and_tangents(monkeypatch)
     runtime.ticksPerFrame = 160
     runtime.getPropertyController = lambda controller, name: controller.properties.get(str(name))
     runtime.getPropNames = lambda controller: list(controller.properties)
-    runtime.numKeys = lambda controller: len(getattr(controller, "keys", []))
+    runtime.numKeys = lambda controller: (
+        2 if controller is node.controller.properties["rotation"] else len(getattr(controller, "keys", []))
+    )
     runtime.getKeyTime = lambda controller, index: controller.keys[index - 1].time
     runtime.getKey = lambda controller, index: controller.keys[index - 1]
 
@@ -500,3 +502,53 @@ def test_batch_keyframes_preserves_distinct_in_and_out_tangents(monkeypatch):
     assert result["success"] is True, result
     assert result["data"]["curve_data"]["curves"][0]["keys"][0]["in"] == "linear"
     assert result["data"]["curve_data"]["curves"][0]["keys"][0]["out"] == "step"
+
+
+def test_rotation_readback_converts_native_quaternion_to_degrees(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    rotation = types.SimpleNamespace(x=0, y=0, z=0.08715574, w=0.9961947)
+    runtime.objects[0].rotation = rotation
+    runtime.quatToEuler = lambda value: types.SimpleNamespace(x=0, y=0, z=-10) if value is rotation else None
+    from dcc_mcp_3dsmax._animation_contract import _read_transform_at
+
+    assert _read_transform_at(runtime, runtime.objects[0], 1, "rotation") == [0, 0, -10]
+    assert _read_transform_at(runtime, runtime.objects[0], 1, "rotation", quaternion=True) == [
+        0,
+        0,
+        0.08715574,
+        0.9961947,
+    ]
+
+
+def test_quaternion_key_uses_all_four_components(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.Quat = lambda x, y, z, w: types.SimpleNamespace(x=x, y=y, z=z, w=w)
+    runtime.quatToEuler = lambda value: types.SimpleNamespace(x=0, y=0, z=0)
+    from dcc_mcp_3dsmax._animation_contract import set_keyframes
+
+    result = set_keyframes(
+        runtime, node_names=["rotor_main"], keys=[{"frame": 1, "property": "rotation", "value": [0, 0, 0, 1]}]
+    )
+    assert result["success"] is True, result
+    assert runtime.objects[0].rotation.w == 1
+
+
+def test_rotation_key_preserves_world_pivot_position(monkeypatch):
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    class OrbitingNode(_Node):
+        def __setattr__(self, name, value):
+            if name == "rotation" and hasattr(self, "position"):
+                self.position = [0, 0, 0]
+            object.__setattr__(self, name, value)
+
+    node = OrbitingNode("rotor_main", 1)
+    node.position = [100, 80, 10]
+    runtime.objects[0] = node
+    from dcc_mcp_3dsmax._animation_contract import set_keyframes
+
+    result = set_keyframes(
+        runtime, node_names=["rotor_main"], keys=[{"frame": 1, "property": "rotation", "value": [0, 0, -45]}]
+    )
+    assert result["success"] is True, result
+    assert node.position == [100, 80, 10]

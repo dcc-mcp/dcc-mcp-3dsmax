@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, Optional
 
 from dcc_mcp_3dsmax._scene_utils import (
@@ -65,7 +66,7 @@ def main(
             "message": "Property could not be read before writing",
             "data": {"node": result.get("node"), "property": name, "error": str(exc)},
         }
-    if callable(current_value):
+    if inspect.isroutine(current_value):
         return {
             "success": False,
             "message": "Refusing to overwrite a method",

@@ -160,10 +160,15 @@ def install_menu() -> bool:
     if rt is None:
         return False
 
-    if _uses_new_menu_system():
-        rt.execute(_menu_script_2025())
-    else:
-        rt.execute(_menu_script_legacy())
+    # Rebuild saved menus so upgrades also lose the retired lifecycle actions.
+    try:
+        remove_menu()
+        if _uses_new_menu_system():
+            rt.execute(_menu_script_2025())
+        else:
+            rt.execute(_menu_script_legacy())
+    finally:
+        install_shutdown_callback()
     return True
 
 
@@ -202,22 +207,6 @@ tooltip:"Copy dcc-mcp instance UUID to clipboard"
     on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.copy_instance_id()"
 )
 
-macroScript DccMcp3dsmax_StartSidecar
-category:"DCC MCP"
-buttonText:"Start Server"
-tooltip:"Start dcc-mcp-3dsmax server"
-(
-    on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.main()"
-)
-
-macroScript DccMcp3dsmax_StopSidecar
-category:"DCC MCP"
-buttonText:"Stop Server"
-tooltip:"Stop dcc-mcp-3dsmax server"
-(
-    on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.stop_sidecar_bridge()"
-)
-
 macroScript DccMcp3dsmax_OpenAdmin
 category:"DCC MCP"
 buttonText:"Open Gateway Admin"
@@ -249,9 +238,6 @@ if menuMan.findMenu "DCC MCP" == undefined do
     local dccMenu = menuMan.createMenu "DCC MCP"
     dccMenu.addItem (menuMan.createActionItem "DccMcp3dsmax_CopyInstanceId" "DCC MCP") -1
     dccMenu.addItem (menuMan.createSeparatorItem()) -1
-    dccMenu.addItem (menuMan.createActionItem "DccMcp3dsmax_StartSidecar" "DCC MCP") -1
-    dccMenu.addItem (menuMan.createActionItem "DccMcp3dsmax_StopSidecar" "DCC MCP") -1
-    dccMenu.addItem (menuMan.createSeparatorItem()) -1
     dccMenu.addItem (menuMan.createActionItem "DccMcp3dsmax_OpenAdmin" "DCC MCP") -1
     dccMenu.addItem (menuMan.createActionItem "DccMcp3dsmax_PrintStatus" "DCC MCP") -1
     dccMenu.addItem (menuMan.createSeparatorItem()) -1
@@ -273,22 +259,6 @@ buttonText:"Copy Instance ID"
 tooltip:"Copy dcc-mcp instance UUID to clipboard"
 (
     on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.copy_instance_id()"
-)
-
-macroScript DccMcp3dsmax_StartSidecar
-category:"DCC MCP"
-buttonText:"Start Server"
-tooltip:"Start dcc-mcp-3dsmax server"
-(
-    on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.main()"
-)
-
-macroScript DccMcp3dsmax_StopSidecar
-category:"DCC MCP"
-buttonText:"Stop Server"
-tooltip:"Stop dcc-mcp-3dsmax server"
-(
-    on execute do python.Execute "import dcc_mcp_3dsmax; dcc_mcp_3dsmax.stop_sidecar_bridge()"
 )
 
 macroScript DccMcp3dsmax_OpenAdmin
@@ -332,9 +302,6 @@ function dccMcp3dsmaxRegisterMenus =
     local dccSubMenu = mainMenuBar.CreateSubMenu "3D5A9765-0000-0000-0000-000000000001" "DCC MCP"
     dccSubMenu.CreateAction "3D5A9765-0000-0000-0000-000000000002" 647394 "DccMcp3dsmax_CopyInstanceId`DCC MCP" title:"Copy Instance ID"
     dccSubMenu.CreateSeparator "3D5A9765-0000-0000-0000-000000000003"
-    dccSubMenu.CreateAction "3D5A9765-0000-0000-0000-000000000004" 647394 "DccMcp3dsmax_StartSidecar`DCC MCP" title:"Start Server"
-    dccSubMenu.CreateAction "3D5A9765-0000-0000-0000-000000000005" 647394 "DccMcp3dsmax_StopSidecar`DCC MCP" title:"Stop Server"
-    dccSubMenu.CreateSeparator "3D5A9765-0000-0000-0000-000000000006"
     dccSubMenu.CreateAction "3D5A9765-0000-0000-0000-000000000007" 647394 "DccMcp3dsmax_OpenAdmin`DCC MCP" title:"Open Gateway Admin"
     dccSubMenu.CreateAction "3D5A9765-0000-0000-0000-000000000008" 647394 "DccMcp3dsmax_PrintStatus`DCC MCP" title:"Server Info"
     dccSubMenu.CreateSeparator "3D5A9765-0000-0000-0000-000000000009"
@@ -347,8 +314,15 @@ callbacks.addScript #cuiRegisterMenus dccMcp3dsmaxRegisterMenus id:#dcc_mcp_3dsm
 
 -- Force a menu rebuild so the callback fires immediately when this script is
 -- installed at runtime; at startup the notification is emitted automatically.
--- local cuiMenuMgr = maxops.GetICuiMenuMgr()
--- cuiMenuMgr.LoadConfiguration (cuiMenuMgr.GetCurrentConfiguration())
+(
+    local cuiMenuMgr = maxops.GetICuiMenuMgr()
+    if cuiMenuMgr != undefined do
+    (
+        local currentConfig = cuiMenuMgr.GetCurrentConfiguration()
+        if currentConfig != undefined and currentConfig != "" do
+            cuiMenuMgr.LoadConfiguration currentConfig
+    )
+)
 print "dcc-mcp-3dsmax menu installed"
 """
 
@@ -374,17 +348,19 @@ local userMacrosDir = getDir #userMacros
 
 -- Idempotent: silently skip when menu / macros / context are already absent.
 try (
-    if menuMan.findMenu "DCC MCP" != undefined do
+    local dccMenu = menuMan.findMenu "DCC MCP"
+    if dccMenu != undefined do
     (
         local mainMenuBar = menuMan.getMainMenuBar()
         for i = mainMenuBar.numItems() to 1 by -1 do
         (
             local item = mainMenuBar.getItem i
-            if (classOf item) == SubMenuItem and (item.getTitle()) == "DCC MCP" do
+            if item.getSubMenu() == dccMenu do
             (
-                mainMenuBar.removeItem i
+                mainMenuBar.removeItemByPosition i
             )
         )
+        menuMan.unRegisterMenu dccMenu
     )
 ) catch()
 

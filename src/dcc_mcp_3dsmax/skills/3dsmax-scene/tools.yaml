@@ -1,4 +1,56 @@
 tools:
+  - name: set_scene_units
+    description: >-
+      Set native system unit type and scale before creating scene content.
+      Refuses nonempty scenes, does not rescale objects or change display units,
+      and verifies native readback. Failed writes attempt restoration and report
+      whether the original settings were restored.
+    source_file: action_set_scene_units.py
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [system_unit]
+      properties:
+        system_unit:
+          type: string
+          enum: [inches, feet, miles, millimeters, centimeters, meters, kilometers]
+        system_scale:
+          type: number
+          exclusiveMinimum: 0
+          default: 1.0
+    output_schema:
+      type: object
+      additionalProperties: true
+      properties:
+        success: {type: boolean}
+        message: {type: string}
+        data: {type: object}
+    timeout_hint_secs: 10
+    read_only: false
+    destructive: false
+    idempotent: true
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false}
+    intent: "Configure verified system units on an empty scene before modeling."
+    tool_role: action
+    risk: medium
+    search_aliases: ["set scene units", "system units", "millimeters", "unit scale"]
+    side_effects:
+      creates: false
+      modifies: true
+      deletes: false
+      exports: false
+      imports: false
+      file_output: false
+      render: false
+      targets: [scene]
+    produces: [scene_units]
+    undo:
+      supported: false
+      granularity: none
+      notes: "System-unit globals are not node undo operations; failed writes attempt verified restoration."
   - name: get_scene_info
     description: >-
       Get basic information about the current 3ds Max scene. Use when the user

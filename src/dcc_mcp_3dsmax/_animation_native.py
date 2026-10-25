@@ -34,23 +34,23 @@ def native_curve(
         top_count = int(get_count(top) or 0)
     except Exception:  # noqa: BLE001
         top_count = 0
-    if top_count > 0:
-        controllers.append((None, top))
-    else:
-        get_names = getattr(runtime, "getPropNames", None)
-        if callable(get_names):
+    # Compound controllers report a key count but only their component keys are readable.
+    get_names = getattr(runtime, "getPropNames", None)
+    if callable(get_names):
+        try:
+            sub_names = list(get_names(top))
+        except Exception:  # noqa: BLE001
+            sub_names = []
+        for index, sub_name in enumerate(sub_names):
             try:
-                sub_names = list(get_names(top))
+                controller = get_controller(top, sub_name)
+                count = int(get_count(controller) or 0) if controller is not None else 0
             except Exception:  # noqa: BLE001
-                sub_names = []
-            for index, sub_name in enumerate(sub_names):
-                try:
-                    controller = get_controller(top, sub_name)
-                    count = int(get_count(controller) or 0) if controller is not None else 0
-                except Exception:  # noqa: BLE001
-                    continue
-                if count > 0:
-                    controllers.append((_axis_index(sub_name, fallback=index), controller))
+                continue
+            if count > 0:
+                controllers.append((_axis_index(sub_name, fallback=index), controller))
+    if not controllers and top_count > 0:
+        controllers.append((None, top))
     if not controllers:
         return None
 
@@ -78,12 +78,13 @@ def native_curve(
             )
             value = getattr(key, "value", None)
             vector = _vector_value(value)
-            if axis is None and vector is not None:
+            if axis is None and vector is not None and property_name != "rotation":
                 row["v"] = vector
             elif axis is not None and _finite_number(value):
                 while len(row["v"]) < 3:
                     row["v"].append(0.0)
-                row["v"][axis] = float(value)
+                # MAXKey angles are degrees in the controller's left-handed convention.
+                row["v"][axis] = -float(value) if property_name == "rotation" else float(value)
             row["in"] = tangent_name(getattr(key, "inTangentType", getattr(key, "in_tangent", "auto")))
             row["out"] = tangent_name(getattr(key, "outTangentType", getattr(key, "out_tangent", "auto")))
     if not rows:

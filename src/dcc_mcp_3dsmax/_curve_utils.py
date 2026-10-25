@@ -806,13 +806,13 @@ def create_spline_shape(
         return node, error
 
     if closed:
-        closer = getattr(runtime, "closeSpline", None)
+        closer = getattr(runtime, "close", None)
         if not callable(closer):
-            return node, "3ds Max does not expose closeSpline"
+            return node, "3ds Max does not expose close"
         try:
             closer(node, 1)
         except Exception as exc:  # noqa: BLE001 - surface the host rejection.
-            return node, "closeSpline failed: {}".format(exc)
+            return node, "close failed: {}".format(exc)
 
     error = update_shape(runtime, node)
     if error:

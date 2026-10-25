@@ -125,6 +125,8 @@ def main(
         modifier.weldCore = bool(weld_core)
         modifier.flipNormals = bool(flip_normals)
         rt.addModifier(shape, modifier)
+        # Commit the whole matrix; nested axis wrappers are detached copies.
+        rt.setProperty(modifier, "axis", rt.Matrix3(1))
 
         if name is not None:
             shape.name = name
@@ -135,6 +137,29 @@ def main(
         readback_modifiers = list(getattr(node, "modifiers", [])) if node is not None else []
         point_count = int(rt.numKnots(node, 1)) if node is not None else 0
         readback_modifier = readback_modifiers[0] if len(readback_modifiers) == 1 else None
+        axis_matches = False
+        geometry_matches = False
+        bounds = None
+        if readback_modifier is not None:
+            axis = rt.getProperty(readback_modifier, "axis")
+            axis_position = axis.position
+            axis_scale = axis.scale
+            rotation = axis.rotation
+            axis_matches = (
+                all(math.isclose(float(getattr(axis_position, key)), 0.0, abs_tol=1e-6) for key in ("x", "y", "z"))
+                and all(math.isclose(float(getattr(axis_scale, key)), 1.0, abs_tol=1e-6) for key in ("x", "y", "z"))
+                and all(math.isclose(float(getattr(rotation, key)), 0.0, abs_tol=1e-6) for key in ("x", "y", "z"))
+                and math.isclose(abs(float(rotation.w)), 1.0, abs_tol=1e-6)
+            )
+            lo, hi = rt.nodeGetBoundingBox(node, rt.Matrix3(1))
+            minimum = [float(getattr(lo, key)) for key in ("x", "y", "z")]
+            maximum = [float(getattr(hi, key)) for key in ("x", "y", "z")]
+            bounds = {"min": minimum, "max": maximum, "size": [b - a for a, b in zip(minimum, maximum)]}
+            geometry_matches = (
+                all(math.isfinite(value) for value in minimum + maximum)
+                and math.isclose(minimum[2], min(p[1] for p in points), rel_tol=1e-5, abs_tol=1e-5)
+                and math.isclose(maximum[2], max(p[1] for p in points), rel_tol=1e-5, abs_tol=1e-5)
+            )
         readback_matches = (
             node is not None
             and int(getattr(node, "handle", -1)) == int(getattr(shape, "handle", -2))
@@ -144,6 +169,8 @@ def main(
             and int(readback_modifier.segs) == segments
             and bool(readback_modifier.weldCore) is weld_core
             and bool(readback_modifier.flipNormals) is flip_normals
+            and axis_matches
+            and geometry_matches
         )
     except Exception as exc:  # noqa: BLE001 - host failures return a typed, rolled-back envelope.
         rolled_back = shape is not None and _rollback(rt, shape)
@@ -180,6 +207,8 @@ def main(
             "node_name": node_name,
             "object_id": int(shape.handle) if hasattr(shape, "handle") else None,
             "profile_plane": "xz",
+            "axis": "z",
+            "bounds": bounds,
             "profile_point_count": point_count,
             "degrees": float(readback_modifier.degrees),
             "segments": int(readback_modifier.segs),

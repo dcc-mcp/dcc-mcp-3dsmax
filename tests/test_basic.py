@@ -1050,19 +1050,37 @@ class TestMenuIntegration:
     """Test generated 3ds Max menu/callback scripts."""
 
     def test_menu_script_contains_expected_commands(self):
-        """Menu script exposes runtime lifecycle and admin commands."""
+        """Menu script exposes diagnostics without manual lifecycle commands."""
         from dcc_mcp_3dsmax.menu import _menu_script_legacy
 
         script = _menu_script_legacy()
         assert 'menuMan.findMenu "DCC MCP"' in script
-        assert "DccMcp3dsmax_StartSidecar" in script
-        assert "dcc_mcp_3dsmax.main()" in script
-        assert "DccMcp3dsmax_StopSidecar" in script
+        assert "StartSidecar" not in script
+        assert "StopSidecar" not in script
         assert "DccMcp3dsmax_CopyInstanceId" in script
         assert "dcc_mcp_3dsmax.copy_instance_id()" in script
         assert "DccMcp3dsmax_OpenAdmin" in script
         assert "http://127.0.0.1:9765/admin?panel=instances" in script
         assert "DccMcp3dsmax_AboutDccMcp" in script
+        assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
+
+    def test_new_menu_rebuild_follows_callback_registration(self):
+        from dcc_mcp_3dsmax.menu import _menu_script_2025
+
+        script = "\n".join(line for line in _menu_script_2025().splitlines() if not line.strip().startswith("--"))
+        assert script.index("callbacks.addScript #cuiRegisterMenus") < script.index("cuiMenuMgr.LoadConfiguration")
+        assert "if cuiMenuMgr != undefined" in script
+        assert 'currentConfig != ""' in script
+
+    def test_new_menu_keeps_diagnostics_without_manual_lifecycle(self):
+        from dcc_mcp_3dsmax.menu import _menu_script_2025
+
+        script = _menu_script_2025()
+        assert "StartSidecar" not in script
+        assert "StopSidecar" not in script
+        assert "DccMcp3dsmax_CopyInstanceId" in script
+        assert "DccMcp3dsmax_OpenAdmin" in script
+        assert "dcc_mcp_3dsmax.print_status()" in script
         assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
 
     def test_public_print_status_matches_menu_macro(self):
@@ -1072,6 +1090,23 @@ class TestMenuIntegration:
 
         assert dcc_mcp_3dsmax.print_status is print_status
 
+    @pytest.mark.parametrize("new_menu", [False, True])
+    def test_menu_rebuild_preserves_shutdown_cleanup(self, monkeypatch, new_menu):
+        from dcc_mcp_3dsmax import menu
+
+        scripts = []
+        runtime = type("Runtime", (), {"execute": staticmethod(scripts.append)})()
+        monkeypatch.setattr(menu, "_runtime", lambda: runtime)
+        monkeypatch.setattr(menu, "_uses_new_menu_system", lambda: new_menu)
+        assert menu.install_menu()
+        assert len(scripts) == 3
+        assert 'macros.delete "DccMcp3dsmax_StartSidecar"' in scripts[0]
+        assert 'macros.delete "DccMcp3dsmax_StopSidecar"' in scripts[0]
+        assert "StartSidecar" not in scripts[1]
+        assert "StopSidecar" not in scripts[1]
+        assert "#preSystemShutdown" in scripts[2]
+        assert "stop_sidecar_bridge" in scripts[2]
+
     def test_shutdown_callback_stops_sidecar_before_max_shutdown(self):
         """Shutdown callback uses the early 3ds Max shutdown notification."""
         from dcc_mcp_3dsmax.menu import _shutdown_callback_script
@@ -1080,6 +1115,26 @@ class TestMenuIntegration:
         assert "#preSystemShutdown" in script
         assert "stop_sidecar_bridge" in script
         assert "persistent:false" in script
+
+    @pytest.mark.parametrize("new_menu", [False, True])
+    @pytest.mark.parametrize("failure_step", [0, 1])
+    def test_failed_menu_rebuild_restores_shutdown_cleanup(self, monkeypatch, new_menu, failure_step):
+        from dcc_mcp_3dsmax import menu
+
+        scripts = []
+
+        def execute(script):
+            scripts.append(script)
+            if len(scripts) == failure_step + 1:
+                raise RuntimeError("menu rebuild failed")
+
+        runtime = type("Runtime", (), {"execute": staticmethod(execute)})()
+        monkeypatch.setattr(menu, "_runtime", lambda: runtime)
+        monkeypatch.setattr(menu, "_uses_new_menu_system", lambda: new_menu)
+        with pytest.raises(RuntimeError, match="menu rebuild failed"):
+            menu.install_menu()
+        assert "#preSystemShutdown" in scripts[-1]
+        assert "stop_sidecar_bridge" in scripts[-1]
 
     def test_remove_menu_script_cleans_mcr_files(self):
         """remove_menu deletes persisted .mcr files from #userMacros."""
@@ -1096,6 +1151,14 @@ class TestMenuIntegration:
         # Idempotent — all cleanup wrapped in try/catch
         assert "deleteFile" in script
         assert "callbacks.removeScripts" in script
+
+    def test_legacy_menu_is_detached_and_unregistered_before_reinstall(self):
+        from dcc_mcp_3dsmax.menu import _remove_menu_script_legacy
+
+        script = _remove_menu_script_legacy()
+        assert "item.getSubMenu() == dccMenu" in script
+        assert script.index("mainMenuBar.removeItemByPosition i") < script.index("menuMan.unRegisterMenu dccMenu")
+        assert "mainMenuBar.removeItem i" not in script
 
 
 class TestSkillMetadata:

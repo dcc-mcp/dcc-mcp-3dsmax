@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -26,7 +27,8 @@ def normalize_scene_path(file_path: Any, *, must_exist: bool) -> Tuple[Optional[
 
 
 def _string_value(value: Any) -> str:
-    if callable(value):
+    # Native scalar wrappers can be callable without being functions.
+    if inspect.isroutine(value):
         value = value()
     return str(value).lstrip("#").strip() or "unknown"
 

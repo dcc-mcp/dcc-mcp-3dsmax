@@ -157,9 +157,9 @@ def main(
             return curve_error(error)
 
         if normalized_closed:
-            closer = getattr(rt, "closeSpline", None)
+            closer = getattr(rt, "close", None)
             if not callable(closer):
-                return curve_error("3ds Max does not expose closeSpline")
+                return curve_error("3ds Max does not expose close")
             closer(node, target_spline)
 
         stage = "commit_shape"

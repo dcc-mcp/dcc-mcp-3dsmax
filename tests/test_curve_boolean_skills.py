@@ -440,11 +440,11 @@ class FakeRuntime:
         return shape.splines[spline_index - 1].closed
 
     @staticmethod
-    def closeSpline(shape, spline_index):  # noqa: N802 - mirrors pymxs runtime naming.
+    def close(shape, spline_index):  # noqa: N802 - mirrors pymxs runtime naming.
         shape.splines[spline_index - 1].closed = True
 
     @staticmethod
-    def openSpline(shape, spline_index):  # noqa: N802 - mirrors pymxs runtime naming.
+    def open(shape, spline_index):  # noqa: N802 - mirrors pymxs runtime naming.
         shape.splines[spline_index - 1].closed = False
 
     @staticmethod
@@ -572,6 +572,25 @@ def test_draw_spline_creates_a_verified_world_space_spline(monkeypatch):
         [40.0, 0.0, 45.0],
         [90.0, 0.0, 5.0],
     ]
+
+
+def test_draw_spline_verifies_native_close(monkeypatch):
+    runtime = _install(monkeypatch, FakeRuntime())
+    module = _load(MODELING_DIR, "action_draw_spline.py")
+    result = module.main(points=[[0, 0, 0], [10, 0, 0], [0, 10, 0]], closed=True)
+    assert result["success"] is True, result
+    assert runtime.nodes[0].splines[0].closed is True
+
+
+def test_draw_spline_rolls_back_when_native_close_is_ignored(monkeypatch):
+    runtime = _install(monkeypatch, FakeRuntime())
+    monkeypatch.setattr(runtime, "close", lambda shape, index: None)
+    module = _load(MODELING_DIR, "action_draw_spline.py")
+    result = module.main(points=[[0, 0, 0], [10, 0, 0], [0, 10, 0]], closed=True)
+    assert result["success"] is False
+    assert result["data"]["mismatches"] == [{"field": "closed", "expected": True, "actual": False}]
+    assert result["data"]["rolled_back"] is True
+    assert runtime.nodes == []
 
 
 def test_draw_spline_fails_when_the_readback_position_differs(monkeypatch):

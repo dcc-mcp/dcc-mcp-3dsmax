@@ -61,12 +61,12 @@ class _Light:
 class _ArnoldAreaLight(_Light):
     def __init__(self, handle: int, name: str = "") -> None:
         super().__init__(handle, name)
-        self.type = 0
+        self.shapeType = 3
         self.units = 0
         self.exposure = 0.0
-        self.U_size = 10.0
-        self.V_size = 10.0
-        self.radius = 1.0
+        self.quadX = 10.0
+        self.quadY = 10.0
+        self.lightRadius = 1.0
         self.samples = 2
         self.spread = 1.0
         self.normalize = True
@@ -297,7 +297,7 @@ def test_capabilities_report_factory_availability_and_routing(monkeypatch):
     assert corona["available"] is True
     assert corona["kinds"]["area"]["available_factories"] == ["CoronaLight"]
     assert corona["kinds"]["sky"]["available"] is False
-    assert arnold["shapes"]["disk"] == 1
+    assert arnold["shapes"]["disk"] == 4
     assert arnold["controls"]["intensity"] == ["intensity", "aiIntensity"]
 
 
@@ -342,7 +342,7 @@ def test_capabilities_probe_reports_real_host_support_and_leaves_no_light(monkey
     assert area["controls"]["intensity"]["attributes"] == ["intensity"]
     assert area["controls"]["radius"]["exposed"] is True
     assert area["shapes"]["exposed"] is True
-    assert area["shapes"]["accepted"] == [0, 1, 2, 3]
+    assert area["shapes"]["accepted"] == list(range(9))
     assert runtime.objects == []
 
 
@@ -376,14 +376,14 @@ def test_create_arnold_light_verifies_shape_units_size_and_temperature(monkeypat
 
     assert result["success"] is True, result
     light = runtime.getNodeByName("KeyLight")
-    assert light.type == 1
+    assert light.shapeType == 4
     assert light.units == 2
     assert light.intensity == 4.0
     assert light.exposure == 2.0
     assert light.castShadows is False
-    assert light.U_size == 40.0
-    assert light.V_size == 20.0
-    assert light.radius == 3.0
+    assert light.quadX == 40.0
+    assert light.quadY == 20.0
+    assert light.lightRadius == 3.0
     assert light.samples == 3
     assert light.spread == 0.8
     assert light.normalize is False
@@ -454,12 +454,12 @@ def test_create_renderer_light_accepts_a_raw_enum_index(monkeypatch):
     runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
 
     result = _load_action("action_create_renderer_light.py").main(
-        name="RawShape", provider="arnold", shape_value=2, units_value=1
+        name="RawShape", provider="arnold", shape_value=5, units_value=1
     )
 
     assert result["success"] is True, result
     light = runtime.getNodeByName("RawShape")
-    assert light.type == 2
+    assert light.shapeType == 5
     assert light.units == 1
     assert result["data"]["lights"][0]["shape"] == "cylinder"
     assert result["data"]["lights"][0]["units"] == "w"
@@ -659,10 +659,10 @@ def test_set_light_properties_updates_shape_units_and_size_on_an_arnold_light(mo
 
     assert updated["success"] is True, updated
     light = runtime.getNodeByName("KeyLight")
-    assert light.type == 3
+    assert light.shapeType == 0
     assert light.units == 3
-    assert light.U_size == 8.0
-    assert light.V_size == 4.0
+    assert light.quadX == 8.0
+    assert light.quadY == 4.0
     assert light.intensity == 2.0
     assert light.castShadows is False
     assert updated["data"]["provider"] == "arnold"
@@ -884,3 +884,25 @@ def test_vray_provider_delegates_and_rejects_generic_only_fields(monkeypatch, tm
     rejected = _load_action("action_create_renderer_light.py").main(provider="vray", name="VrayBad", radius=2.0)
     assert rejected["success"] is False
     assert rejected["data"]["failure_reason"] == "light_spec_invalid"
+
+
+def test_native_arnold_light_uses_shape_type_and_quad_dimensions(monkeypatch):
+    runtime = _install_pymxs(monkeypatch, _ProviderRuntime("Arnold"))
+
+    def native_light():
+        light = runtime._make(_ArnoldAreaLight)
+        light.on = True
+        light.enabled = False
+        light.type = 0  # Generic light type must not shadow Arnold's shapeType.
+        return light
+
+    runtime.Arnold_Light = native_light
+    result = _load_action("action_create_renderer_light.py").main(
+        provider="arnold", name="NativeQuad", shape="quad", size_u=420, size_v=120
+    )
+    assert result["success"] is True, result
+    light = runtime.getNodeByName("NativeQuad")
+    assert light.shapeType == 3
+    assert light.type == 0
+    assert (light.quadX, light.quadY) == (420, 120)
+    assert result["data"]["lights"][0]["enabled"] is True
