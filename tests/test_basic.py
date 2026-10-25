@@ -1082,6 +1082,23 @@ class TestMenuIntegration:
 
         assert dcc_mcp_3dsmax.print_status is print_status
 
+    @pytest.mark.parametrize("new_menu", [False, True])
+    def test_menu_rebuild_preserves_shutdown_cleanup(self, monkeypatch, new_menu):
+        from dcc_mcp_3dsmax import menu
+
+        scripts = []
+        runtime = type("Runtime", (), {"execute": staticmethod(scripts.append)})()
+        monkeypatch.setattr(menu, "_runtime", lambda: runtime)
+        monkeypatch.setattr(menu, "_uses_new_menu_system", lambda: new_menu)
+        assert menu.install_menu()
+        assert len(scripts) == 3
+        assert 'macros.delete "DccMcp3dsmax_StartSidecar"' in scripts[0]
+        assert 'macros.delete "DccMcp3dsmax_StopSidecar"' in scripts[0]
+        assert "StartSidecar" not in scripts[1]
+        assert "StopSidecar" not in scripts[1]
+        assert "#preSystemShutdown" in scripts[2]
+        assert "stop_sidecar_bridge" in scripts[2]
+
     def test_shutdown_callback_stops_sidecar_before_max_shutdown(self):
         """Shutdown callback uses the early 3ds Max shutdown notification."""
         from dcc_mcp_3dsmax.menu import _shutdown_callback_script
