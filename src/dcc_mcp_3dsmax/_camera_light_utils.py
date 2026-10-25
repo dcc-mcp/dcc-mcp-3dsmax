@@ -347,7 +347,7 @@ def light_summary(node: Any, *, runtime: Any = None) -> Dict[str, Any]:
         "position": _vector_or_none(_read_first_attr(runtime, node, ("position", "pos"))),
         "target": _target_summary(_read_first_attr(runtime, node, ("target",))),
         "target_position": _vector_or_none(_read_first_attr(runtime, node, ("target_position",))),
-        "enabled": bool(_read_first_attr(runtime, node, ("enabled", "on"), True)),
+        "enabled": bool(_read_first_attr(runtime, node, ("on", "enabled"), True)),
         "intensity": _float_or_none(_read_first_attr(runtime, node, ("multiplier", "intensity"))),
         "color": _color_or_none(_read_first_attr(runtime, node, ("color",))),
         "shadows": bool(_read_first_attr(runtime, node, ("castShadows", "cast_shadows", "shadows"), False)),
