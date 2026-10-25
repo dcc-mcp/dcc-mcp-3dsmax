@@ -90,7 +90,8 @@ tools:
     produces: ['scene_nodes']
   - name: lathe_profile
     description: >-
-      Create a native 3ds Max Lathe stack from an ordered XZ-plane profile.
+      Create a native 3ds Max Lathe stack from an ordered XZ-plane profile,
+      revolving about the Z axis through the origin with verified height bounds.
       Use for bounded rotational forms such as bottles, columns, and vessels.
       Returns native scene readback for the profile and modifier options.
     source_file: action_lathe_profile.py

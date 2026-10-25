@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import types
 from pathlib import Path
@@ -27,12 +28,35 @@ class _SplineShape:
         self.modifiers = []
 
 
+class _Quat:
+    def __init__(self, x, y, z, w):
+        self.x, self.y, self.z, self.w = x, y, z, w
+
+
+class _Axis:
+    def __init__(self, ignore_rotation=False):
+        self.position = _Point3(0, 0, 0)
+        self.scale = _Point3(1, 1, 1)
+        self._rotation = _Quat(-math.sqrt(0.5), 0, 0, math.sqrt(0.5))
+        self.ignore_rotation = ignore_rotation
+
+    @property
+    def rotation(self):
+        return self._rotation
+
+    @rotation.setter
+    def rotation(self, value):
+        if not self.ignore_rotation:
+            self._rotation = value
+
+
 class _Lathe:
-    def __init__(self) -> None:
+    def __init__(self, ignore_rotation=False) -> None:
         self.degrees = 360.0
         self.segs = 16
         self.weldCore = True
         self.flipNormals = False
+        self.axis = _Axis(ignore_rotation)
 
 
 class _FakeMaxOps:
@@ -61,6 +85,7 @@ class _FakeRuntime:
         max_ops_missing: bool = False,
         max_ops_access_raises: bool = False,
         same_name_survivor: bool = False,
+        tamper_axis: bool = False,
     ) -> None:
         self.shape = None
         self.same_name_node = _SplineShape(handle=7) if same_name_survivor else None
@@ -72,6 +97,7 @@ class _FakeRuntime:
         self.max_ops_access_raises = max_ops_access_raises
         self._max_ops = None if max_ops_missing else _FakeMaxOps(self)
         self.deleted = []
+        self.tamper_axis = tamper_axis
 
     @property
     def maxOps(self):  # noqa: N802 - mirrors the native runtime interface owner.
@@ -105,9 +131,28 @@ class _FakeRuntime:
         assert shape is self.shape
         self.updated = True
 
+    def Lathe(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        return _Lathe(self.tamper_axis)
+
+    Quat = staticmethod(_Quat)
+    Matrix3 = staticmethod(lambda value: value)
+
     @staticmethod
-    def Lathe():  # noqa: N802 - mirrors pymxs runtime naming.
-        return _Lathe()
+    def nodeGetBoundingBox(shape, matrix):  # noqa: N802 - native geometry surface.
+        modifier = shape.modifiers[0]
+        vertices = []
+        for point in shape.splines[0]:
+            for index in range(modifier.segs + 1):
+                angle = math.radians(modifier.degrees * index / modifier.segs)
+                c, s = math.cos(angle), math.sin(angle)
+                if abs(modifier.axis.rotation.w) == 1:
+                    vertices.append((point.x * c, point.x * s, point.z))
+                else:
+                    vertices.append((point.x * c + point.z * s, 0, -point.x * s + point.z * c))
+        return (
+            _Point3(*(min(v[i] for v in vertices) for i in range(3))),
+            _Point3(*(max(v[i] for v in vertices) for i in range(3))),
+        )
 
     def addModifier(self, shape, modifier):  # noqa: N802 - mirrors pymxs runtime naming.
         if self.fail_add_modifier:
@@ -164,12 +209,34 @@ def test_lathe_profile_runs_through_executor_and_reads_back_native_state(monkeyp
         "node_name": "lathed_vase",
         "object_id": 42,
         "profile_plane": "xz",
+        "axis": "z",
+        "bounds": {"min": [-12.0, -12.0, 0.0], "max": [12.0, 12.0, 20.0], "size": [24.0, 24.0, 20.0]},
         "profile_point_count": 4,
         "degrees": 270.0,
         "segments": 24,
         "weld_core": False,
         "flip_normals": True,
     }
+
+
+@pytest.mark.parametrize("tamper_axis", [False, True])
+def test_lathe_profile_revolves_xz_radius_height_about_z(monkeypatch, tamper_axis):
+    runtime = _FakeRuntime(tamper_axis=tamper_axis)
+    monkeypatch.setitem(sys.modules, "pymxs", types.SimpleNamespace(runtime=runtime))
+    from dcc_mcp_3dsmax._executor import run_skill_script
+
+    result = run_skill_script(
+        str(SKILL_DIR / "action_lathe_profile.py"),
+        {"profile_points": [[112, 0], [220, 0], [220, 34], [112, 34]], "segments": 128},
+    )
+    if tamper_axis:
+        assert not result["success"] and result["data"]["rolled_back"]
+    else:
+        assert result["success"]
+        lo, hi = runtime.nodeGetBoundingBox(runtime.shape, 1)
+        assert [hi.x - lo.x, hi.y - lo.y, hi.z - lo.z] == pytest.approx([440, 440, 34])
+        assert result["data"]["axis"] == "z"
+        assert result["data"]["bounds"]["size"] == pytest.approx([440, 440, 34])
 
 
 @pytest.mark.parametrize(
