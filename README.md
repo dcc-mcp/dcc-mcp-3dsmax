@@ -140,9 +140,9 @@ random-port `/dispatch` bridge remains available for local diagnostics. The
 See `docs/SIDECAR.md` and the bundled skill index in
 `docs/BUNDLED_SKILLS.md`.
 
-The bootstrap also installs a `DCC MCP` menu with Start Server, Stop Server,
-Open Gateway Admin, and Print Status commands. 3ds Max shutdown triggers the
-same stop path via `#preSystemShutdown`, so the runtime and local bridges are
+The bootstrap also installs a `DCC MCP` menu with Copy Instance ID,
+Open Gateway Admin, Server Info, and About commands. Runtime startup is automatic.
+3ds Max shutdown triggers cleanup via `#preSystemShutdown`, so the runtime and local bridges are
 cleaned up when the host exits.
 
 ## Skill Development

@@ -1050,19 +1050,29 @@ class TestMenuIntegration:
     """Test generated 3ds Max menu/callback scripts."""
 
     def test_menu_script_contains_expected_commands(self):
-        """Menu script exposes runtime lifecycle and admin commands."""
+        """Menu script exposes diagnostics without manual lifecycle commands."""
         from dcc_mcp_3dsmax.menu import _menu_script_legacy
 
         script = _menu_script_legacy()
         assert 'menuMan.findMenu "DCC MCP"' in script
-        assert "DccMcp3dsmax_StartSidecar" in script
-        assert "dcc_mcp_3dsmax.main()" in script
-        assert "DccMcp3dsmax_StopSidecar" in script
+        assert "StartSidecar" not in script
+        assert "StopSidecar" not in script
         assert "DccMcp3dsmax_CopyInstanceId" in script
         assert "dcc_mcp_3dsmax.copy_instance_id()" in script
         assert "DccMcp3dsmax_OpenAdmin" in script
         assert "http://127.0.0.1:9765/admin?panel=instances" in script
         assert "DccMcp3dsmax_AboutDccMcp" in script
+        assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
+
+    def test_new_menu_keeps_diagnostics_without_manual_lifecycle(self):
+        from dcc_mcp_3dsmax.menu import _menu_script_2025
+
+        script = _menu_script_2025()
+        assert "StartSidecar" not in script
+        assert "StopSidecar" not in script
+        assert "DccMcp3dsmax_CopyInstanceId" in script
+        assert "DccMcp3dsmax_OpenAdmin" in script
+        assert "dcc_mcp_3dsmax.print_status()" in script
         assert "dcc_mcp_3dsmax.about_dcc_mcp()" in script
 
     def test_public_print_status_matches_menu_macro(self):
