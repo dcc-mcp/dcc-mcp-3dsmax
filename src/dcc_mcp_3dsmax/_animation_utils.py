@@ -156,7 +156,11 @@ def _key_with_pymxs_animation(
     with contextlib.ExitStack() as stack:
         stack.enter_context(animate(True))
         stack.enter_context(attime(frame))
+        position = getattr(node, "position", None) if property_name == "rotation" else None
         setattr(node, property_name, converted)
+        # Max's world rotation setter also orbits the pivot around the scene origin.
+        if position is not None:
+            node.position = position
     return True
 
 
@@ -271,9 +275,7 @@ def _native_key_indices(runtime: Any, controller: Any, frames: Optional[Sequence
     return matches
 
 
-def _native_keyframe_rows(
-    runtime: Any, node: Any, properties: Sequence[str]
-) -> List[Dict[str, Any]]:
+def _native_keyframe_rows(runtime: Any, node: Any, properties: Sequence[str]) -> List[Dict[str, Any]]:
     rows = []
     seen = set()
     get_time = getattr(runtime, "getKeyTime", None)
@@ -294,9 +296,7 @@ def _native_keyframe_rows(
     return rows
 
 
-def _set_native_interpolation(
-    runtime: Any, node: Any, *, interpolation: str, frames: Optional[Sequence[float]]
-) -> int:
+def _set_native_interpolation(runtime: Any, node: Any, *, interpolation: str, frames: Optional[Sequence[float]]) -> int:
     tangent = {"bezier": "custom", "auto": "smooth"}.get(interpolation, interpolation)
     set_in = getattr(runtime, "setInTangentType", None)
     set_out = getattr(runtime, "setOutTangentType", None)

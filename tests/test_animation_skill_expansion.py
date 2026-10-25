@@ -208,9 +208,7 @@ def test_interpolation_and_delete_update_native_controller_keys(monkeypatch):
         node_names=["hero_mesh"], interpolation="linear"
     )
     listed = _load_action("action_list_keyframes.py").main(node_names=["hero_mesh"])
-    deleted = _load_action("action_delete_keyframes.py").main(
-        node_names=["hero_mesh"], properties=["rotation"]
-    )
+    deleted = _load_action("action_delete_keyframes.py").main(node_names=["hero_mesh"], properties=["rotation"])
 
     assert interpolated["data"]["changes"][0]["native_changed_key_count"] == 6
     assert listed["data"]["nodes"][0]["count"] == 2
@@ -222,9 +220,11 @@ def test_interpolation_and_delete_update_native_controller_keys(monkeypatch):
 def test_timeline_changes_fps_before_constructing_native_tick_interval(monkeypatch):
     runtime = _install_fake_pymxs(monkeypatch)
     rates = []
+
     def interval(start, end):
         rates.append(runtime.frameRate)
         return types.SimpleNamespace(start=start, end=end)
+
     runtime.Interval = interval
     result = _load_action("action_set_timeline_settings.py").main(start_frame=1, end_frame=144, frame_rate=24)
     assert result["success"] is True, result
