@@ -80,14 +80,42 @@ def create_camera(
             else:
                 warnings.append("No supported target-object constructor was available")
     if focal_length is not None:
-        _set_optional_attr(camera, "focalLength", float(focal_length))
-        _set_optional_attr(camera, "focal_length", float(focal_length))
+        requested = float(focal_length)
+        aliases = ("focal_length_mm", "focalLength", "focal_length")
+        applied = _set_supported_attrs(runtime, camera, aliases, requested)
+        actual = _read_first_attr(runtime, camera, aliases)
+        getter = getattr(runtime, "getProperty", None)
+        if callable(getter):
+            actual = None
+            for attr in aliases:
+                if not _runtime_has_property(runtime, camera, attr):
+                    continue
+                try:
+                    actual = getter(camera, attr)
+                    break
+                except Exception:  # noqa: BLE001 - cached wrapper attributes are not native readback.
+                    continue
+        actual = _float_or_none(actual)
+        if not applied or actual is None or not math.isclose(actual, requested, rel_tol=1e-6, abs_tol=1e-6):
+            supported = any(_runtime_has_property(runtime, camera, attr) for attr in aliases)
+            owned = [_owned_light(runtime, node) for node in (camera, target) if node is not None]
+            incomplete = _rollback_owned_nodes(runtime, owned)
+            return cam_error(
+                "Camera focal length did not pass native readback",
+                field="focal_length",
+                requested=requested,
+                actual=actual,
+                supported=supported,
+                rolled_back=not incomplete,
+                changed_node_count=len(incomplete),
+                rollback_incomplete_handles=[handle for _node, handle, _summary in incomplete if handle is not None],
+            )
     _append_scene_object(runtime, camera)
     if target is not None:
         _append_scene_object(runtime, target)
     return cam_success(
         "Created camera",
-        camera=camera_summary(camera),
+        camera=dict(camera_summary(camera), **({"focal_length": actual} if focal_length is not None else {})),
         changed_node_count=1 + int(target is not None),
         warnings=warnings,
     )
@@ -331,7 +359,9 @@ def camera_summary(node: Any) -> Dict[str, Any]:
         "position": _vector_or_none(getattr(node, "position", None)),
         "target": _target_summary(getattr(node, "target", None)),
         "target_position": _vector_or_none(getattr(node, "target_position", None)),
-        "focal_length": _float_or_none(getattr(node, "focalLength", getattr(node, "focal_length", None))),
+        "focal_length": _float_or_none(
+            getattr(node, "focal_length_mm", getattr(node, "focalLength", getattr(node, "focal_length", None)))
+        ),
         "enabled": bool(getattr(node, "enabled", True)),
     }
 
