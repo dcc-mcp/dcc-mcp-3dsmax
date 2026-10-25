@@ -27,6 +27,10 @@ through the DCC-MCP skill loader.
 | `3dsmax-scripting` | authoring | `3dsmax-scripting__execute_python`, `3dsmax-scripting__execute_maxscript`, `3dsmax-scripting__run_python_check`, `3dsmax-scripting__list_runtime_symbols`, `3dsmax-scripting__inspect_runtime_symbol`, `3dsmax-scripting__list_macros`, `3dsmax-scripting__resolve_node_reference`, `3dsmax-scripting__reload_adapter_module` |
 | `3dsmax-undo` | authoring | `3dsmax-undo__undo_last`, `3dsmax-undo__redo_last`, `3dsmax-undo__get_undo_status` |
 
+Before modeling an empty scene, `3dsmax-scene__set_scene_units` configures native
+system unit type and scale with readback. It refuses populated scenes and does
+not rescale objects or alter display units.
+
 Every bundled tool declares:
 
 - a concrete `source_file` inside its skill directory

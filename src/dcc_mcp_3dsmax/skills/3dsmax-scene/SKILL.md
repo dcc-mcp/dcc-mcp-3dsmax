@@ -4,7 +4,7 @@ description: >-
   Domain skill - open, save, merge, inspect, and manage scenes and objects in
   the current Autodesk 3ds Max session. Use for typed scene lifecycle, nodes,
   cameras, selection, visibility, parenting, grouping, pivots, transforms,
-  scene metadata, or object cleanup.
+  scene metadata, empty-scene system units, or object cleanup.
 license: MIT
 compatibility: "dcc-mcp-core 0.17+, 3ds Max 2024+"
 metadata:
@@ -17,7 +17,7 @@ metadata:
     tags: "3dsmax, scene, lifecycle, open, save, merge, external max file, inspect, search, nodes, cameras, selection, visibility, transforms, properties, rename, clone, orientation, hierarchy, instances, dependencies, query, selection-sets, groups"
     tools: tools.yaml
     intent: "Run verified scene lifecycle operations and manage 3ds Max scene objects."
-    search_aliases: ["scene", "scene io", "open max", "save max", "merge max"]
+    search_aliases: ["scene", "scene io", "open max", "save max", "merge max", "system units", "millimeters"]
     recall_context:
       app_type: "3dsmax"
       domain: "scene"
