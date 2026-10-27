@@ -39,8 +39,20 @@ def _snapshot(runtime: Any, node: Any, spline_index: int, knot_total: int) -> Li
     return snapshot
 
 
-def _restore(runtime: Any, node: Any, spline_index: int, snapshot: Sequence[Dict[str, Any]]) -> bool:
-    """Write a captured knot state back onto the spline."""
+def _restore(
+    runtime: Any,
+    node: Any,
+    spline_index: int,
+    snapshot: Sequence[Dict[str, Any]],
+    original_closed: Optional[bool],
+) -> bool:
+    """Write a captured knot and closed state back onto the spline.
+
+    ``closed`` is as much a part of the spline state as the knots: ``close`` /
+    ``open`` mutate it during an edit, so a rollback that only rewrites knots
+    would leave a half-rolled-back curve. The closed flag is restored and read
+    back before the caller can claim the scene is untouched.
+    """
     restored = True
     for knot in snapshot:
         make_point = getattr(runtime, "Point3", None)
@@ -60,7 +72,25 @@ def _restore(runtime: Any, node: Any, spline_index: int, snapshot: Sequence[Dict
         )
         if error:
             restored = False
+    if original_closed is not None:
+        closer = getattr(runtime, "close", None)
+        opener = getattr(runtime, "open", None)
+        toggle = (closer if original_closed else opener)
+        if callable(toggle):
+            toggle(node, spline_index)
+        else:
+            restored = False
     update_shape(runtime, node)
+    if original_closed is not None:
+        is_closed = getattr(runtime, "isClosed", None)
+        if not callable(is_closed):
+            restored = False
+        else:
+            try:
+                if bool(is_closed(node, spline_index)) is not original_closed:
+                    restored = False
+            except Exception:  # noqa: BLE001 - an unverifiable restore must fail closed.
+                restored = False
     return restored
 
 
@@ -160,6 +190,9 @@ def main(
             captured=len(snapshot),
         )
 
+    spline_before = next((item for item in before["splines"] if item["index"] == normalized_index), None)
+    original_closed = spline_before.get("closed") if spline_before is not None else None
+
     try:
         for edit in edits:
             make_point = getattr(rt, "Point3", None)
@@ -202,9 +235,9 @@ def main(
         # Edits are applied knot by knot, so a failure part-way through leaves
         # earlier knots written. Say what the restore actually achieved rather
         # than claiming the scene is untouched.
-        restored = _restore(rt, node, normalized_index, snapshot)
+        restored = _restore(rt, node, normalized_index, snapshot, original_closed)
         return curve_error(
-            "edit_curve failed; the captured knot state was {}restored".format(
+            "edit_curve failed; the captured spline state was {}restored".format(
                 "" if restored else "not "
             ),
             failure_stage="apply_edits",
@@ -262,7 +295,7 @@ def main(
             )
 
     if mismatches:
-        restored = _restore(rt, node, normalized_index, snapshot)
+        restored = _restore(rt, node, normalized_index, snapshot, original_closed)
         return curve_error(
             "the edited knots did not pass world-space readback",
             failure_stage="readback_edit",

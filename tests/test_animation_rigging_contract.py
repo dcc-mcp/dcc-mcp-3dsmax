@@ -552,3 +552,68 @@ def test_rotation_key_preserves_world_pivot_position(monkeypatch):
     )
     assert result["success"] is True, result
     assert node.position == [100, 80, 10]
+
+
+def test_rotation_only_key_does_not_author_a_position_key(monkeypatch):
+    """A rotation-only key must not write node.position inside animate(True)."""
+    runtime = _Runtime()
+
+    class _AnimState:
+        active = False
+
+    state = _AnimState()
+
+    class _AnimateContext:
+        def __init__(self, enabled):
+            self.enabled = enabled
+
+        def __enter__(self):
+            state.active = bool(self.enabled)
+            return self
+
+        def __exit__(self, *_args):
+            state.active = False
+            return None
+
+    class _AttimeContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class _TrackingNode(_Node):
+        def __init__(self, name, handle):
+            super().__init__(name, handle)
+            self.position_keys = []
+
+        def __setattr__(self, key, value):
+            # In Max, a property write inside animate(True) authors a key.
+            if key == "position" and state.active and hasattr(self, "position_keys"):
+                self.position_keys.append(list(value))
+            if key == "rotation" and hasattr(self, "position"):
+                # Native pivot orbit is an internal side-effect, not a
+                # MAXScript property assignment, so it bypasses the tracker.
+                object.__setattr__(self, "position", [0, 0, 0])
+            object.__setattr__(self, key, value)
+
+    node = _TrackingNode("rotor_main", 1)
+    node.position = [100, 80, 10]
+    runtime.objects[0] = node
+    monkeypatch.setitem(
+        sys.modules,
+        "pymxs",
+        types.SimpleNamespace(
+            runtime=runtime,
+            animate=lambda _enabled: _AnimateContext(_enabled),
+            attime=lambda _frame: _AttimeContext(),
+        ),
+    )
+    from dcc_mcp_3dsmax._animation_contract import set_keyframes
+
+    result = set_keyframes(
+        runtime, node_names=["rotor_main"], keys=[{"frame": 1, "property": "rotation", "value": [0, 0, -45]}]
+    )
+    assert result["success"] is True, result
+    assert node.position == [100, 80, 10]  # pivot restored
+    assert node.position_keys == []  # but no spurious position key was authored

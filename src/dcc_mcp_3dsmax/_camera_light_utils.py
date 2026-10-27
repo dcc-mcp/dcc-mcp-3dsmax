@@ -56,6 +56,25 @@ def create_camera(
     focal_length: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Create a host-native camera node."""
+    # Validate the requested lens before constructing any node. A non-numeric
+    # value (for example "65mm") would otherwise raise from float() after the
+    # camera and target already exist, leaking them with no rollback path.
+    requested_focal_length = None
+    if focal_length is not None:
+        try:
+            requested_focal_length = float(focal_length)
+        except (TypeError, ValueError):
+            return cam_error(
+                "focal_length must be a finite number",
+                field="focal_length",
+                requested=focal_length,
+            )
+        if not math.isfinite(requested_focal_length):
+            return cam_error(
+                "focal_length must be a finite number",
+                field="focal_length",
+                requested=focal_length,
+            )
     factories = CAMERA_FACTORIES.get(camera_type)
     if factories is None:
         return cam_error("Unsupported camera_type", camera_type=camera_type)
@@ -79,8 +98,8 @@ def create_camera(
                 _set_optional_attr(camera, "target", target)
             else:
                 warnings.append("No supported target-object constructor was available")
-    if focal_length is not None:
-        requested = float(focal_length)
+    if requested_focal_length is not None:
+        requested = requested_focal_length
         aliases = ("focal_length_mm", "focalLength", "focal_length")
         applied = _set_supported_attrs(runtime, camera, aliases, requested)
         actual = _read_first_attr(runtime, camera, aliases)

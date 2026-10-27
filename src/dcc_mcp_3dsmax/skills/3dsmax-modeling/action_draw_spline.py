@@ -28,6 +28,102 @@ def _validation_error(message: str) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": {}}
 
 
+def _capture_splines(rt: Any, node: Any) -> Optional[List[Dict[str, Any]]]:
+    """Snapshot every spline so a failed append/replace can be rolled back."""
+    state, error = read_spline_state(rt, node)
+    if error:
+        return None
+    return state["splines"]
+
+
+def _spline_states_match(captured: Sequence[Dict[str, Any]], actual: Sequence[Dict[str, Any]]) -> bool:
+    """Compare two ``read_spline_state`` spline lists by their writable fields."""
+    if len(captured) != len(actual):
+        return False
+    for before, after in zip(captured, actual):
+        before_closed, after_closed = before.get("closed"), after.get("closed")
+        if (
+            before_closed is not None
+            and after_closed is not None
+            and bool(before_closed) != bool(after_closed)
+        ):
+            return False
+        before_knots = before.get("knots") or []
+        after_knots = after.get("knots") or []
+        if len(before_knots) != len(after_knots):
+            return False
+        for a, b in zip(before_knots, after_knots):
+            if not positions_match(a.get("position") or [0, 0, 0], b.get("position") or [0, 0, 0]):
+                return False
+            a_type, b_type = (a.get("knot_type") or "").lower(), (b.get("knot_type") or "").lower()
+            if a_type and b_type and a_type != b_type:
+                return False
+    return True
+
+
+def _restore_splines(rt: Any, node: Any, splines: Sequence[Dict[str, Any]]) -> bool:
+    """Rebuild a captured spline state with native calls and verify it.
+
+    Returns True only when the whole shape (knots, handles, types and closed
+    flags) reads back equal to ``splines``. Any host failure returns False, so
+    the caller reports an unverified rollback rather than an untouched scene.
+    """
+    from dcc_mcp_3dsmax._curve_utils import append_knots, set_knot_value, spline_count
+
+    delete_spline = getattr(rt, "deleteSpline", None)
+    add_new_spline = getattr(rt, "addNewSpline", None)
+    make_point = getattr(rt, "Point3", None)
+    if not callable(delete_spline) or not callable(add_new_spline) or not callable(make_point):
+        return False
+    try:
+        current, error = spline_count(rt, node)
+        if error or current is None:
+            return False
+        for _ in range(int(current)):
+            delete_spline(node, 1)
+        for spline in splines:
+            add_new_spline(node)
+            count, count_error = spline_count(rt, node)
+            if count_error or count is None:
+                return False
+            index = int(count)
+            knots = spline.get("knots") or []
+            # Create the knots first: the position/handle writers need them to exist.
+            for knot in knots:
+                local = knot.get("local_position")
+                if local is None:
+                    return False
+                if append_knots(
+                    rt, node, index, [make_point(*local)],
+                    knot.get("knot_type") or "corner", curve_type="line",
+                ):
+                    return False
+            for knot in knots:
+                if set_knot_value(
+                    rt, node, index, int(knot["index"]),
+                    position=make_point(*knot["local_position"]),
+                    in_vec=make_point(*(knot.get("in_vec") or [0.0, 0.0, 0.0])),
+                    out_vec=make_point(*(knot.get("out_vec") or [0.0, 0.0, 0.0])),
+                    knot_type=knot.get("knot_type"),
+                ):
+                    return False
+            closed = spline.get("closed")
+            if closed is not None:
+                toggle = getattr(rt, "close" if closed else "open", None)
+                if not callable(toggle):
+                    return False
+                toggle(node, index)
+            if update_shape(rt, node):
+                return False
+    except Exception:  # noqa: BLE001 - an unverifiable rollback must fail closed.
+        return False
+
+    after, error = read_spline_state(rt, node)
+    if error:
+        return False
+    return _spline_states_match(splines, after["splines"])
+
+
 @with_max
 def main(
     points: Sequence[Sequence[float]],
@@ -67,7 +163,20 @@ def main(
     node = None
     created_node = False
     previous_knot_count = 0
+    existing_splines: Optional[List[Dict[str, Any]]] = None
     stage = "resolve_target"
+
+    def _fail(message: str, **details: Any) -> Dict[str, Any]:
+        """Roll back whatever this call mutated and report the verified result."""
+        if created_node and node is not None:
+            rolled_back = delete_node(rt, node)
+        elif existing_splines is not None and node is not None:
+            rolled_back = _restore_splines(rt, node, existing_splines)
+        else:
+            rolled_back = False
+        details.setdefault("node", node_identity(node) if node is not None else None)
+        details["rolled_back"] = rolled_back
+        return curve_error(message, **details)
 
     try:
         if normalized_mode == "create":
@@ -106,6 +215,10 @@ def main(
                     spline_count=count,
                 )
             target_spline = normalized_index
+            # Capture the whole shape before any mutation. Every failure below
+            # (mapping, knot write, close, commit, readback) must be able to put
+            # an existing shape back exactly as it was.
+            existing_splines = _capture_splines(rt, node)
 
             if normalized_mode == "append" and normalized_index > count:
                 add_new_spline = getattr(rt, "addNewSpline", None)
@@ -126,7 +239,7 @@ def main(
                 delete_spline(node, target_spline)
                 add_new_spline = getattr(rt, "addNewSpline", None)
                 if not callable(add_new_spline):
-                    return curve_error("3ds Max does not expose addNewSpline")
+                    return _fail("3ds Max does not expose addNewSpline")
                 add_new_spline(node)
                 # deleteSpline shifts every higher index down and addNewSpline
                 # appends at the end, so the rebuilt spline lands at index
@@ -139,7 +252,7 @@ def main(
         for index, point in enumerate(normalized_points):
             local, error = world_to_object(rt, node, point)
             if error:
-                return curve_error("point[{}] could not be placed: {}".format(index, error))
+                return _fail("point[{}] could not be placed: {}".format(index, error))
             local_points.append(local)
 
         stage = "write_knots"
@@ -154,18 +267,18 @@ def main(
             curve_type=normalized_curve_type,
         )
         if error:
-            return curve_error(error)
+            return _fail(error)
 
         if normalized_closed:
             closer = getattr(rt, "close", None)
             if not callable(closer):
-                return curve_error("3ds Max does not expose close")
+                return _fail("3ds Max does not expose close")
             closer(node, target_spline)
 
         stage = "commit_shape"
         error = update_shape(rt, node)
         if error:
-            return curve_error(error)
+            return _fail(error)
 
         if normalized_name is not None:
             node.name = normalized_name
@@ -173,10 +286,10 @@ def main(
         stage = "readback_spline"
         state, error = read_spline_state(rt, node)
         if error:
-            return curve_error(error)
+            return _fail(error)
         spline = next((item for item in state["splines"] if item["index"] == target_spline), None)
         if spline is None:
-            return curve_error(
+            return _fail(
                 "the shape has no spline at index {} after the write".format(target_spline),
                 spline_count=state["spline_count"],
             )
@@ -207,13 +320,11 @@ def main(
             mismatches.append({"field": "closed", "expected": True, "actual": spline["closed"]})
 
         if mismatches:
-            rolled_back = delete_node(rt, node) if created_node else False
-            return curve_error(
+            return _fail(
                 "the spline did not pass world-space readback",
                 failure_stage="readback_spline",
                 node=node_identity(node),
                 mismatches=mismatches,
-                rolled_back=rolled_back,
             )
 
         return curve_success(
@@ -227,11 +338,9 @@ def main(
             spline_count=state["spline_count"],
         )
     except Exception as exc:  # noqa: BLE001 - host failures return a typed, rolled-back envelope.
-        rolled_back = delete_node(rt, node) if (created_node and node is not None) else False
-        return curve_error(
+        return _fail(
             "draw_spline failed during {}".format(stage),
             failure_stage=stage,
             exception_type=type(exc).__name__,
             exception=str(exc),
-            rolled_back=rolled_back,
         )

@@ -311,29 +311,39 @@ def main(
                 details["discarded_replacement"] = discarded
                 return curve_error(message, **details)
 
-            for local in local_points:
-                knot_error = append_knots(
-                    rt, node, target_spline, [local], normalized_knot_type, curve_type=normalized_curve_type
-                )
-                if knot_error:
-                    return _abort_replacement(knot_error)
-            if closed_flag:
-                closer = getattr(rt, "close", None)
-                if not callable(closer):
-                    return _abort_replacement("3ds Max does not expose close")
-                closer(node, target_spline)
-            update_error = update_shape(rt, node)
-            if update_error:
-                return _abort_replacement(update_error)
+            # Raw host calls such as close() can throw. Without this guard the
+            # outer handler only removes a node created in "create" mode, so an
+            # update failure would leak the replacement spline at `count + 1`.
+            try:
+                for local in local_points:
+                    knot_error = append_knots(
+                        rt, node, target_spline, [local], normalized_knot_type, curve_type=normalized_curve_type
+                    )
+                    if knot_error:
+                        return _abort_replacement(knot_error)
+                if closed_flag:
+                    closer = getattr(rt, "close", None)
+                    if not callable(closer):
+                        return _abort_replacement("3ds Max does not expose close")
+                    closer(node, target_spline)
+                update_error = update_shape(rt, node)
+                if update_error:
+                    return _abort_replacement(update_error)
 
-            stale, verify_error = verify_world_points(
-                rt, node, target_spline, world_points, expected_closed=closed_flag
-            )
-            if verify_error:
-                return _abort_replacement(verify_error)
-            if stale:
+                stale, verify_error = verify_world_points(
+                    rt, node, target_spline, world_points, expected_closed=closed_flag
+                )
+                if verify_error:
+                    return _abort_replacement(verify_error)
+                if stale:
+                    return _abort_replacement(
+                        "the regenerated profile did not pass world-space readback", mismatches=stale
+                    )
+            except Exception as exc:  # noqa: BLE001 - host failures must discard the replacement.
                 return _abort_replacement(
-                    "the regenerated profile did not pass world-space readback", mismatches=stale
+                    "curve_model failed while building the replacement spline",
+                    exception_type=type(exc).__name__,
+                    exception=str(exc),
                 )
 
             # Verified, so the old spline can be dropped and the index re-checked.
