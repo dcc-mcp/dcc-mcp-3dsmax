@@ -50,6 +50,7 @@ class _FakeNode:
 class _FakeRuntime:
     def __init__(self) -> None:
         self._next_handle = 100
+        self.constructed = []
         self.camera = _FakeNode("main_camera", 42, "TargetCamera")
         self.camera.position = [1.0, 2.0, 3.0]
         self.camera.focalLength = 35
@@ -65,6 +66,7 @@ class _FakeRuntime:
     def _make_node(self, name: str, class_name: str):
         node = _FakeNode(name, self._next_handle, class_name)
         self._next_handle += 1
+        self.constructed.append(node)
         return node
 
     def getNodeByName(self, name):  # noqa: N802 - mirrors pymxs runtime naming.
@@ -209,6 +211,25 @@ def test_failed_requested_lens_rolls_back_only_owned_camera_and_target(monkeypat
     assert result["data"]["changed_node_count"] == 0
     assert {node.name for node in deleted} == {"unsupported_lens", "unsupported_lens.Target"}
     assert all(node in runtime.objects for node in (runtime.camera, runtime.light, runtime.mesh))
+
+
+def test_invalid_focal_length_is_rejected_before_constructing_nodes(monkeypatch):
+    """A non-numeric lens must fail closed without leaking camera/target nodes."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    from dcc_mcp_3dsmax._camera_light_utils import create_camera
+
+    result = create_camera(
+        runtime,
+        name="bad_lens",
+        focal_length="65mm",
+        target_position=[0, 0, 0],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["field"] == "focal_length"
+    # Validation happens before any constructor, so nothing can leak.
+    assert runtime.constructed == []
+    assert runtime.getNodeByName("bad_lens") is None
 
 
 def test_active_camera_uses_runtime_class_for_pymxs_wrapper(monkeypatch):

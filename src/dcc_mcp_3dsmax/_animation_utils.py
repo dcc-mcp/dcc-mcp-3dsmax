@@ -153,14 +153,19 @@ def _key_with_pymxs_animation(
     constructor = getattr(runtime, constructor_name, None)
     if callable(constructor):
         converted = constructor(*value)
+    # Max's world rotation setter orbits the pivot around the scene origin, so
+    # remember the pivot before the write.
+    position = getattr(node, "position", None) if property_name == "rotation" else None
     with contextlib.ExitStack() as stack:
         stack.enter_context(animate(True))
         stack.enter_context(attime(frame))
-        position = getattr(node, "position", None) if property_name == "rotation" else None
         setattr(node, property_name, converted)
-        # Max's world rotation setter also orbits the pivot around the scene origin.
-        if position is not None:
-            node.position = position
+    # The pivot is restored only after animate()/attime() are both off. Writing
+    # ``node.position`` inside ``animate(True)`` would author a spurious
+    # position key for what the caller requested as a rotation-only key; a
+    # restore outside the animation context keeps position a constant instead.
+    if position is not None:
+        node.position = position
     return True
 
 

@@ -2250,6 +2250,168 @@ def test_edit_curve_rollback_restores_the_knot_type(monkeypatch):
     assert knot["knot_type"] == "corner"
 
 
+# ── Regression tests for the native authoring review (PR #236) ─────────
+
+
+def _open_curve_with_token(monkeypatch, runtime):
+    """Draw an open three-knot spline and return its inspect token."""
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    draw.main(points=[[0, 0, 0], [25, 0, 10], [50, 0, 0]], name="curve_a")
+    token = inspect.main(node_name="curve_a")["data"]["token"]
+    assert inspect.main(node_name="curve_a")["data"]["splines"][0]["closed"] is False
+    return inspect, token
+
+
+def test_edit_curve_rollback_restores_the_closed_state(monkeypatch):
+    """A failed edit that toggled ``closed`` must put the flag back."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    inspect, token = _open_curve_with_token(monkeypatch, runtime)
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    # close() succeeds, then the commit fails: the spline is left closed unless
+    # the rollback also restores the flag captured before the edit.
+    def failing_commit(shape):
+        raise RuntimeError("commit refused by host")
+
+    monkeypatch.setattr(runtime, "updateShape", failing_commit)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+        closed=True,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "apply_edits"
+    assert result["data"]["restored"] is True
+    assert inspect.main(node_name="curve_a")["data"]["splines"][0]["closed"] is False
+
+
+def test_edit_curve_reports_an_unrestorable_closed_state(monkeypatch):
+    """If the host refuses to reopen the spline, restored must be False."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    inspect, token = _open_curve_with_token(monkeypatch, runtime)
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    def failing_commit(shape):
+        raise RuntimeError("commit refused by host")
+
+    monkeypatch.setattr(runtime, "updateShape", failing_commit)
+    # The host ignores open(), so the closed flag cannot be rolled back.
+    monkeypatch.setattr(runtime, "open", lambda shape, index: None)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+        closed=True,
+    )
+
+    assert result["success"] is False
+    # The closed readback disagrees with the captured state, so the rollback
+    # cannot claim the scene is untouched.
+    assert result["data"]["restored"] is False
+
+
+def test_curve_model_update_discards_replacement_when_close_raises(monkeypatch):
+    """A host exception in close() must not leak the half-built spline."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    model = _load(MODELING_DIR, "action_curve_model.py")
+
+    model.main(action="create", name="profile_a", profile="rectangle", width=40, height=20)
+    before = inspect.main(node_name="profile_a")
+    original_knots = [knot["position"] for knot in before["data"]["splines"][0]["knots"]]
+
+    def failing_close(shape, spline_index):
+        raise RuntimeError("close refused by host")
+
+    monkeypatch.setattr(runtime, "close", failing_close)
+    # A rectangle is a closed profile, so the replacement build calls close().
+    result = model.main(
+        action="update",
+        name="profile_a",
+        node_name="profile_a",
+        profile="rectangle",
+        width=80,
+        height=20,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["discarded_replacement"] is True
+    after = inspect.main(node_name="profile_a")
+    assert after["data"]["spline_count"] == 1
+    assert [knot["position"] for knot in after["data"]["splines"][0]["knots"]] == original_knots
+
+
+@pytest.mark.parametrize(
+    "mode, spline_index",
+    [("append", 1), ("append", 2), ("replace", 1)],
+)
+def test_draw_spline_restores_existing_shape_on_readback_failure(monkeypatch, mode, spline_index):
+    """A failed append/replace must rebuild the pre-existing shape."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+
+    created = draw.main(points=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], name="shape_a")
+    assert created["success"] is True, created
+    before = inspect.main(node_name="shape_a")
+    original_knots = [knot["position"] for knot in before["data"]["splines"][0]["knots"]]
+
+    # close() is ignored, so the readback fails on the closed flag after the
+    # knots/splines were already mutated.
+    monkeypatch.setattr(runtime, "close", lambda shape, index: None)
+    result = draw.main(
+        points=[[20.0, 0.0, 0.0], [30.0, 0.0, 0.0]],
+        mode=mode,
+        node_name="shape_a",
+        spline_index=spline_index,
+        closed=True,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    after = inspect.main(node_name="shape_a")
+    assert after["data"]["spline_count"] == 1
+    assert [knot["position"] for knot in after["data"]["splines"][0]["knots"]] == original_knots
+    assert after["data"]["splines"][0]["closed"] is False
+
+
+def test_draw_spline_restores_existing_shape_when_close_raises(monkeypatch):
+    """A host exception after close() wrote must still roll back the shape."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+
+    draw.main(points=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], name="shape_a")
+    before = inspect.main(node_name="shape_a")
+    original_knots = [knot["position"] for knot in before["data"]["splines"][0]["knots"]]
+
+    def exploding_close(shape, index):
+        # Apply the flag (a partial write) before the host raises.
+        shape.splines[index - 1].closed = True
+        raise RuntimeError("close failed after write")
+
+    monkeypatch.setattr(runtime, "close", exploding_close)
+    result = draw.main(
+        points=[[20.0, 0.0, 0.0], [30.0, 0.0, 0.0]],
+        mode="append",
+        node_name="shape_a",
+        closed=True,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    after = inspect.main(node_name="shape_a")
+    assert after["data"]["spline_count"] == 1
+    assert [knot["position"] for knot in after["data"]["splines"][0]["knots"]] == original_knots
+    # The half-written closed flag was reverted to the captured open state.
+    assert after["data"]["splines"][0]["closed"] is False
+
+
 # ── Regression tests for the third review round ───────────────────────
 
 
