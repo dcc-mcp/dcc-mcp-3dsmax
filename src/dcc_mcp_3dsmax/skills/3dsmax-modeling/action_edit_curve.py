@@ -54,43 +54,44 @@ def _restore(
     back before the caller can claim the scene is untouched.
     """
     restored = True
-    for knot in snapshot:
-        make_point = getattr(runtime, "Point3", None)
-        if not callable(make_point):
-            return False
-        error = set_knot_value(
-            runtime,
-            node,
-            spline_index,
-            int(knot["index"]),
-            position=make_point(*[float(component) for component in knot["local_position"]]),
-            in_vec=make_point(*[float(component) for component in knot["in_vec"]]),
-            out_vec=make_point(*[float(component) for component in knot["out_vec"]]),
-            # The knot type is part of the captured state: restoring positions
-            # but not types would leave a half-rolled-back spline.
-            knot_type=knot.get("knot_type"),
-        )
-        if error:
-            restored = False
-    if original_closed is not None:
-        closer = getattr(runtime, "close", None)
-        opener = getattr(runtime, "open", None)
-        toggle = (closer if original_closed else opener)
-        if callable(toggle):
-            toggle(node, spline_index)
-        else:
-            restored = False
-    update_shape(runtime, node)
-    if original_closed is not None:
-        is_closed = getattr(runtime, "isClosed", None)
-        if not callable(is_closed):
-            restored = False
-        else:
-            try:
-                if bool(is_closed(node, spline_index)) is not original_closed:
-                    restored = False
-            except Exception:  # noqa: BLE001 - an unverifiable restore must fail closed.
+    try:
+        for knot in snapshot:
+            make_point = getattr(runtime, "Point3", None)
+            if not callable(make_point):
+                return False
+            error = set_knot_value(
+                runtime,
+                node,
+                spline_index,
+                int(knot["index"]),
+                position=make_point(*[float(component) for component in knot["local_position"]]),
+                in_vec=make_point(*[float(component) for component in knot["in_vec"]]),
+                out_vec=make_point(*[float(component) for component in knot["out_vec"]]),
+                # The knot type is part of the captured state: restoring positions
+                # but not types would leave a half-rolled-back spline.
+                knot_type=knot.get("knot_type"),
+            )
+            if error:
                 restored = False
+        if original_closed is not None:
+            closer = getattr(runtime, "close", None)
+            opener = getattr(runtime, "open", None)
+            toggle = (closer if original_closed else opener)
+            if callable(toggle):
+                toggle(node, spline_index)
+            else:
+                restored = False
+        update_shape(runtime, node)
+        if original_closed is not None:
+            is_closed = getattr(runtime, "isClosed", None)
+            if not callable(is_closed):
+                restored = False
+            elif bool(is_closed(node, spline_index)) is not original_closed:
+                restored = False
+    except Exception:  # noqa: BLE001 - a host failure during rollback must still
+        # return the structured ``restored=False`` envelope, not propagate out
+        # of the caller's except handler and become a generic error.
+        return False
     return restored
 
 

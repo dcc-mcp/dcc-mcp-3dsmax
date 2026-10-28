@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import math
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -78,7 +77,25 @@ def set_timeline(
     actual = time_settings(runtime)
     expected = {"frame_start": start, "frame_end": end, "frame_rate": rate}
     if errors or any(actual[key] != value for key, value in expected.items()):
-        return anim_error("Timeline settings did not verify", requested=expected, settings=actual, errors=errors)
+        # _set_scene_timeline already mutated frameRate / animationRange. A
+        # verification failure must replay the captured timeline and verify the
+        # scene is back, or the caller is left with a half-changed scene while
+        # being told the operation failed. Report the verified restore result.
+        restore_errors = _set_scene_timeline(
+            runtime, current["frame_rate"], current["frame_start"], current["frame_end"]
+        )
+        after_restore = time_settings(runtime)
+        restored = not restore_errors and all(
+            after_restore[key] == current[key] for key in expected
+        )
+        return anim_error(
+            "Timeline settings did not verify",
+            requested=expected,
+            settings=actual,
+            errors=errors,
+            restored=restored,
+            restored_settings=after_restore,
+        )
     return anim_success("Updated timeline settings", settings=actual)
 
 
@@ -153,19 +170,23 @@ def _key_with_pymxs_animation(
     constructor = getattr(runtime, constructor_name, None)
     if callable(constructor):
         converted = constructor(*value)
-    # Max's world rotation setter orbits the pivot around the scene origin, so
-    # remember the pivot before the write.
-    position = getattr(node, "position", None) if property_name == "rotation" else None
-    with contextlib.ExitStack() as stack:
-        stack.enter_context(animate(True))
-        stack.enter_context(attime(frame))
-        setattr(node, property_name, converted)
-    # The pivot is restored only after animate()/attime() are both off. Writing
-    # ``node.position`` inside ``animate(True)`` would author a spurious
-    # position key for what the caller requested as a rotation-only key; a
-    # restore outside the animation context keeps position a constant instead.
-    if position is not None:
-        node.position = position
+    # The pivot capture and restore must both happen inside ``attime(frame)``.
+    # Max's world rotation setter orbits the pivot around the scene origin; for
+    # an already-animated position its value depends on the current frame, so
+    # capturing it before ``attime`` (at the wrong frame) would write that
+    # foreign-frame value onto the keyed frame. Capture at the keyed frame, then
+    # restore after ``animate(True)`` is off so no spurious position key is
+    # authored, but still within ``attime(frame)`` so the keyed frame is fixed.
+    with attime(frame):
+        # Capture the pivot at the keyed frame, before the rotation write orbits
+        # it, but outside animate(True) so a plain read never touches a key.
+        position = getattr(node, "position", None) if property_name == "rotation" else None
+        with animate(True):
+            setattr(node, property_name, converted)
+        # animate is now off but we are still inside attime(frame): put the
+        # keyed-frame pivot back without authoring a spurious position key.
+        if position is not None:
+            node.position = position
     return True
 
 

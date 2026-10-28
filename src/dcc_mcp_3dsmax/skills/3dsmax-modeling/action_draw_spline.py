@@ -28,16 +28,26 @@ def _validation_error(message: str) -> Dict[str, Any]:
     return {"success": False, "status": "error", "message": message, "data": {}}
 
 
-def _capture_splines(rt: Any, node: Any) -> Optional[List[Dict[str, Any]]]:
-    """Snapshot every spline so a failed append/replace can be rolled back."""
+def _capture_splines(rt: Any, node: Any) -> Optional[Dict[str, Any]]:
+    """Snapshot the shape (splines + name) so a failed append/replace can be rolled back.
+
+    The node name is part of the reversible state: this call may rename the node
+    before readback, so a failed write must also put the original name back.
+    """
     state, error = read_spline_state(rt, node)
     if error:
         return None
-    return state["splines"]
+    return {"splines": state["splines"], "name": str(getattr(node, "name", ""))}
 
 
 def _spline_states_match(captured: Sequence[Dict[str, Any]], actual: Sequence[Dict[str, Any]]) -> bool:
-    """Compare two ``read_spline_state`` spline lists by their writable fields."""
+    """Compare two ``read_spline_state`` spline lists by every writable field.
+
+    Positions and both Bezier handle vectors are compared with the same
+    tolerance used for world-space readback. Ignoring the handles would let a
+    rollback that changed a curve's in/out tangents report ``rolled_back=True``
+    while the shape was no longer the one the caller had.
+    """
     if len(captured) != len(actual):
         return False
     for before, after in zip(captured, actual):
@@ -58,7 +68,29 @@ def _spline_states_match(captured: Sequence[Dict[str, Any]], actual: Sequence[Di
             a_type, b_type = (a.get("knot_type") or "").lower(), (b.get("knot_type") or "").lower()
             if a_type and b_type and a_type != b_type:
                 return False
+            # Bezier in/out handles are writable spline state. A rollback that
+            # rebuilds a curved spline must reproduce them, and a readback that
+            # silently changed them must fail the verification instead of
+            # claiming the scene is untouched.
+            for field in ("in_vec", "out_vec"):
+                a_vec = a.get(field) or [0.0, 0.0, 0.0]
+                b_vec = b.get(field) or [0.0, 0.0, 0.0]
+                if not positions_match(a_vec, b_vec):
+                    return False
     return True
+
+
+def _spline_curve_type(spline: Dict[str, Any]) -> str:
+    """Return the native segment type that preserves a captured spline's shape.
+
+    A corner-only spline is a straight polyline; any bezier/smooth knot means
+    curved segments, which must be rebuilt as ``curve`` rather than ``line``.
+    The in/out tangents themselves are rewritten by ``set_knot_value``.
+    """
+    for knot in spline.get("knots") or []:
+        if (knot.get("knot_type") or "").lower() in ("bezier", "beziercorner", "smooth"):
+            return "curve"
+    return "line"
 
 
 def _restore_splines(rt: Any, node: Any, splines: Sequence[Dict[str, Any]]) -> bool:
@@ -88,6 +120,10 @@ def _restore_splines(rt: Any, node: Any, splines: Sequence[Dict[str, Any]]) -> b
                 return False
             index = int(count)
             knots = spline.get("knots") or []
+            # Rebuild the spline with its original segment type: rebuilding a
+            # curved spline as straight ``line`` segments would degrade it even
+            # when the positions, types and handles all read back correctly.
+            curve_type = _spline_curve_type(spline)
             # Create the knots first: the position/handle writers need them to exist.
             for knot in knots:
                 local = knot.get("local_position")
@@ -95,7 +131,7 @@ def _restore_splines(rt: Any, node: Any, splines: Sequence[Dict[str, Any]]) -> b
                     return False
                 if append_knots(
                     rt, node, index, [make_point(*local)],
-                    knot.get("knot_type") or "corner", curve_type="line",
+                    knot.get("knot_type") or "corner", curve_type=curve_type,
                 ):
                     return False
             for knot in knots:
@@ -163,7 +199,7 @@ def main(
     node = None
     created_node = False
     previous_knot_count = 0
-    existing_splines: Optional[List[Dict[str, Any]]] = None
+    existing_splines: Optional[Dict[str, Any]] = None
     stage = "resolve_target"
 
     def _fail(message: str, **details: Any) -> Dict[str, Any]:
@@ -171,7 +207,18 @@ def main(
         if created_node and node is not None:
             rolled_back = delete_node(rt, node)
         elif existing_splines is not None and node is not None:
-            rolled_back = _restore_splines(rt, node, existing_splines)
+            rolled_back = _restore_splines(rt, node, existing_splines["splines"])
+            # A rename applied before readback must not survive a failed write.
+            # Only claim a verified rollback when the original name is back too.
+            original_name = existing_splines.get("name")
+            if original_name is not None:
+                try:
+                    if str(getattr(node, "name", "")) != original_name:
+                        node.name = original_name
+                    name_restored = str(getattr(node, "name", "")) == original_name
+                except Exception:  # noqa: BLE001 - an unverifiable rename revert fails closed.
+                    name_restored = False
+                rolled_back = rolled_back and name_restored
         else:
             rolled_back = False
         details.setdefault("node", node_identity(node) if node is not None else None)

@@ -238,3 +238,43 @@ def test_timeline_refuses_success_when_host_ignores_fps(monkeypatch):
     result = _load_action("action_set_timeline_settings.py").main(start_frame=1, end_frame=144, frame_rate=24)
     assert result["success"] is False
     assert result["data"]["settings"]["frame_rate"] == 30
+
+
+def test_timeline_replays_original_settings_when_verification_fails(monkeypatch):
+    """A failed timeline write must put the original settings back, not leave
+    frame rate / animation range half-changed while reporting an error.
+    """
+    runtime = _install_fake_pymxs(monkeypatch)
+    # Host accepts the range but ignores fps writes, so readback verification
+    # fails after _set_scene_timeline already mutated the scene.
+    monkeypatch.setattr(type(runtime), "frameRate", property(lambda self: 30, lambda self, value: None), raising=False)
+
+    result = _load_action("action_set_timeline_settings.py").main(start_frame=1, end_frame=144, frame_rate=24)
+
+    assert result["success"] is False
+    assert result["data"]["restored"] is True
+    # The original range is replayed and verified, not left at the failed value.
+    assert runtime.animationRange.start == 1
+    assert runtime.animationRange.end == 24
+    assert result["data"]["restored_settings"]["frame_end"] == 24
+
+
+def test_timeline_reports_when_the_restore_cannot_be_verified(monkeypatch):
+    """If the host refuses even the restore write, restored must be False."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    monkeypatch.setattr(type(runtime), "frameRate", property(lambda self: 30, lambda self, value: None), raising=False)
+
+    original_interval = runtime.Interval
+
+    def rejecting_interval(start, end):
+        # Reject the restore write (start == 1, the original) but accept the
+        # forward write (start == 1 too) -- reject only short (restore) ranges.
+        if end == 24:
+            raise RuntimeError("range write refused by host")
+        return original_interval(start, end)
+
+    runtime.Interval = rejecting_interval
+    result = _load_action("action_set_timeline_settings.py").main(start_frame=1, end_frame=144, frame_rate=24)
+
+    assert result["success"] is False
+    assert result["data"]["restored"] is False
