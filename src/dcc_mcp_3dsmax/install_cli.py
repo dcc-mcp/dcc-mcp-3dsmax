@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from .__version__ import __version__ as ADAPTER_VERSION
 
@@ -2250,18 +2250,46 @@ def _physical_path_identity(path: Path) -> List[int]:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
-def _file_identity(file_stat: os.stat_result) -> Tuple[int, int]:
-    return int(file_stat.st_dev), int(file_stat.st_ino)
+def _file_identity(target: Union[Path, int]) -> Tuple[int, int]:
+    if os.name != "nt":
+        value = os.fstat(target) if isinstance(target, int) else os.lstat(str(target))
+        return int(value.st_dev), int(value.st_ino)
+    if not isinstance(target, int):
+        with target.open("rb") as stream:
+            return _file_identity(stream.fileno())
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileIdInformation(ctypes.Structure):
+        _fields_ = [("volume", ctypes.c_ulonglong), ("file_id", ctypes.c_ubyte * 16)]
+
+    query = ctypes.windll.kernel32.GetFileInformationByHandleEx
+    query.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    query.restype = wintypes.BOOL
+    information = FileIdInformation()
+    # FileIdInfo preserves the full native identity; st_dev changed in Python 3.12.
+    if not query(msvcrt.get_osfhandle(target), 18, ctypes.byref(information), ctypes.sizeof(information)):
+        raise ctypes.WinError()
+    return int(information.volume), int.from_bytes(bytes(information.file_id), "little")
 
 
-def _identity_record(identity: Optional[Tuple[int, int]]) -> Optional[Dict[str, int]]:
+def _identity_record(identity: Optional[Tuple[int, int]]) -> Optional[Dict[str, Any]]:
     if identity is None:
         return None
-    return {"device": identity[0], "inode": identity[1]}
+    record = {"device": identity[0], "inode": identity[1]}  # type: Dict[str, Any]
+    if os.name == "nt":
+        record["scheme"] = "windows-file-id-v1"
+    return record
 
 
 def _is_identity_record(value: Any) -> bool:
-    return isinstance(value, dict) and type(value.get("device")) is int and type(value.get("inode")) is int
+    return (
+        isinstance(value, dict)
+        and type(value.get("device")) is int
+        and type(value.get("inode")) is int
+        and value.get("scheme") == ("windows-file-id-v1" if os.name == "nt" else None)
+    )
 
 
 def _identity_record_matches(value: Any, identity: Tuple[int, int]) -> bool:
@@ -2289,19 +2317,23 @@ def _read_independent_file(path: Path) -> Tuple[bytes, Tuple[int, int]]:
     before = os.lstat(str(path))
     if not _is_independent_regular_file(before):
         raise OSError("file is not independent")
-    identity = _file_identity(before)
+    stat_identity = (before.st_dev, before.st_ino)
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
-        if not _is_independent_regular_file(opened) or _file_identity(opened) != identity:
+        if not _is_independent_regular_file(opened) or (opened.st_dev, opened.st_ino) != stat_identity:
             raise OSError("file identity changed before read")
+        identity = _file_identity(stream.fileno())
         content = stream.read()
         after_read = os.fstat(stream.fileno())
+        after_identity = _file_identity(stream.fileno())
     after = os.lstat(str(path))
     if (
         not _is_independent_regular_file(after_read)
         or not _is_independent_regular_file(after)
-        or _file_identity(after_read) != identity
-        or _file_identity(after) != identity
+        or (after_read.st_dev, after_read.st_ino) != stat_identity
+        or (after.st_dev, after.st_ino) != stat_identity
+        or after_identity != identity
+        or _file_identity(path) != identity
     ):
         raise OSError("file identity changed during read")
     return content, identity
@@ -2386,7 +2418,7 @@ def _restore(path: Path, content: Optional[bytes]) -> Optional[Tuple[int, int]]:
         temp_stat = os.lstat(str(temp))
         if not _is_independent_regular_file(temp_stat):
             raise OSError("restore staging file is not independent")
-        restored_identity = _file_identity(temp_stat)
+        restored_identity = _file_identity(temp)
         _replace_file(temp, path)
         return restored_identity
     finally:
@@ -2548,18 +2580,22 @@ def _owned_snapshot_matches(path: Path, expected: Any) -> bool:
     try:
         before = os.lstat(str(path))
         reparse = bool(getattr(before, "st_file_attributes", 0) & 0x400)
-        if not stat.S_ISREG(before.st_mode) or reparse or _file_identity(before) != snapshot.identity:
+        if not stat.S_ISREG(before.st_mode) or reparse or _file_identity(path) != snapshot.identity:
             return False
         with path.open("rb") as stream:
             opened = os.fstat(stream.fileno())
-            if _file_identity(opened) != snapshot.identity:
+            if not stat.S_ISREG(opened.st_mode) or _file_identity(stream.fileno()) != snapshot.identity:
                 return False
             content = stream.read()
             after_open = os.fstat(stream.fileno())
+            after_identity = _file_identity(stream.fileno())
         after = os.lstat(str(path))
         return (
-            _file_identity(after_open) == snapshot.identity
-            and _file_identity(after) == snapshot.identity
+            stat.S_ISREG(after_open.st_mode)
+            and stat.S_ISREG(after.st_mode)
+            and not getattr(after, "st_file_attributes", 0) & 0x400
+            and after_identity == snapshot.identity
+            and _file_identity(path) == snapshot.identity
             and content == snapshot.content
             and hashlib.sha256(content).hexdigest() == snapshot.sha256
         )
@@ -2639,7 +2675,7 @@ def _collapse_private_publication(primary: Path, stage: Path) -> None:
         or not stat.S_ISREG(stage_stat.st_mode)
         or primary_reparse
         or stage_reparse
-        or _file_identity(primary_stat) != _file_identity(stage_stat)
+        or _file_identity(primary) != _file_identity(stage)
         or primary_stat.st_nlink != 2
         or stage_stat.st_nlink != 2
     ):
@@ -2896,7 +2932,7 @@ def _write_staged_receipt(path: Path, receipt: Dict[str, Any]) -> None:
     staged = os.lstat(str(path))
     if not _is_independent_regular_file(staged):
         raise OSError("receipt staging file is not independent")
-    identity = _file_identity(staged)
+    identity = _file_identity(path)
     receipt["receipt_identity"] = _identity_record(identity)
     path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     _, verified_identity = _read_independent_file(path)

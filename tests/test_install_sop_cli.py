@@ -721,8 +721,8 @@ def test_dry_run_rejects_an_aliased_preexisting_hook_without_mutation(
     monkeypatch.setattr(cli, "_install_package", lambda *_args: mutations.append("package_install"))
     monkeypatch.setattr(cli, "_replace_file", lambda *_args: mutations.append("file_replace"))
     hook_content = hook.read_bytes()
-    hook_identity = cli._file_identity(os.lstat(str(hook)))
-    foreign_identity = cli._file_identity(os.lstat(str(foreign)))
+    hook_identity = cli._file_identity(hook)
+    foreign_identity = cli._file_identity(foreign)
 
     exit_code = cli.main(_args(layout, verb, "--dry-run"))
     report = _report(cli, capsys)
@@ -737,8 +737,8 @@ def test_dry_run_rejects_an_aliased_preexisting_hook_without_mutation(
     assert mutations == []
     assert not layout["receipt"].exists()
     assert hook.read_bytes() == hook_content
-    assert cli._file_identity(os.lstat(str(hook))) == hook_identity
-    assert cli._file_identity(os.lstat(str(foreign))) == foreign_identity
+    assert cli._file_identity(hook) == hook_identity
+    assert cli._file_identity(foreign) == foreign_identity
 
 
 @pytest.mark.parametrize("verb", ["install", "upgrade", "uninstall"])
@@ -757,9 +757,9 @@ def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
         _install_for_verify(cli, layout, capsys, monkeypatch)
     receipt = layout["receipt"]
     hook_before = hook.read_bytes()
-    hook_identity = cli._file_identity(os.lstat(str(hook)))
+    hook_identity = cli._file_identity(hook)
     receipt_before = receipt.read_bytes() if receipt.exists() else None
-    receipt_identity = cli._file_identity(os.lstat(str(receipt))) if receipt.exists() else None
+    receipt_identity = cli._file_identity(receipt) if receipt.exists() else None
     target = hook if drift_target == "hook" else receipt
     concurrent_content = target.read_bytes() if target.exists() else b"concurrent receipt"
     concurrent_identity = []
@@ -770,7 +770,7 @@ def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
         replacement = tmp_path / ("concurrent-%s-%s" % (verb, drift_target))
         replacement.write_bytes(concurrent_content)
         os.replace(str(replacement), str(target))
-        concurrent_identity.append(cli._file_identity(os.lstat(str(target))))
+        concurrent_identity.append(cli._file_identity(target))
         before = args[-1] if isinstance(args[-1], dict) else None
         return {"before": before, "after": before} if before is not None else {}
 
@@ -797,16 +797,16 @@ def test_public_mutations_preserve_concurrent_identity_on_snapshot_commit_drift(
     }
     assert package_calls == ["apply", "restore"]
     assert target.read_bytes() == concurrent_content
-    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+    assert cli._file_identity(target) == concurrent_identity[0]
     if drift_target == "receipt":
         assert hook.read_bytes() == hook_before
-        assert cli._file_identity(os.lstat(str(hook))) == hook_identity
+        assert cli._file_identity(hook) == hook_identity
     else:
         if receipt_before is None:
             assert not os.path.lexists(str(receipt))
         else:
             assert receipt.read_bytes() == receipt_before
-            assert cli._file_identity(os.lstat(str(receipt))) == receipt_identity
+            assert cli._file_identity(receipt) == receipt_identity
 
 
 @pytest.mark.parametrize("verb", ["install", "upgrade"])
@@ -832,7 +832,7 @@ def test_install_commit_does_not_clobber_identity_created_after_atomic_claim(
         if path == target:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(concurrent_content)
-            concurrent_identity.append(cli._file_identity(os.lstat(str(path))))
+            concurrent_identity.append(cli._file_identity(path))
         return claimed
 
     monkeypatch.setattr(cli, "_claim_file_if_snapshot", claim_then_drift, raising=False)
@@ -846,7 +846,7 @@ def test_install_commit_does_not_clobber_identity_created_after_atomic_claim(
     assert report["status"] == "failed"
     assert report["verify"]["failure_stage"] in {"commit", "rollback"}
     assert target.read_bytes() == concurrent_content
-    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+    assert cli._file_identity(target) == concurrent_identity[0]
 
 
 @pytest.mark.parametrize("mutation", ["restore", "unlink"])
@@ -868,7 +868,7 @@ def test_uninstall_commit_does_not_clobber_identity_created_after_atomic_claim(
         if path == target:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(concurrent_content)
-            concurrent_identity.append(cli._file_identity(os.lstat(str(path))))
+            concurrent_identity.append(cli._file_identity(path))
         return claimed
 
     monkeypatch.setattr(cli, "_claim_file_if_snapshot", claim_then_drift, raising=False)
@@ -881,7 +881,7 @@ def test_uninstall_commit_does_not_clobber_identity_created_after_atomic_claim(
     assert report["status"] == "failed"
     assert report["verify"]["failure_stage"] in {"commit", "rollback"}
     assert target.read_bytes() == concurrent_content
-    assert cli._file_identity(os.lstat(str(target))) == concurrent_identity[0]
+    assert cli._file_identity(target) == concurrent_identity[0]
 
 
 def test_replace_records_may_have_committed_before_fallible_postcheck(tmp_path, monkeypatch) -> None:
@@ -916,7 +916,7 @@ def test_preflight_recovers_owned_claim_after_keyboard_interrupt(tmp_path, capsy
     hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
     hook.parent.mkdir(parents=True)
     hook.write_bytes(b"original hook")
-    original_identity = cli._file_identity(os.lstat(str(hook)))
+    original_identity = cli._file_identity(hook)
     real_replace = cli._replace_file
 
     def interrupt_after_claim(_source, _destination):
@@ -938,7 +938,7 @@ def test_preflight_recovers_owned_claim_after_keyboard_interrupt(tmp_path, capsy
     cli._preflight_ownership(cli._context(args))
 
     assert hook.read_bytes() == b"original hook"
-    assert cli._file_identity(os.lstat(str(hook))) == original_identity
+    assert cli._file_identity(hook) == original_identity
     assert list(tmp_path.rglob(".*.transaction-*.json")) == []
     assert list(tmp_path.rglob(".*.claim-*")) == []
 
@@ -957,7 +957,7 @@ def test_preflight_preserves_contender_and_durable_claim_after_interrupt(tmp_pat
         cli.main(_args(layout, "install", "--yes"))
 
     hook.write_bytes(b"concurrent contender")
-    contender_identity = cli._file_identity(os.lstat(str(hook)))
+    contender_identity = cli._file_identity(hook)
     monkeypatch.setattr(cli, "_replace_file", real_replace)
 
     exit_code = cli.main(_args(layout, "install", "--dry-run"))
@@ -970,7 +970,7 @@ def test_preflight_preserves_contender_and_durable_claim_after_interrupt(tmp_pat
         "failure_reason": "transaction_recovery_required",
     }
     assert hook.read_bytes() == b"concurrent contender"
-    assert cli._file_identity(os.lstat(str(hook))) == contender_identity
+    assert cli._file_identity(hook) == contender_identity
     journals = list(tmp_path.rglob(".*.transaction-*.json"))
     assert len(journals) == 1
     journal = json.loads(journals[0].read_text(encoding="utf-8"))
@@ -1123,8 +1123,8 @@ def test_public_ownership_verbs_reject_same_bytes_identity_substitution_without_
     else:
         foreign.write_bytes(target.read_bytes())
         os.replace(str(foreign), str(target))
-    hook_identity = cli._file_identity(os.lstat(str(hook)))
-    receipt_identity = cli._file_identity(os.lstat(str(receipt)))
+    hook_identity = cli._file_identity(hook)
+    receipt_identity = cli._file_identity(receipt)
     hook_content = hook.read_bytes()
     receipt_content = receipt.read_bytes()
     package_calls = []
@@ -1148,8 +1148,8 @@ def test_public_ownership_verbs_reject_same_bytes_identity_substitution_without_
     assert package_calls == []
     assert hook.read_bytes() == hook_content
     assert receipt.read_bytes() == receipt_content
-    assert cli._file_identity(os.lstat(str(hook))) == hook_identity
-    assert cli._file_identity(os.lstat(str(receipt))) == receipt_identity
+    assert cli._file_identity(hook) == hook_identity
+    assert cli._file_identity(receipt) == receipt_identity
 
 
 def test_receipt_persists_receipt_hook_and_previous_hook_identities(tmp_path, capsys, monkeypatch) -> None:
@@ -1158,13 +1158,13 @@ def test_receipt_persists_receipt_hook_and_previous_hook_identities(tmp_path, ca
     hook = layout["startup"] / cli.STARTUP_SCRIPT_NAME
     hook.parent.mkdir(parents=True)
     hook.write_bytes(b"preexisting hook")
-    previous_identity = cli._file_identity(os.lstat(str(hook)))
+    previous_identity = cli._file_identity(hook)
 
     _install_for_verify(cli, layout, capsys, monkeypatch)
 
     receipt = json.loads(layout["receipt"].read_text(encoding="utf-8"))
-    assert receipt["receipt_identity"] == cli._identity_record(cli._file_identity(os.lstat(str(layout["receipt"]))))
-    assert receipt["artifacts"][0]["identity"] == cli._identity_record(cli._file_identity(os.lstat(str(hook))))
+    assert receipt["receipt_identity"] == cli._identity_record(cli._file_identity(layout["receipt"]))
+    assert receipt["artifacts"][0]["identity"] == cli._identity_record(cli._file_identity(hook))
     assert receipt["previous_hook"]["identity"] == cli._identity_record(previous_identity)
 
 
