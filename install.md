@@ -104,7 +104,17 @@ Verification checks receipt ownership, independent regular-file identity, and
 digests; symlink, reparse-point, and hardlink aliases fail closed even when the
 bytes match. The receipt persists both its own file identity and the installed
 hook identity, so replacing either with an independent same-bytes file also
-fails closed. It imports the exact adapter and Core versions in the selected
+fails closed. New Windows ownership records use the versioned
+`windows-file-id-v1` scheme with the full native volume and 128-bit file ID,
+not Python's version-dependent `st_dev`. Receipt, hook, previous-hook and
+transaction identities can therefore be checked across Python versions.
+Untagged legacy Windows records remain fail closed; they are not rewritten or
+matched by truncating the device ID. Keep the original adapter and lifecycle
+interpreter available for receipted uninstall before a fresh installation.
+Preserve unresolved legacy transaction journals for recovery with that original
+runtime; do not remove them manually.
+
+Verification imports the exact adapter and Core versions in the selected
 interpreter, checks bootstrap-error records, and waits for the typed
 `3dsmax-animation__get_time_settings` sidecar probe. This bundled read-only
 query runs through host dispatch without changing the timeline or requiring
