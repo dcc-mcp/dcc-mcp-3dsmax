@@ -1159,3 +1159,41 @@ def test_create_object_rejects_silently_ignored_final_position(monkeypatch):
     assert result["success"] is False
     assert result["message"] == "Object placement did not verify"
     assert result["data"]["readback"] == [0, 0, 0]
+
+
+def test_create_object_rolls_back_created_node_on_placement_failure(monkeypatch):
+    """A placement-verification failure must not leave an orphan node behind."""
+    runtime = _install_fake_pymxs(monkeypatch)
+
+    # Give the scene fake a native-style delete + handle lookup so the verified
+    # rollback in action_create_object can actually prove the node is gone.
+    deleted = []
+
+    def delete(node):
+        if node in runtime.objects:
+            runtime.objects.remove(node)
+        deleted.append(node)
+
+    runtime.delete = delete
+    runtime.maxOps = types.SimpleNamespace(
+        getNodeByHandle=lambda handle: next((n for n in runtime.objects if n.handle == handle), None)
+    )
+
+    original = runtime._create
+
+    def create(class_name, **kwargs):
+        node = original(class_name, **kwargs)
+        node.swallowed_properties.add("pos")
+        return node
+
+    monkeypatch.setattr(runtime, "_create", create)
+    result = _load_action("action_create_object.py").main(
+        object_type="Teapot", name="ghost", position=[140, 140, 34]
+    )
+
+    assert result["success"] is False
+    assert result["message"] == "Object placement did not verify"
+    assert result["data"]["rolled_back"] is True
+    assert result["data"]["object_type"] == "Teapot"
+    assert runtime.getNodeByName("ghost") is None
+    assert len(deleted) == 1

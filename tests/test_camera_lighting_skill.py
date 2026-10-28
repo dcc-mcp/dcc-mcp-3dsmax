@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "dcc_mcp_3dsmax" / "skills" / "3dsmax-camera-lighting"
@@ -285,3 +287,51 @@ def test_camera_lighting_tools_report_missing_and_wrong_target_errors(monkeypatc
     assert "not a camera" in wrong_camera["message"]
     assert wrong_light["success"] is False
     assert "not a light" in wrong_light["message"]
+
+
+def test_standard_camera_focal_length_maps_to_native_fov(monkeypatch):
+    """A target/free camera controls its lens through fov, not the mm aliases.
+
+    Requesting focal_length on the default target camera used to fail native
+    readback and delete the freshly created camera. Now the millimetre value is
+    converted to a horizontal field of view and verified through the host.
+    """
+    import math
+
+    runtime = _install_fake_pymxs(monkeypatch)
+    # Model a native standard camera: only `fov` is a real property; the mm
+    # aliases do not exist, so writing them directly would fail readback.
+    runtime.isProperty = lambda node, name: name == "fov"
+    runtime.getProperty = lambda node, name: getattr(node, name, None)
+
+    result = _load_action("action_create_camera.py").main(
+        name="standard_cam", camera_type="target", focal_length=65
+    )
+
+    assert result["success"] is True, result
+    # The millimetre value the caller asked for is reported back, not the fov.
+    assert result["data"]["camera"]["focal_length"] == 65
+    camera = runtime.getNodeByName("standard_cam")
+    expected_fov = math.degrees(2.0 * math.atan(36.0 / (2.0 * 65)))
+    assert camera.fov == pytest.approx(expected_fov)
+    # list_cameras must agree with create_camera for the same node: the mm value
+    # is derivable from the native fov, not lost because standard cameras lack
+    # the mm aliases a Physical camera exposes.
+    listed = _load_action("action_list_cameras.py").main()
+    row = next(c for c in listed["data"]["cameras"] if c["node"]["node_name"] == "standard_cam")
+    assert row["focal_length"] == pytest.approx(65, abs=1e-6)
+
+
+def test_physical_camera_still_verifies_millimetre_focal_length(monkeypatch):
+    """The Physical camera path still uses and verifies the mm lens property."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.isProperty = lambda node, name: name == "focal_length_mm"
+    runtime.getProperty = lambda node, name: getattr(node, name)
+
+    result = _load_action("action_create_camera.py").main(
+        name="physical_cam", camera_type="physical", focal_length=50
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["camera"]["focal_length"] == 50
+    assert runtime.getNodeByName("physical_cam").focal_length_mm == 50

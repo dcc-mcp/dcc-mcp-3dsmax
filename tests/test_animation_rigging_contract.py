@@ -617,3 +617,91 @@ def test_rotation_only_key_does_not_author_a_position_key(monkeypatch):
     assert result["success"] is True, result
     assert node.position == [100, 80, 10]  # pivot restored
     assert node.position_keys == []  # but no spurious position key was authored
+
+
+def test_rotation_key_captures_pivot_inside_attime(monkeypatch):
+    """The pivot must be captured/restored inside attime(frame).
+
+    For an already-animated position, reading node.position before attime(frame)
+    captures the value at the current frame and writes that foreign value onto
+    the keyed frame. Capturing inside attime(frame) keeps the keyed-frame pivot.
+    """
+    from dcc_mcp_3dsmax._animation_utils import _key_with_pymxs_animation
+
+    class _AnimState:
+        frame = 1
+        active = False
+
+    state = _AnimState()
+    positions = {1: [100.0, 80.0, 10.0], 10: [200.0, 160.0, 20.0]}
+    position_keys = []
+
+    class _AnimateContext:
+        def __init__(self, enabled):
+            self.enabled = enabled
+
+        def __enter__(self):
+            state.active = bool(self.enabled)
+            return self
+
+        def __exit__(self, *_args):
+            state.active = False
+            return None
+
+    class _AttimeContext:
+        def __init__(self, frame):
+            self.frame = int(frame)
+            self.previous = None
+
+        def __enter__(self):
+            self.previous = state.frame
+            state.frame = self.frame
+            return self
+
+        def __exit__(self, *_args):
+            state.frame = self.previous
+            return None
+
+    class _AnimatedNode:
+        @property
+        def position(self):
+            return list(positions[state.frame])
+
+        @position.setter
+        def position(self, value):
+            if state.active:
+                position_keys.append(list(value))
+            positions[state.frame] = list(value)
+
+        @property
+        def rotation(self):
+            return [0.0, 0.0, 0.0]
+
+        @rotation.setter
+        def rotation(self, value):
+            # Native pivot orbit moves the pivot at the current (keyed) frame,
+            # bypassing the key tracker like the real host side effect.
+            positions[state.frame] = [0.0, 0.0, 0.0]
+
+    node = _AnimatedNode()
+    runtime = types.SimpleNamespace(
+        Point3=lambda *v: list(v),
+        EulerAngles=lambda *v: list(v),
+        Quat=lambda *v: list(v),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pymxs",
+        types.SimpleNamespace(
+            runtime=runtime,
+            animate=lambda enabled: _AnimateContext(enabled),
+            attime=lambda frame: _AttimeContext(frame),
+        ),
+    )
+
+    assert _key_with_pymxs_animation(runtime, node, 10, "rotation", [0, 0, -45]) is True
+
+    # The keyed frame keeps its own pivot value, not the frame-1 current value.
+    assert positions[10] == [200.0, 160.0, 20.0]
+    assert positions[1] == [100.0, 80.0, 10.0]
+    assert position_keys == []  # no spurious position key is authored

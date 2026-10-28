@@ -2551,3 +2551,164 @@ def test_boolean_operation_row_is_in_the_destructive_undo_table():
 
     assert "`3dsmax-mesh-ops__boolean_operation`" in destructive
     assert "`3dsmax-mesh-ops__boolean_operation`" not in non_destructive
+
+
+# ── Regression tests for the exact-head re-review (PR #239) ────────────
+
+
+def _curved_shape_with_handles(runtime, name="curve_a"):
+    """Build an existing bezier spline with non-trivial in/out handle vectors."""
+    shape = runtime.SplineShape()
+    shape.name = name
+    runtime.addNewSpline(shape)
+    points = [
+        ((0.0, 0.0, 0.0), (-3.0, -1.0, 0.0), (3.0, 1.0, 0.0)),
+        ((10.0, 5.0, 0.0), (-2.0, -4.0, 0.0), (2.0, 4.0, 0.0)),
+    ]
+    for index, (pos, in_vec, out_vec) in enumerate(points, start=1):
+        runtime.addKnot(shape, 1, "bezier", "curve", runtime.Point3(*pos))
+        runtime.setInVec(shape, 1, index, runtime.Point3(*in_vec))
+        runtime.setOutVec(shape, 1, index, runtime.Point3(*out_vec))
+    return shape
+
+
+def _spline_state(out_vec, in_vec=None, position=None, knot_type="bezier", closed=False):
+    """One-spline read_spline_state payload with a single knot."""
+    pos = position or [0.0, 0.0, 0.0]
+    return [
+        {
+            "index": 1,
+            "closed": closed,
+            "knot_count": 1,
+            "knots": [
+                {
+                    "index": 1,
+                    "position": list(pos),
+                    "local_position": list(pos),
+                    "in_vec": list(in_vec or [0.0, 0.0, 0.0]),
+                    "out_vec": list(out_vec),
+                    "knot_type": knot_type,
+                }
+            ],
+        }
+    ]
+
+
+def test_spline_states_match_rejects_changed_bezier_handles():
+    """The exact-source defect: a handle-only mutation must fail verification."""
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    base = _spline_state([5.0, 3.0, 0.0], [-2.0, -1.0, 0.0])
+
+    # Equal-state control still matches.
+    assert draw._spline_states_match(base, _spline_state([5.0, 3.0, 0.0], [-2.0, -1.0, 0.0])) is True
+    # Changed out/in handles (with every other field identical) are rejected.
+    assert draw._spline_states_match(base, _spline_state([9.0, 9.0, 9.0], [-2.0, -1.0, 0.0])) is False
+    assert draw._spline_states_match(base, _spline_state([5.0, 3.0, 0.0], [-8.0, -1.0, 0.0])) is False
+    # Other supported spline semantics are still detected after the fix.
+    assert draw._spline_states_match(
+        base, _spline_state([5.0, 3.0, 0.0], [-2.0, -1.0, 0.0], position=[1.0, 0.0, 0.0])
+    ) is False
+    assert draw._spline_states_match(
+        base, _spline_state([5.0, 3.0, 0.0], [-2.0, -1.0, 0.0], knot_type="corner")
+    ) is False
+    assert draw._spline_states_match(
+        base, _spline_state([5.0, 3.0, 0.0], [-2.0, -1.0, 0.0], closed=True)
+    ) is False
+
+
+def test_draw_spline_rollback_rebuilds_curved_segments(monkeypatch):
+    """A curved spline must be rolled back with curve segments, not degraded to lines."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _curved_shape_with_handles(runtime)
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+
+    before = inspect.main(node_name="curve_a")["data"]["splines"][0]
+    assert before["knots"][0]["out_vec"] != [0.0, 0.0, 0.0]  # non-trivial handles
+
+    segments = []
+    original_addknot = runtime.addKnot
+
+    def spy(shape, spline_index, knot_type, segment_type, point):
+        segments.append(segment_type)
+        return original_addknot(shape, spline_index, knot_type, segment_type, point)
+
+    monkeypatch.setattr(runtime, "addKnot", spy)
+    # Fail at the mapping stage so only _restore_splines rebuilds knots.
+    monkeypatch.setattr(draw, "world_to_object", lambda rt, node, point: (None, "injected failure"))
+
+    result = draw.main(points=[[20.0, 0.0, 0.0], [30.0, 0.0, 0.0]], mode="append", node_name="curve_a")
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True  # a faithful restore verifies
+    assert "curve" in segments  # curved spline rebuilt with #curve, not #line
+
+
+def test_draw_spline_rollback_fails_verification_when_handles_change(monkeypatch):
+    """A rollback whose handles do not read back equal must NOT claim verified."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _curved_shape_with_handles(runtime)
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+
+    monkeypatch.setattr(draw, "world_to_object", lambda rt, node, point: (None, "injected failure"))
+    # During the rebuild the host drops handle writes, so the restored tangents
+    # differ from the captured ones.
+    monkeypatch.setattr(runtime, "setInVec", lambda *args: None)
+
+    result = draw.main(points=[[20.0, 0.0, 0.0], [30.0, 0.0, 0.0]], mode="append", node_name="curve_a")
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is False  # NOT a false "verified"
+
+
+def test_edit_curve_rollback_reports_when_toggle_raises(monkeypatch):
+    """A host exception in close()/open() during rollback keeps the structured result."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _inspect, token = _open_curve_with_token(monkeypatch, runtime)
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    def failing_commit(shape):
+        raise RuntimeError("commit refused by host")
+
+    def exploding_open(shape, spline_index):
+        raise RuntimeError("open refused by host")
+
+    monkeypatch.setattr(runtime, "updateShape", failing_commit)
+    # original_closed is False, so _restore calls open(); make it raise. The
+    # exception must not escape and turn the response into a bare error body.
+    monkeypatch.setattr(runtime, "open", exploding_open)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+    )
+
+    assert result.get("success") is False
+    assert result.get("data", {}).get("restored") is False
+    assert result.get("data", {}).get("failure_stage") == "apply_edits"
+
+
+def test_draw_spline_rollback_restores_original_name(monkeypatch):
+    """A rename applied before readback must be reverted when the write fails."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+
+    draw.main(points=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], name="original_name")
+    shape = runtime.getNodeByName("original_name")
+    assert shape is not None
+
+    # close() is a no-op, so readback fails on the closed flag AFTER the rename.
+    monkeypatch.setattr(runtime, "close", lambda s, i: None)
+    result = draw.main(
+        points=[[20.0, 0.0, 0.0], [30.0, 0.0, 0.0]],
+        mode="append",
+        node_name="original_name",
+        name="renamed_shape",
+        closed=True,
+    )
+
+    assert result["success"] is False
+    assert result["data"]["rolled_back"] is True
+    assert runtime.getNodeByName("original_name") is shape
+    assert runtime.getNodeByName("renamed_shape") is None
