@@ -106,11 +106,16 @@ bytes match. The receipt persists both its own file identity and the installed
 hook identity, so replacing either with an independent same-bytes file also
 fails closed. It imports the exact adapter and Core versions in the selected
 interpreter, checks bootstrap-error records, and waits for the typed
-`3dsmax_diagnostics__ping` sidecar probe. Only
+`3dsmax-animation__get_time_settings` sidecar probe. This bundled read-only
+query runs through host dispatch without changing the timeline or requiring
+the animation skill to have been loaded first. Only
 `verify.directly_usable=true` proves the runtime is callable. A copied hook or
 a live process alone is insufficient. Invalid or failed readiness results are
 reported with bounded reason identities; probe exception text and values are
-never copied into the public report.
+never copied into the public report. If Core exhausts its polling budget,
+`probe_failed` is preserved for a failing tool and `missing` for an unregistered
+host; a host that is still booting reports `timeout`. Core still owns retry
+policy, so a permanent unknown-tool error may consume the timeout budget.
 
 No automated test in this repository claims to have opened a real 3ds Max
 instance. Run the generated smoke prompt only after the operator starts the

@@ -3024,7 +3024,8 @@ def _wait_readiness(timeout: float) -> Dict[str, Any]:
     return wait_for_sidecar_ready(
         dcc_type=DCC_TYPE,
         timeout_secs=timeout,
-        probe_tool="3dsmax_diagnostics__ping",
+        # A bundled, main-thread, read-only query also works before lazy skill loading.
+        probe_tool="3dsmax-animation__get_time_settings",
     )
 
 
@@ -3038,6 +3039,11 @@ def _readiness_verdict(timeout: float) -> Tuple[bool, str]:
         success = readiness.get("success")
         if type(status) is not str:
             return False, "invalid_readiness_status"
+        # Core retains the last verdict when its retry budget expires. Keep
+        # permanent probe errors and an absent host distinct from slow startup.
+        if status == "timeout" and type(readiness.get("last_status")) is str:
+            if readiness["last_status"] in {"probe_failed", "missing"}:
+                status = readiness["last_status"]
         if success is True and status == "ready":
             return True, "ready"
         if success is False and status in READINESS_FAILURE_REASONS:
