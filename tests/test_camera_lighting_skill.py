@@ -64,6 +64,13 @@ class _FakeRuntime:
         self.viewport = _Viewport()
         self.activeCamera = None
         self.renderCamera = None
+        # 3ds Max reports the scene's render aperture width (mm) through the
+        # documented getRendApertureWidth() global; 36 mm is the host default,
+        # but the value is user-configurable (see the F2 aperture tests below).
+        self.render_aperture_width = 36.0
+
+    def getRendApertureWidth(self):  # noqa: N802 - mirrors pymxs runtime naming.
+        return self.render_aperture_width
 
     def _make_node(self, name: str, class_name: str):
         node = _FakeNode(name, self._next_handle, class_name)
@@ -335,3 +342,119 @@ def test_physical_camera_still_verifies_millimetre_focal_length(monkeypatch):
     assert result["success"] is True, result
     assert result["data"]["camera"]["focal_length"] == 50
     assert runtime.getNodeByName("physical_cam").focal_length_mm == 50
+
+
+# ── F2: aperture-aware mm <-> FOV conversion ──────────────────────────────
+
+
+def test_standard_camera_fov_uses_live_render_aperture(monkeypatch):
+    """A non-default aperture must change the mm -> fov conversion (F2).
+
+    The old code hard-coded a 36 mm sensor width. With a 24 mm render aperture
+    the resulting fov (and the lens shown in the Max UI) was wrong even though
+    the tool reported success with the requested millimetres.
+    """
+    import math
+
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.render_aperture_width = 24.0
+    runtime.isProperty = lambda node, name: name == "fov"
+    runtime.getProperty = lambda node, name: getattr(node, name, None)
+
+    result = _load_action("action_create_camera.py").main(
+        name="narrow_gate", camera_type="target", focal_length=65
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["camera"]["focal_length"] == 65
+    camera = runtime.getNodeByName("narrow_gate")
+    expected_fov = math.degrees(2.0 * math.atan(24.0 / (2.0 * 65)))
+    assert camera.fov == pytest.approx(expected_fov)
+    assert camera.fov != pytest.approx(math.degrees(2.0 * math.atan(36.0 / (2.0 * 65))))
+    # Both directions use the same live aperture: list_cameras reports 65 mm.
+    listed = _load_action("action_list_cameras.py").main()
+    row = next(c for c in listed["data"]["cameras"] if c["node"]["node_name"] == "narrow_gate")
+    assert row["focal_length"] == pytest.approx(65, abs=1e-6)
+
+
+def test_list_cameras_focal_length_uses_live_render_aperture(monkeypatch):
+    """The fov -> mm direction must use the live aperture, not a fixed 36 (F2)."""
+    import math
+
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.render_aperture_width = 24.0
+    cam = runtime.camera
+    cam.focalLength = None
+    fov = math.degrees(2.0 * math.atan(24.0 / (2.0 * 65)))
+    cam.fov = fov
+
+    listed = _load_action("action_list_cameras.py").main()
+    row = next(c for c in listed["data"]["cameras"] if c["node"]["node_name"] == "main_camera")
+
+    assert row["focal_length"] == pytest.approx(65, abs=1e-6)
+    # A hard-coded 36 mm aperture would have over-reported the lens here.
+    assert row["focal_length"] != pytest.approx(36.0 / (2.0 * math.tan(math.radians(fov) / 2.0)), abs=1e-6)
+
+
+def test_standard_camera_fails_closed_without_aperture_capability(monkeypatch):
+    """A host that cannot report its aperture must not fake a 36 mm lens (F2)."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    monkeypatch.setattr(runtime, "getRendApertureWidth", None)
+
+    result = _load_action("action_create_camera.py").main(
+        name="no_gate", camera_type="target", focal_length=65
+    )
+
+    assert result["success"] is False
+    assert result["data"]["field"] == "focal_length"
+    # Validation happens before construction: no node leaks and no guessed fov.
+    assert runtime.constructed == []
+
+
+@pytest.mark.parametrize("bad", [None, 0.0, -1.0, "wide", float("inf"), float("nan")])
+def test_standard_camera_fails_closed_on_invalid_aperture(monkeypatch, bad):
+    """A non-positive / non-finite / non-numeric aperture fails closed (F2)."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    runtime.render_aperture_width = bad
+
+    result = _load_action("action_create_camera.py").main(
+        name="bad_gate", camera_type="target", focal_length=65
+    )
+
+    assert result["success"] is False
+    assert result["data"]["field"] == "focal_length"
+    assert runtime.constructed == []
+
+
+def test_default_aperture_matches_36mm_formula(monkeypatch):
+    """With the host default 36 mm aperture, the documented formula is unchanged."""
+    import math
+
+    runtime = _install_fake_pymxs(monkeypatch)
+    assert runtime.getRendApertureWidth() == 36.0
+    runtime.isProperty = lambda node, name: name == "fov"
+    runtime.getProperty = lambda node, name: getattr(node, name, None)
+
+    result = _load_action("action_create_camera.py").main(
+        name="default_gate", camera_type="target", focal_length=65
+    )
+
+    assert result["success"] is True, result
+    camera = runtime.getNodeByName("default_gate")
+    assert camera.fov == pytest.approx(math.degrees(2.0 * math.atan(36.0 / (2.0 * 65))))
+
+
+def test_physical_camera_does_not_require_aperture_capability(monkeypatch):
+    """A Physical camera uses the mm alias and must not need the aperture API (F2)."""
+    runtime = _install_fake_pymxs(monkeypatch)
+    monkeypatch.setattr(runtime, "getRendApertureWidth", None)
+    runtime.isProperty = lambda node, name: name == "focal_length_mm"
+    runtime.getProperty = lambda node, name: getattr(node, name)
+
+    result = _load_action("action_create_camera.py").main(
+        name="physical_no_gate", camera_type="physical", focal_length=50
+    )
+
+    assert result["success"] is True, result
+    assert result["data"]["camera"]["focal_length"] == 50
+    assert runtime.getNodeByName("physical_no_gate").focal_length_mm == 50
