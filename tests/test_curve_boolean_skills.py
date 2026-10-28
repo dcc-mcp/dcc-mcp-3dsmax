@@ -2269,10 +2269,18 @@ def test_edit_curve_rollback_restores_the_closed_state(monkeypatch):
     inspect, token = _open_curve_with_token(monkeypatch, runtime)
     edit = _load(MODELING_DIR, "action_edit_curve.py")
 
-    # close() succeeds, then the commit fails: the spline is left closed unless
-    # the rollback also restores the flag captured before the edit.
+    # close() succeeds, then the forward commit fails (triggering the rollback);
+    # the rollback's own commit must succeed for ``restored`` to be provable.
+    # A host that refuses even the rollback commit is covered by the F1
+    # regressions below (test_edit_curve_rollback_reports_failed_commit).
+    original_commit = runtime.updateShape
+    state = {"failed": False}
+
     def failing_commit(shape):
-        raise RuntimeError("commit refused by host")
+        if not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("commit refused by host")
+        return original_commit(shape)
 
     monkeypatch.setattr(runtime, "updateShape", failing_commit)
 
@@ -2712,3 +2720,93 @@ def test_draw_spline_rollback_restores_original_name(monkeypatch):
     assert result["data"]["rolled_back"] is True
     assert runtime.getNodeByName("original_name") is shape
     assert runtime.getNodeByName("renamed_shape") is None
+
+
+# ── F1: rollback commit and knot readback must both be verified ───────────
+
+
+@pytest.mark.parametrize("start_closed", [False, True])
+def test_edit_curve_rollback_reports_failed_commit(monkeypatch, start_closed):
+    """An updateShape failure during rollback must not claim ``restored`` (F1).
+
+    The old code discarded update_shape()'s error, so a host whose updateShape
+    throws still reported the scene as restored. Covers both original_closed
+    branches of _restore.
+    """
+    runtime = _install(monkeypatch, FakeRuntime())
+    draw = _load(MODELING_DIR, "action_draw_spline.py")
+    inspect = _load(MODELING_DIR, "action_inspect_curve.py")
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+    draw.main(points=[[0, 0, 0], [25, 0, 10], [50, 0, 0]], name="curve_a", closed=start_closed)
+    token = inspect.main(node_name="curve_a")["data"]["token"]
+
+    def failing_commit(shape):
+        raise RuntimeError("commit refused by host")
+
+    monkeypatch.setattr(runtime, "updateShape", failing_commit)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "apply_edits"
+    assert result["data"]["restored"] is False
+
+
+def test_edit_curve_rollback_reports_missing_commit_api(monkeypatch):
+    """A host without updateShape cannot prove the rollback (F1, missing path)."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _inspect, token = _open_curve_with_token(monkeypatch, runtime)
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    monkeypatch.setattr(runtime, "updateShape", None)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "apply_edits"
+    assert result["data"]["restored"] is False
+
+
+def test_edit_curve_rollback_fails_when_knot_writes_do_not_land(monkeypatch):
+    """``restored`` must reflect a knot readback, not just silent writes (F1)."""
+    runtime = _install(monkeypatch, FakeRuntime())
+    _inspect, token = _open_curve_with_token(monkeypatch, runtime)
+    edit = _load(MODELING_DIR, "action_edit_curve.py")
+
+    original_set = runtime.setKnotPoint
+    original_commit = runtime.updateShape
+    state = {"restoring": False}
+
+    def set_knot_point(shape, spline_index, knot_index, point):
+        # The forward edit really moves knot 2; once the rollback starts the
+        # host silently drops every restore write (no exception raised).
+        if state["restoring"]:
+            return None
+        return original_set(shape, spline_index, knot_index, point)
+
+    def commit(shape):
+        if not state["restoring"]:
+            state["restoring"] = True
+            raise RuntimeError("commit refused by host")
+        return original_commit(shape)
+
+    monkeypatch.setattr(runtime, "setKnotPoint", set_knot_point)
+    monkeypatch.setattr(runtime, "updateShape", commit)
+
+    result = edit.main(
+        node_name="curve_a",
+        token=token,
+        knots=[{"index": 2, "position": [40, 5, 10]}],
+    )
+
+    assert result["success"] is False
+    assert result["data"]["failure_stage"] == "apply_edits"
+    assert result["data"]["restored"] is False

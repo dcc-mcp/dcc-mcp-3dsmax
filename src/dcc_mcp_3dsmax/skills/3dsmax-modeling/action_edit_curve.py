@@ -39,6 +39,44 @@ def _snapshot(runtime: Any, node: Any, spline_index: int, knot_total: int) -> Li
     return snapshot
 
 
+def _rollback_readback_matches(
+    runtime: Any,
+    node: Any,
+    spline_index: int,
+    snapshot: Sequence[Dict[str, Any]],
+    original_closed: Optional[bool],
+) -> bool:
+    """Confirm a rollback reads back equal to the captured knot state.
+
+    ``set_knot_value`` only proves that a write did not raise; a host can drop a
+    write silently. Reading the spline back through the same native getters used
+    to capture ``snapshot`` is what makes ``restored`` mean "the scene is back to
+    the captured state" rather than "no exception was raised".
+    """
+    state, error = read_spline_state(runtime, node)
+    if error:
+        return False
+    spline = next((item for item in state["splines"] if item["index"] == spline_index), None)
+    if spline is None or spline["knot_count"] != len(snapshot):
+        return False
+    if original_closed is not None and spline["closed"] is not None:
+        if bool(spline["closed"]) is not original_closed:
+            return False
+    for knot in snapshot:
+        current = next((item for item in spline["knots"] if item["index"] == knot["index"]), None)
+        if current is None:
+            return False
+        if not all(
+            positions_match(knot[field], current[field]) for field in ("position", "in_vec", "out_vec")
+        ):
+            return False
+        expected_type = (knot.get("knot_type") or "").lower()
+        actual_type = (current.get("knot_type") or "").lower()
+        if expected_type and actual_type and expected_type != actual_type:
+            return False
+    return True
+
+
 def _restore(
     runtime: Any,
     node: Any,
@@ -50,8 +88,8 @@ def _restore(
 
     ``closed`` is as much a part of the spline state as the knots: ``close`` /
     ``open`` mutate it during an edit, so a rollback that only rewrites knots
-    would leave a half-rolled-back curve. The closed flag is restored and read
-    back before the caller can claim the scene is untouched.
+    would leave a half-rolled-back curve. A rejected ``updateShape`` commit or
+    knots that do not read back equal also invalidate the rollback proof.
     """
     restored = True
     try:
@@ -81,7 +119,13 @@ def _restore(
                 toggle(node, spline_index)
             else:
                 restored = False
-        update_shape(runtime, node)
+        # The main edit path treats a failed updateShape as a hard error; hold
+        # the rollback commit to the same standard instead of discarding it.
+        commit_error = update_shape(runtime, node)
+        if commit_error:
+            restored = False
+        if not _rollback_readback_matches(runtime, node, spline_index, snapshot, original_closed):
+            restored = False
         if original_closed is not None:
             is_closed = getattr(runtime, "isClosed", None)
             if not callable(is_closed):
