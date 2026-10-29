@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.2.19](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.18...v0.2.19) (2026-10-29)
+
+
+### Features
+
+* configure verified system units on empty scenes ([ed98109](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/ed98109432b03503bc743b9437e4003c0e0b7424))
+
+
+### Bug Fixes
+
+* accept callable native property values ([2457b87](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2457b870be43b1996eff7e33fd24edaad99d8dc3))
+* apply frame rate before native timeline intervals ([c886720](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/c886720818073b4755e0445520fcb26b9f25dbbb))
+* bind Arnold lights to native MAXtoA controls ([23a00af](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/23a00afb577f3cfe0c011eed459cddfc12beb316))
+* commit complete lathe axis matrices atomically ([1cca0eb](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/1cca0eb5f2a4e85a911f1225a22e1842e146096c))
+* harden native authoring rollback verification and input handling ([265a567](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/265a56754885d953338a7b5fa85e41af6676fe45))
+* normalize native controller rotation conventions ([4838ec3](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4838ec3f8349d543de1fa7feb1769507218f7a32))
+* persist native Windows install file identities ([8e48786](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/8e48786ba5b5c9d004fe03f1c8e3daffa7aafbc6))
+* preserve keyed pivots and read compound controller keys ([d0b78f7](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d0b78f7b9d2b6035b8fd2b03308769dcb6810646))
+* preserve rotation units in native animation readback ([2cc3834](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/2cc3834cc8393878398f581bd02a04b15e6a8adb))
+* rebuild active CUI menus after callback registration ([77bb40a](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/77bb40a0996feed64aba6725eb52fac91089d7d9))
+* rebuild saved menus while retaining shutdown cleanup ([e486715](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e486715d6625c1b3a50ba6130632e53aeba93f75))
+* remove manual server lifecycle menu commands ([d01b560](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/d01b5605ef9f03ef4b209600235ce9f3e7e25c9e))
+* restore native spline state on failed edits and validate inputs early ([e0e7c0d](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e0e7c0d852c0581cb98ae454957d40e230b1f6ab))
+* retain shutdown cleanup when menu rebuild fails ([6496d93](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/6496d93dfe94e92860503f1922904e8f40b01b87))
+* revolve XZ lathe profiles around the verified Z axis ([c936d12](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/c936d12c5f53838d558ff75bf2ce4545cd345711))
+* serialize native unit names without invoking wrappers ([0a0d182](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/0a0d18239f39d59c140764d732582f213eed2dca))
+* unregister detached legacy menus before rebuilding ([968e587](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/968e5875dc98fc3974abdd55cf6945b62bece475))
+* use a bundled read-only tool for install verification ([e9e7a02](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e9e7a026d1dad984deb92a4893f848bbc9ba3ee5))
+* use native Physical camera constructor ([4a59a97](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/4a59a971fbb070d330a292d73844ff77d308563c))
+* use native spline open and close operations ([33c6225](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/33c6225e08b242caea511fd5c75011454ad4dd4d))
+* verify curve rollback commit and use live render aperture for camera FOV ([88e7265](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/88e72652bb9e0f41984fc25678983826db6a85b0))
+* verify final object placement after rotation and scale ([5260746](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/5260746e21ac3e8ec12fd64d2d13d2a873cd75d9))
+* verify requested camera focal length natively ([e68b569](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/e68b5693570dfcf50c92d6aed2fcb88a7fc8999c))
+* write lathe axes through native nested property setters ([1d1c560](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/1d1c560f65ce152fd8e593bdea6953ffde0f3c4e))
+
+
+### Documentation
+
+* refresh the generated DCC-MCP host matrix pointer ([36b585a](https://github.com/dcc-mcp/dcc-mcp-3dsmax/commit/36b585aead2f3ecbd1b4c56046e5e55a08cced4f))
+
 ## [0.2.18](https://github.com/dcc-mcp/dcc-mcp-3dsmax/compare/v0.2.17...v0.2.18) (2026-10-24)
 
 
