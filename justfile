@@ -445,3 +445,8 @@ max-dev: max-link verify-deps
 # Print all local 3ds Max debugging commands.
 @max-debug-help:
     @python -c "print('3ds Max local debug commands:'); print('  just max-install-core-win           # install dcc-mcp-core into 3ds Max Python'); print('  just max-verify-python-win          # verify 3ds Max Python imports'); print('  just max-sidecar-command            # copy/paste into MAXScript Listener'); print('  just max-embedded-command           # embedded server, no sidecar'); print('  just max-sidecar-health <port>      # health check for printed bridge port'); print('  just max-sidecar-box <port>         # create a test box through sidecar'); print('  just max-gateway-health             # check {{ max-gateway-url }}'); print(); print('Port model:'); print('  sidecar bridge: random by default'); print('  3ds Max instance: random by default'); print('  MCP gateway: {{ max-gateway-url }}')"
+
+
+# Verify the pinned VX and just toolchain.
+toolchain-ci:
+    vx just@1.58 --version
